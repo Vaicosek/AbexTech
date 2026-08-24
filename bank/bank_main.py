@@ -93,7 +93,6 @@ OVERDUE_ANNOUNCE = _env_bool("OVERDUE_ANNOUNCE", "1")
 
 
 
-COIN = "🪙"
 
 
 

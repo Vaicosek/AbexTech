@@ -38,15 +38,43 @@ from typing import Iterable, Optional, Sequence
 import discord
 
 # ── the bar ──────────────────────────────────────────────────────────────
+# The palette has ONE definition, in abex_theme, and Discord gets it converted.
+# It used to be written out twice -- hex strings for the website, ints here --
+# with nothing holding the two in step. They happened to agree; agreeing by
+# coincidence is not the same as being the same colour, and the failure mode is
+# a rebrand that lands on the site and silently misses every embed.
+#
+# abex_theme is pure data (no discord import), so this direction is safe.
+import abex_theme as _theme
+
+
+def _bar(hex_colour: str) -> int:
+    """'#c9b37a' -> 0xC9B37A. discord.Embed wants an int."""
+    return int(str(hex_colour).lstrip("#"), 16)
+
+
 #: Official statements: reports, dividends, panels, anything the bot asserts.
-ACCENT = 0xC9B37A
+ACCENT = _bar(_theme.ACCENT)
 #: Money actually received by the person reading it.
-GAIN = 0x8FBF6A
-#: A failure, a refusal, or money leaving. Warm Feel has no separate amber —
-#: warning and loss are one token, deliberately.
-LOSS = 0xD87A6A
+GAIN = _bar(_theme.GAIN)
+#: A failure, a refusal, or money leaving. Warm Feel has no separate amber --
+#: warning and loss are one token, deliberately, and _theme.WARN is the same value.
+LOSS = _bar(_theme.LOSS)
+#: Money parked rather than lost: escrow, stakes, a vault. Never the loss tone.
+HELD = _bar(_theme.HELD)
 #: Informational. Leave the bar grey rather than colouring it for decoration.
 NEUTRAL = None
+
+
+def grade_bar(grade: str) -> Optional[int]:
+    """Embed bar for a credit grade, or NEUTRAL when the grade is unknown.
+
+    Same ramp the site uses. An unrated market gets no colour rather than the loss
+    tone -- it has no market cap to divide by, so it has no grade, and painting that
+    red tells an owner they failed a rating nobody gave them.
+    """
+    tone = _theme.grade_tone(grade)
+    return _bar(tone) if tone else NEUTRAL
 
 STACK = 64
 
