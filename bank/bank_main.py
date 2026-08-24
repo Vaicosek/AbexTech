@@ -43,11 +43,19 @@ LOAN_PROPOSALS_CHANNEL_ID = os.getenv("LOAN_PROPOSALS_CHANNEL_ID", "151592512315
 
 BOT_LOG_CHANNEL_ID = os.getenv("BOT_LOG_CHANNEL_ID", "1515925132051349617").strip()
 
-SAVINGS_APR = float(os.getenv("SAVINGS_APR", "0.05"))
-LOAN_APR = float(os.getenv("LOAN_APR", "0.18"))
-LOAN_OVERDUE_EXTRA_APR = float(os.getenv("LOAN_OVERDUE_EXTRA_APR", "0.18"))
-MAX_LOAN = int(os.getenv("MAX_LOAN", "100000"))
-DEFAULT_LOAN_DAYS = int(os.getenv("DEFAULT_LOAN_DAYS", "30"))
+# Money policy lives in bank_policy.py so the WEBSITE can read the same numbers
+# without importing this module -- importing this one runs logging.basicConfig() and
+# builds a commands.Bot, which core's web process must not gain as a side effect of
+# rendering a page. Imported back under the original names, so every call site in
+# this file is unchanged and there is still exactly ONE implementation.
+from bank_policy import (
+    SAVINGS_APR, LOAN_APR, LOAN_OVERDUE_EXTRA_APR, MAX_LOAN, DEFAULT_LOAN_DAYS,
+    BASE_CREDIT_LIMIT, CREDIT_PER_REPAID_LOAN, CREDIT_LATE_PENALTY,
+    BOND_TERMS, BOND_EARLY_PENALTY_PCT,
+    parse_bond_terms as _parse_bond_terms,
+    bond_payout as _bond_payout,
+    credit_limit_for,
+)
 
 
 def _env_bool(name: str, default: str = "0") -> bool:
@@ -74,9 +82,6 @@ BANK_ADMIN_USER_IDS = _env_ids("BANK_ADMIN_USER_IDS")
 LOAN_REQUIRE_APPROVAL = _env_bool("LOAN_REQUIRE_APPROVAL", "1")
 # Credit limit = base + (per-repaid-loan bonus x clean repayments), capped at
 # MAX_LOAN. A per-user override in accounts.credit_limit beats all of this.
-BASE_CREDIT_LIMIT = int(os.getenv("BASE_CREDIT_LIMIT", "10000"))
-CREDIT_PER_REPAID_LOAN = int(os.getenv("CREDIT_PER_REPAID_LOAN", "5000"))
-CREDIT_LATE_PENALTY = int(os.getenv("CREDIT_LATE_PENALTY", "5000"))
 MAX_PENDING_LOANS = int(os.getenv("MAX_PENDING_LOANS", "1"))
 
 # Collections
@@ -86,30 +91,10 @@ GARNISH_BOND_PAYOUTS = _env_bool("GARNISH_BOND_PAYOUTS", "1")
 OVERDUE_ANNOUNCE = _env_bool("OVERDUE_ANNOUNCE", "1")
 
 
-def _parse_bond_terms(raw: str) -> dict[int, float]:
-    """Parse BOND_TERMS='7:0.06,30:0.09,90:0.14' -> {7:0.06, 30:0.09, 90:0.14}."""
-    out: dict[int, float] = {}
-    for part in (raw or "").split(","):
-        part = part.strip()
-        if not part:
-            continue
-        try:
-            d, r = part.split(":")
-            out[int(d.strip())] = float(r.strip())
-        except ValueError:
-            log.warning("Ignoring malformed BOND_TERMS entry: %r", part)
-    return dict(sorted(out.items()))
-
-
-BOND_TERMS = _parse_bond_terms(os.getenv("BOND_TERMS", "7:0.06,30:0.09,90:0.14"))
-BOND_EARLY_PENALTY_PCT = float(os.getenv("BOND_EARLY_PENALTY_PCT", "0.0"))
 
 COIN = "🪙"
 
 
-def _bond_payout(principal: int, apr: float, term_days: int) -> int:
-    """Fixed simple-interest payout at maturity, rounded to whole coins."""
-    return int(round(principal * (1.0 + apr * term_days / 365.0)))
 
 client_rs = RestockerClient(RESTOCKER_API_URL, RESTOCKER_BANK_TOKEN) if (RESTOCKER_API_URL and RESTOCKER_BANK_TOKEN) else None
 
@@ -208,24 +193,6 @@ async def ensure_banker(interaction: discord.Interaction) -> bool:
     return False
 
 
-def credit_limit_for(user_id) -> int:
-    """How much total debt this user is allowed to carry.
-
-    A per-user override (set by /admin creditlimit) wins outright. Otherwise it
-    grows with a clean repayment record and shrinks for every loan that went
-    overdue — so the limit is earned rather than flat."""
-    acct = bdb.get_account(user_id) or {}
-    override = acct.get("credit_limit")
-    if override is not None:
-        return max(0, int(override))
-    h = bdb.loan_history(user_id)
-    limit = (BASE_CREDIT_LIMIT
-             + CREDIT_PER_REPAID_LOAN * h["repaid_count"]
-             - CREDIT_LATE_PENALTY * h["late_count"])
-    if h["written_off_count"]:
-        # A written-off loan means the bank ate a loss on this person.
-        limit = 0
-    return max(0, min(limit, MAX_LOAN))
 
 
 
