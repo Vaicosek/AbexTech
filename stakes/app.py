@@ -82,6 +82,38 @@ FEATURES = {f for f in _env("SAT_FEATURES", "orders").lower().replace(" ", "").s
 if not FEATURES:
     FEATURES = {"orders"}
 
+# ── Talking to Abex Tech core ────────────────────────────────────────────────
+# Core's _network_identity() accepts two credentials on /api/network/*:
+#   X-Service-Token  == LEDGER_TOKEN_ESTATES   -> identity "estates"  (scoped, preferred)
+#   X-Network-Secret == NETWORK_SHARED_SECRET  -> identity "legacy"   (being retired)
+# The scoped token is the same service/scope model every other core caller uses,
+# so the satellite stops being the one component outside it. The shared secret is
+# kept only as a fallback for a deployment that has not been given a token yet;
+# core logs a one-time warning whenever it is used, and step 7 deletes it.
+SAT_LEDGER_TOKEN = _env("SAT_LEDGER_TOKEN")
+
+
+def _auth_headers(extra=None):
+    """Credentials for every /api/network/* call. Scoped token wins; secret is fallback."""
+    h = {}
+    if SAT_LEDGER_TOKEN:
+        h["X-Service-Token"] = SAT_LEDGER_TOKEN
+    elif SECRET:
+        h["X-Network-Secret"] = SECRET
+    if extra:
+        h.update(extra)
+    return h
+
+
+def _auth_describe():
+    """Which credential is in play — for the startup line, so a 401 is never a mystery."""
+    if SAT_LEDGER_TOKEN:
+        return "scoped token (SAT_LEDGER_TOKEN)"
+    if SECRET:
+        return "legacy shared secret (NETWORK_SHARED_SECRET) — due for retirement"
+    return "NONE"
+
+
 CHANNELS_FILE = _env("SAT_CHANNELS_FILE", "channels.json")
 
 intents = discord.Intents.none()
@@ -147,11 +179,12 @@ async def _api_get_orders(session):
     """Fetch the open-order list from Abex Tech. Returns a list, or None on failure."""
     try:
         async with session.get(f"{API_BASE}/api/network/orders",
-                               headers={"X-Network-Secret": SECRET},
+                               headers=_auth_headers(),
                                timeout=aiohttp.ClientTimeout(total=15)) as r:
             if r.status != 200:
-                log.warning("orders API returned %s (check NETWORK_SHARED_SECRET matches "
-                            "Abex Tech's .env)", r.status)
+                log.warning("orders API returned %s — auth in use: %s. A 401 means core "
+                            "rejected it: set SAT_LEDGER_TOKEN to core's "
+                            "LEDGER_TOKEN_ESTATES.", r.status, _auth_describe())
                 return None
             data = await r.json()
             return data.get("orders", []) if data.get("ok") else None
@@ -164,8 +197,7 @@ async def _api_claim(session, order_id, worker_id, worker_name, guild_id):
     """Tell Abex Tech that `worker_id` claimed `order_id` from a partner server."""
     try:
         async with session.post(f"{API_BASE}/api/network/claim",
-                                headers={"X-Network-Secret": SECRET,
-                                         "Content-Type": "application/json"},
+                                headers=_auth_headers({"Content-Type": "application/json"}),
                                 json={"order_id": order_id,
                                       "worker_id": str(worker_id),
                                       "worker_name": worker_name,
@@ -290,7 +322,7 @@ async def _api_get_land_listings(session):
     """Fetch active land listings from Abex Tech. Returns a list, or None on failure."""
     try:
         async with session.get(f"{API_BASE}/api/network/land/listings",
-                               headers={"X-Network-Secret": SECRET},
+                               headers=_auth_headers(),
                                timeout=aiohttp.ClientTimeout(total=15)) as r:
             if r.status != 200:
                 log.warning("land listings API returned %s", r.status)
@@ -317,8 +349,7 @@ async def _api_land_post(session, path, payload):
     """Generic POST to /api/network/land/<path>. Returns the parsed result dict."""
     try:
         async with session.post(f"{API_BASE}/api/network/land/{path}",
-                                headers={"X-Network-Secret": SECRET,
-                                         "Content-Type": "application/json"},
+                                headers=_auth_headers({"Content-Type": "application/json"}),
                                 json=payload,
                                 timeout=aiohttp.ClientTimeout(total=20)) as r:
             return await r.json()
@@ -1139,8 +1170,13 @@ async def on_guild_join(guild):
 def main():
     if not TOKEN:
         raise SystemExit("SAT_BOT_TOKEN is not set — put it in .env")
-    if not SECRET:
-        raise SystemExit("NETWORK_SHARED_SECRET is not set — it must match Abex Tech's .env")
+    if not (SAT_LEDGER_TOKEN or SECRET):
+        raise SystemExit(
+            "No credential for Abex Tech core. Set SAT_LEDGER_TOKEN to core's "
+            "LEDGER_TOKEN_ESTATES (preferred), or NETWORK_SHARED_SECRET to match "
+            "core's .env (legacy, being retired). Without one, every /api/network/* "
+            "call returns 401.")
+    log.info("core auth: %s", _auth_describe())
     if not _all_channels():
         log.warning("No channels registered yet — run /setup in a channel once the bot is online.")
     bot.run(TOKEN)
