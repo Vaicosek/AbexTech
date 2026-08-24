@@ -69,6 +69,76 @@ def accent(domain: str) -> str:
     return DOMAINS.get(domain, DOMAINS["hub"])
 
 
+#: Money direction by LABEL, from the mockup's `moneyTone()`.
+#:
+#: The mockup calls this "one rule, shared with the site". It was not shared: the rule
+#: existed only in the mockup, and the site colours figures per call site (a hardcoded
+#: tone map in `abex_screens`, for one). N call sites deciding the same thing
+#: separately is how a figure ends up green on one screen and plain on the next.
+#:
+#: Ported verbatim, ANCHORING AND ALL. Several of these are exact-match on purpose and
+#: the near-misses are not oversights to tidy up: "Owed" is warn but "Owed to you" is
+#: money coming TO the reader, and "Vault" is held but "Vault retention (10%)" is a
+#: deduction. Where the mockup wanted those coloured it set the tone explicitly on the
+#: cell instead. Loosening an anchor here silently recolours the opposite meaning.
+#:
+#: Returns "" for "no tone" — the caller leaves the figure in the default text colour.
+#: An explicit tone on the cell always wins over this.
+_MONEY_RULES: tuple[tuple[str, str], ...] = (
+    # A deduction line is never coloured: it is already negative in the reading.
+    (r"^less\b", ""),
+    (r"^held\b|held in|^staked$|^stake$|^vault$|^bonds held$", "HELD"),
+    (r"^savings\b|^dividends$|^coupon income$|^estimated", "GAIN"),
+    (r"^available|^wallet available$|^revenue$|^confirmed|^money in$|^pa(y|id)\b", "GAIN"),
+    (r"^unrealised$|^net for the month$|^to the owner$", "GAIN"),
+    (r"^owed$|^bonds issued$|^money out$|^drawn$|^rate$", "WARN"),
+)
+
+
+def money_tone(label: str) -> str:
+    """The colour a figure takes from what its label MEANS. "" = leave it plain."""
+    import re
+    text = str(label or "").strip()
+    if not text:
+        return ""
+    tones = {"HELD": HELD, "GAIN": GAIN, "WARN": WARN, "": ""}
+    for pattern, tone in _MONEY_RULES:
+        if re.search(pattern, text, re.IGNORECASE):
+            return tones[tone]
+    return ""
+
+
+def grade_tone(grade: str) -> str:
+    """Colour for a credit grade. Unknown or unrated grades stay plain.
+
+    Unrated is deliberately NOT the loss tone: an unlisted market has no market cap to
+    divide by, so it has no grade — and painting fourteen of those red told their
+    owners they had failed one.
+    """
+    return GRADES.get(str(grade or "").strip().upper(), "")
+
+
+def backing_tone(value) -> str:
+    """Colour for a backing multiple, from the mockup's `backingRamp()`.
+
+    Continuous rather than banded, because backing is a ratio and 1.19 vs 1.21 is not
+    the difference the colour is there to show.
+    """
+    try:
+        n = float(str(value).strip().rstrip("x×"))
+    except (TypeError, ValueError):
+        return ""
+    if n >= 1.5:
+        return GAIN
+    if n >= 1.2:
+        return "#a3c47a"
+    if n >= 1.0:
+        return ACCENT
+    if n >= 0.6:
+        return WARN
+    return LOSS
+
+
 THEME_CSS = r"""
 :root{
   /* Warm Feel, from the mockup's own theme() block. */
