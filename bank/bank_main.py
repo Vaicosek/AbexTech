@@ -592,6 +592,41 @@ async def bank_balance(interaction: discord.Interaction):
     await interaction.followup.send(embed=e, ephemeral=True)
 
 
+async def _bank_money_call(op: str, interaction: discord.Interaction,
+                           amount: int, key: str):
+    """Run a shared money write off the event loop, and surface its refusals.
+
+    bank_money is synchronous and takes SQLite's write lock, so it runs in a worker
+    thread -- holding BEGIN IMMEDIATE on the event loop thread would stall every
+    other command in this bot for the duration.
+
+    Returns the result dict, or None when the user has already been told why not.
+    """
+    import asyncio as _aio
+    import bank_money as _bm
+    import ledger_v2 as _lv
+    try:
+        return await _aio.to_thread(getattr(_bm, op), str(interaction.user.id),
+                                    int(amount), key)
+    except _bm.BankRefused as e:
+        await interaction.followup.send(str(e), ephemeral=True)
+    except _lv.Replay as e:
+        # Same key already applied -- report the stored outcome, never re-run it.
+        await interaction.followup.send("That request was already applied.",
+                                        ephemeral=True)
+    except _lv.LedgerError as e:
+        await interaction.followup.send(
+            "You do not have enough available coins — coins held against a live bid "
+            "cannot be moved." if getattr(e, "code", "") == "insufficient"
+            else f"The bank declined that ({getattr(e, 'code', 'no reason given')}).",
+            ephemeral=True)
+    except Exception:
+        log.exception("[bank] %s failed", op)
+        await interaction.followup.send("The bank could not complete that.",
+                                        ephemeral=True)
+    return None
+
+
 @bank_group.command(name="deposit", description="Move coins from your wallet into savings")
 @app_commands.describe(amount="How many coins to deposit")
 
@@ -599,11 +634,18 @@ async def bank_deposit(interaction: discord.Interaction, amount: app_commands.Ra
     if not await ensure_account(interaction):
         return
     await interaction.response.defer(ephemeral=True)
-    res = await _safe(interaction, client_rs.adjust(interaction.user.id, -amount, reason="bank deposit"))
-    if res is None:
+    # ONE transaction for both halves, shared with the website (bank_money.deposit).
+    # The old path was client_rs.adjust() over HTTP and THEN bdb.add_savings(): two
+    # operations with a window between them, and no idempotency key on the adjust --
+    # so a failure after the debit took coins out of the wallet that never arrived in
+    # savings. interaction.id is the key because it is stable across Discord's own
+    # retries of the same invocation.
+    out = await _bank_money_call("deposit", interaction, amount,
+                                 f"discord-deposit-{interaction.id}")
+    if out is None:
         return
-    new_sav = bdb.add_savings(interaction.user.id, amount)
-    bdb.log(interaction.user.id, "deposit", amount, "wallet->savings")
+    new_sav = out["balance"]["savings"]
+    res = {"coins": out["balance"]["wallet"]}
     await interaction.followup.send(
         embed=ab.embed(title="Deposit complete",
                        kicker="/bank deposit",
@@ -624,17 +666,16 @@ async def bank_withdraw(interaction: discord.Interaction, amount: app_commands.R
     if not await ensure_account(interaction):
         return
     await interaction.response.defer(ephemeral=True)
-    if not bdb.try_debit_savings(interaction.user.id, amount):
-        sav = bdb.get_savings(interaction.user.id)["balance"]
-        await interaction.followup.send(
-            f"You only have {ab.coins(sav)} in savings.", ephemeral=True)
+    # ONE transaction, shared with the website (bank_money.withdraw). The old path
+    # debited savings, called out over HTTP, and hand-rolled a compensating
+    # add_savings() if that failed -- a rollback that only works if the process
+    # survives long enough to run it.
+    out = await _bank_money_call("withdraw", interaction, amount,
+                                 f"discord-withdraw-{interaction.id}")
+    if out is None:
         return
-    res = await _safe(interaction, client_rs.adjust(interaction.user.id, amount, reason="bank withdraw"))
-    if res is None:
-        bdb.add_savings(interaction.user.id, amount)
-        return
-    new_sav = bdb.get_savings(interaction.user.id)["balance"]
-    bdb.log(interaction.user.id, "withdraw", amount, "savings->wallet")
+    new_sav = out["balance"]["savings"]
+    res = {"coins": out["balance"]["wallet"]}
     await interaction.followup.send(
         # Green: coins actually reached the reader's wallet.
         embed=ab.embed(title="Withdrawal complete",

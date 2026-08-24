@@ -535,6 +535,13 @@ FINGERPRINT_FIELDS: dict[str, tuple[str, ...]] = {
 #: takeover and no release may cross — see `_claim_idempotency`.
 IN_BAND_ENDPOINTS: frozenset[str] = frozenset({
     "hold", "hold.capture", "hold.release", "transfer", "adjust",
+    # The bank's own writes (bank_money.py). In-band because the wallet move and
+    # the bank_* bookkeeping are now ONE transaction: both halves and the claim
+    # completion commit together, so `in_progress` really does mean "not applied".
+    # That was impossible while Osentar's books were in a separate bank.db.
+    # These names match what banking_web mints keys against (`banking:<purpose>`),
+    # so the same key is used end to end and a retry anywhere collapses.
+    "banking:deposit", "banking:withdraw",
 })
 
 
@@ -1833,6 +1840,47 @@ def transfer(service: str, from_user: str, to_user: str, amount: int,
         return result
 
 
+def wallet_move(conn: sqlite3.Connection, service: str, user_id: str, amount: int,
+                reason: str, key: Optional[str] = None,
+                *, respect_holds: bool = True) -> int:
+    """Apply a wallet delta INSIDE a transaction the CALLER already opened.
+
+    This is exactly the body of `adjust()` minus the transaction, and `adjust()` now
+    calls it -- so there is one implementation of "move coins and record it", not two.
+
+    It exists because a caller can now need the wallet move and its OWN bookkeeping to
+    be one atomic unit. That was impossible while Osentar's books lived in `bank.db`
+    and the coins in `restocker.db` (see `adjust`'s note on `set_flag`, which is the
+    bespoke workaround for the single case that could not wait). Both are in
+    `restocker.db` now, so a deposit can debit the wallet and credit `bank_savings` in
+    one `BEGIN IMMEDIATE` -- which also serialises ACROSS PROCESSES, unlike the
+    per-process `asyncio.Lock` the bank bot guards its money paths with today.
+
+    The caller owns the transaction, so the caller must:
+      - already be inside `_tx()` (it is not re-entrant -- do not open another);
+      - do its own bookkeeping ON THIS SAME `conn`. `bank_db`'s helpers each open
+        their own connection, so calling one here would sit outside this transaction
+        AND block on the write lock this transaction is holding.
+
+    Returns the balance after. Raises `LedgerError` exactly as `adjust` does.
+    """
+    amt = int(amount)
+    if amt == 0:
+        raise LedgerError("bad_amount", 400, "amount must be non-zero")
+    if not (reason or "").strip():
+        raise LedgerError("missing_reason", 400, "every mint must carry a reason")
+    uid = str(user_id)
+    _ensure_wallet(conn, uid)
+    _assert_not_frozen(conn, uid)
+    if amt > 0:
+        after = _credit(conn, uid, amt, counts_as_principal=True)
+    else:
+        after = _debit(conn, uid, -amt, respect_holds=respect_holds)
+    _record(conn, service=service, action="adjust", user_id=uid, delta=amt,
+            balance_after=after, reason=reason, key=key)
+    return after
+
+
 def adjust(service: str, user_id: str, amount: int, reason: str,
            key: Optional[str] = None,
            *, idem: Optional[_Idem] = None,
@@ -1867,14 +1915,7 @@ def adjust(service: str, user_id: str, amount: int, reason: str,
                           "set_flag and clear_flag in one call is ambiguous")
     uid = str(user_id)
     with _tx() as conn:
-        _ensure_wallet(conn, uid)
-        _assert_not_frozen(conn, uid)
-        if amt > 0:
-            after = _credit(conn, uid, amt, counts_as_principal=True)
-        else:
-            after = _debit(conn, uid, -amt)
-        _record(conn, service=service, action="adjust", user_id=uid, delta=amt,
-                balance_after=after, reason=reason, key=key)
+        wallet_move(conn, service, uid, amt, reason, key)
         flag_result: Optional[dict[str, Any]] = None
         if set_flag:
             flag_result = set_wallet_flag(service, uid, set_flag,

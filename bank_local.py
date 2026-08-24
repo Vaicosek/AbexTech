@@ -288,9 +288,16 @@ def _staff_collections() -> dict:
 # Dispatch
 # ══════════════════════════════════════════════════════════════════════════
 
+#: Implemented locally, in one transaction each -- see bank_money.py.
+_LIVE_WRITES = {
+    "/api/v1/savings/deposit": "deposit",
+    "/api/v1/savings/withdraw": "withdraw",
+}
+
+#: Still Discord-only. Each of these garnishes overdue debt or settles a loan, and
+#: that logic lives in bank_main's command handlers; porting it is its own change.
 _WRITE_PATHS = {
-    "/api/v1/savings/deposit", "/api/v1/savings/withdraw", "/api/v1/loan/repay",
-    "/api/v1/bond/buy", "/api/v1/bond/redeem",
+    "/api/v1/loan/repay", "/api/v1/bond/buy", "/api/v1/bond/redeem",
     "/api/v1/staff/loan/decide", "/api/v1/staff/collect",
 }
 
@@ -298,6 +305,69 @@ _WRITE_PATHS = {
 #: as the bank declining -- which is the truth -- rather than as the bank being down.
 _WRITE_REFUSAL = ("This action is not available from the website yet — "
                   "use the bank's Discord commands. (Reading is live.)")
+
+
+def _write(op: str, body: dict) -> dict:
+    """Run one money write, translating its outcomes into the API's own shapes.
+
+    Three outcomes, three shapes, and the difference matters on a banking page:
+      - a REPLAY returns the stored response verbatim with `deduped: true`. The key
+        was minted by the page and is the same end to end, so a double-click or a
+        retry anywhere in the chain collapses onto one movement of coins.
+      - a REFUSAL (not enough saved, frozen, no account, insufficient wallet) is the
+        bank answering. It is `{"ok": false, "error": ...}` -- never "the bank is
+        down", because "unavailable" on a banking page reads as "your money is gone".
+      - anything else is a real failure and says so without leaking internals.
+    """
+    try:
+        import bank_money as bmoney
+    except Exception as e:
+        log.exception("[banking] bank_money unavailable: %s", e)
+        return {"ok": False, "error": "The bank's write path is not available."}
+
+    uid = str(body.get("user_id") or "").strip()
+    key = str(body.get("idempotency_key") or "").strip()
+    if not uid:
+        return {"ok": False, "error": "No user id was supplied."}
+    if not key:
+        # Never mint one here: the caller mints it, per the house rule, so that a
+        # retry carries the SAME key. A key invented at this layer would be new on
+        # every attempt, which is idempotency theatre -- it would dedupe nothing.
+        return {"ok": False, "error": "This action was submitted without an "
+                                      "idempotency key; reload the page and retry."}
+    try:
+        amount = int(body.get("amount") or 0)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "That amount is not a whole number of coins."}
+
+    try:
+        return getattr(bmoney, op)(uid, amount, key)
+    except bmoney.BankRefused as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        # Replay and LedgerError both live in ledger_v2; import lazily so this module
+        # still loads in a process where the ledger is absent.
+        import ledger_v2 as lv
+        if isinstance(e, lv.Replay):
+            stored = dict(e.body or {})
+            stored["deduped"] = True
+            return stored
+        if isinstance(e, lv.LedgerError):
+            return {"ok": False, "error": _ledger_reason(e), "code": getattr(e, "code", None)}
+        log.exception("[banking] %s failed: %s", op, e)
+        return {"ok": False, "error": f"The bank could not complete that "
+                                      f"({type(e).__name__})."}
+
+
+def _ledger_reason(e: Any) -> str:
+    """A wallet refusal, said in the player's terms rather than the ledger's."""
+    code = str(getattr(e, "code", "") or "")
+    return {
+        "insufficient": "You do not have enough available coins — coins held against "
+                        "a live bid or auction cannot be moved.",
+        "frozen": "This wallet is frozen.",
+        "bad_amount": "That amount is not something the bank can move.",
+    }.get(code, f"The bank declined that ({code or 'no reason given'}).")
 
 
 def handle(method: str, path: str, params: Optional[dict] = None,
@@ -322,6 +392,9 @@ def handle(method: str, path: str, params: Optional[dict] = None,
 
         if path == "/api/v1/staff/collections":
             return _staff_collections()
+
+        if path in _LIVE_WRITES:
+            return _write(_LIVE_WRITES[path], body)
 
         if path in _WRITE_PATHS:
             return {"ok": False, "error": _WRITE_REFUSAL, "code": "not_implemented_locally"}
