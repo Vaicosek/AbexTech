@@ -1,0 +1,1183 @@
+"""Background task loops (extracted from Restocker_main). Started in cog_load;
+each loop's before_loop waits until the bot is ready, so starting pre-connect is fine."""
+import sys
+import discord
+
+import abex_embed as ab
+from discord.ext import commands, tasks
+
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
+import asyncio
+import time
+import os as _os
+import socket as _socket
+import secrets as _secrets
+
+core = sys.modules.get("Restocker_main") or sys.modules["__main__"]
+
+# ── Multi-instance guard ──────────────────────────────────────────────────────
+# Two bot processes on the same token cause duplicate reports/payouts (the original
+# "it sends the same thing" bug). Each instance writes a heartbeat to the shared DB;
+# if another instance's heartbeat is fresh AND advancing between our checks (i.e.
+# genuinely live, not a just-restarted stale key), we DM the owners once. Warning
+# only — never a hard refuse, so a legit restart can never lock the bot out.
+_INSTANCE_ID = f"{_socket.gethostname()}:{_os.getpid()}:{_secrets.token_hex(3)}"
+_INSTANCE_SEEN: dict = {}
+_INSTANCE_WARNED = {"done": False}
+EMPLOYEE_BATCH_LOOP_SECONDS = core.EMPLOYEE_BATCH_LOOP_SECONDS
+EMPLOYEE_ROLE_NAME = core.EMPLOYEE_ROLE_NAME
+LOYALTY_DECAY_IDLE_DAYS = core.LOYALTY_DECAY_IDLE_DAYS
+LOYALTY_DECAY_PCT_WEEKLY = core.LOYALTY_DECAY_PCT_WEEKLY
+LOYALTY_IGN_DEADLINE_DAYS = core.LOYALTY_IGN_DEADLINE_DAYS
+OrdersBrowser = core.OrdersBrowser
+WORKER_CHANNEL_ID = core.WORKER_CHANNEL_ID
+_build_market_dashboard_embed = core._build_market_dashboard_embed
+_coin_rates_for_order = core._coin_rates_for_order
+_coins_for_pieces = core._coins_for_pieces
+_get_employee_batch_lock = core._get_employee_batch_lock
+_get_ui_store = core._get_ui_store
+_get_worker_announce_lock = core._get_worker_announce_lock
+_load_balances = core._load_balances
+_load_items = core._load_items
+_load_markets = core._load_markets
+_order_is_claimed_closed = core._order_is_claimed_closed
+_revert_price_toward_fundamental = core._revert_price_toward_fundamental
+_save_balances = core._save_balances
+_send_funds_report = core._send_funds_report
+_track_batch_dm_message = core._track_batch_dm_message
+apply_weekly_interest = core.apply_weekly_interest
+bot = core.bot
+MANAGER_DM_IDS = getattr(core, "MANAGER_DM_IDS", set())
+cleanup_claimed_order_dms_scan = core.cleanup_claimed_order_dms_scan
+fmt_coin = core.fmt_coin
+fmt_qty = core.fmt_qty
+hashlib = core.hashlib
+load_orders = core.load_orders
+load_yaml = core.load_yaml
+log = core.log
+parse_iso = core.parse_iso
+remaining_to_assign = core.remaining_to_assign
+safe_dm = core.safe_dm
+save_orders = core.save_orders
+save_yaml = core.save_yaml
+update_order_messages = core.update_order_messages
+_team_perf_embed = core._team_perf_embed
+_team_post = core._team_post
+
+async def _load_orders_async():
+    """load_orders() off the event loop.
+
+    2026-08-06: Discord logged "heartbeat blocked for more than 10 seconds" with the
+    loop standing inside load_orders(), and the container sat at 100% CPU — the gateway
+    dropped, cloudflared's TLS handshakes timed out, and even `lookup localhost` failed.
+    Those are all symptoms of a starved event loop, not a network fault.
+
+    load_orders() is synchronous SQLite + a full normalisation pass over every order, and
+    the fast loops below call it every 15 seconds. It is quick on a small table, but it is
+    still CPU work sitting directly on the loop, and under any contention it becomes the
+    thing that blocks heartbeats. A worker thread costs nothing here and takes the whole
+    class of stall off the table."""
+    import asyncio as _aio
+    return await _aio.to_thread(load_orders)
+
+
+class LoopsCog(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @tasks.loop(seconds=15)
+    async def worker_announce_loop(self, ):
+        async with _get_worker_announce_lock():
+            try:
+
+
+                channel = bot.get_channel(WORKER_CHANNEL_ID)
+                if not channel or not channel.guild:
+                    return
+
+                role = discord.utils.get(channel.guild.roles, name=EMPLOYEE_ROLE_NAME)
+                mention = role.mention if role else ""
+
+                now = datetime.now(timezone.utc)
+
+                data = await _load_orders_async()
+                orders_list = data.get("orders", []) or []
+
+                ready = [
+                    o for o in orders_list
+                    if isinstance(o, dict)
+                    and not _order_is_claimed_closed(o)
+                    and not bool(o.get("worker_announced", False))
+                    and o.get("employee_announce_at")
+                    and parse_iso(o["employee_announce_at"]) <= now
+                ]
+
+                if not ready:
+                    return
+
+                ready.sort(key=lambda o: int(o.get("id", 0) or 0))
+
+                ui = data.setdefault("ui", {})
+                last_sig = ui.get("last_worker_batch_sig")
+                last_ts = ui.get("last_worker_batch_ts")
+
+                ids_sig = ",".join(str(int(o["id"])) for o in ready)
+                now_ts = int(time.time())
+
+                if last_sig == ids_sig and last_ts and now_ts - int(last_ts) < 180:
+                    return
+
+                ui["last_worker_batch_sig"] = ids_sig
+                ui["last_worker_batch_ts"] = now_ts
+
+                for o in ready:
+                    o["worker_announced"] = True
+
+                if not save_orders(data):
+                    for o in ready:
+                        o["worker_announced"] = False
+                    return
+
+                bulk_threshold = int(getattr(core, "ORDER_BULK_CARD_THRESHOLD", 12) or 12)
+                _failed_ids = []
+                if len(ready) > bulk_threshold:
+                    # BULK MODE — a full-market refill (100+ orders) posts ONE grouped
+                    # board instead of a hundred rate-limited embeds. Claims run through
+                    # /orders and the website; cards for these orders are never posted.
+                    try:
+                        await core._post_bulk_order_board(bot, channel, ready)
+                    except Exception as _be:
+                        print(f"[worker_announce_loop] bulk board failed: {_be}")
+                        _failed_ids = [int(o.get("id", 0) or 0) for o in ready]
+                else:
+                    for o in ready:
+                        try:
+                            await update_order_messages(bot, o, allow_post=True)
+                        except Exception as _pe:
+                            print(f"[worker_announce_loop] card post failed #{o.get('id')}: {_pe}")
+                            _failed_ids.append(int(o.get("id", 0) or 0))
+                # Un-strand any order whose card FAILED to post: revert worker_announced so the
+                # next loop retries it. Successfully-posted orders stay marked → no double-post.
+                if _failed_ids:
+                    _fd = await _load_orders_async()
+                    _fset = set(_failed_ids)
+                    for _fo in _fd.get("orders", []):
+                        if isinstance(_fo, dict) and int(_fo.get("id", 0) or 0) in _fset:
+                            _fo["worker_announced"] = False
+                    save_orders(_fd)
+
+                # After all order cards are posted, fan the whole open-order set out to the SW
+                # Trade Network as ONE consolidated thread. Self-throttled (≤ every
+                # NETWORK_MIN_INTERVAL_MIN min, only when the open set changed) to respect the
+                # network's 3-posts/hour cap. Best-effort.
+                if getattr(core, "NETWORK_AUTOPOST", False) and getattr(core, "NETWORK_FORUM_CHANNEL_ID", 0):
+                    try:
+                        await core._post_orders_batch_to_network(bot)
+                    except Exception:
+                        pass
+
+                lines = []
+                _markets_ping    = _load_markets().get("markets", {})
+                for o in ready[:25]:
+                    rem       = remaining_to_assign(o)
+                    item_name = o.get('item', '')
+                    # Tag with the ORDER's market (the land being restocked), never the
+                    # item's catalog home market — the catalog belongs to whichever
+                    # market first registered the item, which mis-tagged local orders
+                    # (a local Diamond build showed [Freezone] because Freezone's
+                    # upload owned Diamond's catalog entry). Local orders
+                    # (no market / main) get no tag at all.
+                    mid = str(o.get("market_id") or "")
+                    tag = ""
+                    if mid and mid != "main":
+                        mkt_name = (_markets_ping.get(mid) or {}).get("name", mid.capitalize())
+                        tag = f" `[{mkt_name}]`"
+                    lines.append(f"• **#{o['id']}** {item_name} · rem {fmt_qty(o, rem)}{tag}")
+
+                header     = "New restock requests:" if len(ready) > 1 else "New restock request:"
+                content    = f"{mention} 🔔 **{header}**\n" + "\n".join(lines)
+                dm_content = f"🔔 **{header}**\n" + "\n".join(lines)
+
+                content_hash = hashlib.sha1(content.encode("utf-8", errors="ignore")).hexdigest()
+
+                data2 = await _load_orders_async()
+                ui2 = data2.setdefault("ui", {})
+                last_hash = ui2.get("last_worker_ping_hash")
+                last_hash_ts = ui2.get("last_worker_ping_ts")
+                now_ts2 = int(time.time())
+
+                if last_hash == content_hash and last_hash_ts and now_ts2 - int(last_hash_ts) < 180:
+                    return
+
+                me = getattr(bot, "user", None)
+                if me:
+                    try:
+                        dupes = []
+                        async for msg in channel.history(limit=10, oldest_first=False):
+                            if msg.author and msg.author.id == me.id and (msg.content or "") == content:
+                                dupes.append(msg)
+                        if dupes:
+                            dupes.sort(key=lambda m: m.created_at, reverse=True)
+                            for extra in dupes[1:]:
+                                try:
+                                    await extra.delete()
+                                except Exception:
+                                    pass
+
+                            # Reload before saving — the history scan above awaited, so data2
+                            # may be stale (see the main save below for the full rationale).
+                            _d = await _load_orders_async()
+                            _u = _d.setdefault("ui", {})
+                            _u["last_worker_ping_hash"] = content_hash
+                            _u["last_worker_ping_ts"] = now_ts2
+                            save_orders(_d)
+                            return
+                    except Exception:
+                        pass
+
+                await channel.send(content, allowed_mentions=discord.AllowedMentions(
+                    everyone=False, roles=True, users=False))
+
+                import asyncio as _aio_wa
+                worker_role = discord.utils.get(channel.guild.roles, name=EMPLOYEE_ROLE_NAME)
+                if worker_role:
+                    for member in list(worker_role.members):
+                        if member.bot:
+                            continue
+                        try:
+                            await safe_dm(member, dm_content)
+                        except Exception:
+                            pass
+                        # Throttle: 60+ DMs in a tight burst is what gets a bot rate-limited.
+                        await _aio_wa.sleep(0.4)
+
+                # Do NOT save the stale pre-fanout snapshot (data2) — save_orders upserts every
+                # order row, so a claim made during the minutes-long DM loop would be reverted
+                # to unclaimed (→ double claim / double payout). Reload fresh and write ONLY
+                # the ui dedup keys this loop actually owns.
+                data3 = await _load_orders_async()
+                ui3 = data3.setdefault("ui", {})
+                ui3["last_worker_ping_hash"] = content_hash
+                ui3["last_worker_ping_ts"] = now_ts2
+                save_orders(data3)
+
+            except Exception as e:
+                print(f"[worker_announce_loop] error: {e}")
+
+    @worker_announce_loop.before_loop
+    async def _wait_ready_worker_announce(self, ):
+        await bot.wait_until_ready()
+
+    @tasks.loop(minutes=10)
+    async def claimed_dm_cleanup_loop(self, ):
+        try:
+            await cleanup_claimed_order_dms_scan(bot)
+        except Exception:
+            return
+
+    @claimed_dm_cleanup_loop.before_loop
+    async def _wait_ready_claimed_dm_cleanup(self, ):
+        await bot.wait_until_ready()
+
+    @tasks.loop(seconds=EMPLOYEE_BATCH_LOOP_SECONDS)
+    async def employee_batch_dispatch_loop(self, ):
+        async with _get_employee_batch_lock():
+            try:
+                await asyncio.sleep(3)
+
+                worker_channel = bot.get_channel(WORKER_CHANNEL_ID)
+                if not worker_channel or not getattr(worker_channel, "guild", None):
+                    return
+                guild = worker_channel.guild
+
+                employee_role = discord.utils.get(guild.roles, name=EMPLOYEE_ROLE_NAME)
+                if not employee_role:
+                    return
+
+                now = datetime.now(timezone.utc)
+
+                data = await _load_orders_async()
+                orders_list = data.get("orders", []) or []
+
+                ready = []
+                for o in orders_list:
+                    if not isinstance(o, dict):
+                        continue
+                    st = str(o.get("status", "")).lower()
+                    if st in ("fulfilled", "cancelled"):
+                        continue
+                    if bool(o.get("employee_announced", False)):
+                        continue
+                    if not o.get("employee_announce_at"):
+                        continue
+                    if parse_iso(o["employee_announce_at"]) <= now:
+                        ready.append(o)
+
+                if not ready:
+                    return
+
+                ready.sort(key=lambda o: int(o.get("id", 0) or 0))
+                show = ready[:25]
+
+                try:
+                    items_data = _load_items()
+                except Exception:
+                    items_data = {"items": {}}
+
+                lines: list[str] = []
+                for o in show:
+                    rem = remaining_to_assign(o)
+                    if rem <= 0:
+                        continue      # fully claimed — don't announce "rem 0 pcs · ≈ 0c"
+                    price_piece, _, price_barrel, _ppb = _coin_rates_for_order(o, items_data)
+                    total_rem = _coins_for_pieces(o, int(rem), items_data)
+
+                    lines.append(
+                        f"• **#{o['id']}** {o.get('item','')}\n"
+                        f"rem {fmt_qty(o, rem)} · {fmt_coin(price_piece)}c/piece · {fmt_coin(price_barrel)}c/barrel · ≈ {fmt_coin(total_rem)}c"
+                    )
+
+                # `ready` is filtered a SECOND time above (rem <= 0 is skipped), so it can
+                # be non-empty while `lines` is empty — every ready order already fully
+                # claimed. The old code still built an embed with an empty description and
+                # DM'd it to every employee: a "New Production Requests" card listing
+                # nothing. Mark them announced so they don't re-queue, and send NOTHING.
+                if not lines:
+                    for o in ready:
+                        o["employee_announced"] = True
+                    save_orders(data)
+                    log.info("[employee_batch_dispatch_loop] %d ready order(s) all fully "
+                             "claimed — nothing to announce, no DM sent.", len(ready))
+                    return
+
+                # NOT CONVERTED TO abex_embed, DELIBERATELY. This card is
+                # re-rendered by `Restocker_main._refresh_or_delete_one_batch_dm`
+                # every time one of its orders closes, and that function
+                #   * gates on `"New Production Requests" not in emb.title`,
+                #   * parses the description line-by-line for `•` … `#<digits>`
+                #     to recover which orders the digest is for, and
+                #   * rebuilds the embed with this exact title, colour and line
+                #     format.
+                # Restyling only this half gives one DM two different looks and,
+                # if the `•`/`#` line shape changed, would make the refresher
+                # think every order was done and overwrite a live digest with
+                # "Production batch complete". The conversion belongs in the same
+                # change as the refresher, which is outside this file.
+                embed = discord.Embed(
+                    title="📦 New Production Requests (batch)",
+                    description="\n".join(lines),
+                    color=discord.Color.orange()
+                )
+
+                for o in ready:
+                    o["employee_announced"] = True
+                if not save_orders(data):
+                    log.error("[employee_batch_dispatch_loop] save_orders failed; NOT sending to avoid duplicates.")
+                    return
+
+                data = await _load_orders_async()
+                store = _get_ui_store(data)
+
+                sent = 0
+                edited = 0
+                failed = 0
+
+                members = [m for m in list(employee_role.members) if not getattr(m, "bot", False)]
+
+                # Collect DM-tracking updates locally and apply them to a FRESH load after the
+                # fan-out: saving the pre-fanout snapshot would upsert every stale order row,
+                # reverting any claim made during the minutes this loop spends DMing (→ double
+                # claim / double payout). The stale `store` reads above are fine (read-only).
+                import asyncio as _aio_eb
+                dm_tracks = []
+                for member in members:
+                    await _aio_eb.sleep(0.4)   # throttle — 60+ DMs in a burst = rate-limit bait
+                    uid_str = str(int(member.id))
+                    tracked = store.get(uid_str)
+                    tracked_ids = tracked if isinstance(tracked, list) else ([tracked] if tracked else [])
+                    tracked_ids = [int(x) for x in tracked_ids if str(x).isdigit()]
+                    last_id = tracked_ids[-1] if tracked_ids else None
+
+                    try:
+                        dm = member.dm_channel or await member.create_dm()
+                        view = OrdersBrowser(show, viewer_id=int(member.id))
+
+                        if last_id:
+                            try:
+                                msg = await dm.fetch_message(int(last_id))
+                                await msg.edit(embed=embed, view=view)
+                                edited += 1
+
+                                for old_id in tracked_ids[:-1]:
+                                    try:
+                                        old_msg = await dm.fetch_message(int(old_id))
+                                        await old_msg.delete()
+                                    except Exception:
+                                        pass
+
+                                dm_tracks.append((member.id, int(last_id)))
+                                continue
+                            except Exception:
+                                pass
+
+                        msg = await dm.send(embed=embed, view=view)
+                        sent += 1
+
+                        for old_id in tracked_ids:
+                            try:
+                                old_msg = await dm.fetch_message(int(old_id))
+                                await old_msg.delete()
+                            except Exception:
+                                pass
+
+                        dm_tracks.append((member.id, int(msg.id)))
+
+                    except discord.Forbidden:
+                        failed += 1
+                    except Exception:
+                        failed += 1
+
+                fresh = await _load_orders_async()
+                for _mid, _msgid in dm_tracks:
+                    _track_batch_dm_message(fresh, _mid, _msgid)
+                save_orders(fresh)
+                log.info("[employee_batch_dispatch_loop] edited=%d sent=%d failed=%d ready=%d", edited, sent, failed, len(ready))
+
+            except Exception as e:
+                log.error("[employee_batch_dispatch_loop] error: %s", e, exc_info=True)
+
+    @employee_batch_dispatch_loop.before_loop
+    async def _before_employee_batch_dispatch_loop(self, ):
+        await bot.wait_until_ready()
+
+    @tasks.loop(seconds=60)
+    async def dividend_report_flush_loop(self, ):
+        """Post queued payout events (GEX.PR pool + shareholder dividends) to
+        #dividend-reports. The payout engines run in sync code and can only queue;
+        this loop is the async half. Empties the queue on success, keeps it on failure.
+
+        House colour rule, since all three cards here are about coins moving:
+        GREEN is only ever money actually RECEIVED by the people reading it, so
+        the two payout cards take it and the bond card does not — a bond event is
+        a report about a liability, and a bad one is a loss.
+        """
+        try:
+            import json as _json
+            import Restocker_db as _db
+            raw = _db.get_config("pending_dividend_posts")
+            if not raw:
+                return
+            try:
+                q = _json.loads(raw)
+            except Exception:
+                _db.set_config("pending_dividend_posts", "[]")
+                return
+            if not isinstance(q, list) or not q:
+                return
+            ch_id = int(getattr(core, "DIVIDEND_REPORTS_CHANNEL_ID", 0) or 0)
+            channel = bot.get_channel(ch_id) if ch_id else None
+            if channel is None:
+                return                      # channel not visible yet — keep the queue
+            markets = core._load_markets().get("markets", {}) or {}
+            remaining = []
+            for entry in q:
+                try:
+                    mid = str(entry.get("market_id") or "")
+                    label = None
+                    try:
+                        import Restocker_db as _db2
+                        label = _db2.get_config(f"stock_label:{mid}")
+                    except Exception:
+                        pass
+                    mname = label or (markets.get(mid) or {}).get("name", mid)
+                    month = entry.get("month", "?")
+                    if entry.get("type") == "bond_event":
+                        emb = ab.embed(
+                            title=str(entry.get("title") or "Bond event"),
+                            desc="\n".join(entry.get("lines") or [])[:4000],
+                            foot="Item-collateralized corporate bond",
+                            colour=ab.LOSS if entry.get("bad") else ab.NEUTRAL)
+                    elif entry.get("type") == "investor_pool":
+                        net = float(entry.get("net") or 0)
+                        pool = float(entry.get("pool") or 0)
+                        pool_pct = float(entry.get("pool_pct") or 0)
+                        paid = entry.get("paid") or []
+                        emb = ab.embed(
+                            title=f"GEX.PR profit share — {mname} · {month}",
+                            desc=f"Paid to {len(paid)} preferred holder(s).",
+                            band=[("Net profit", ab.coins(net)),
+                                  ("Pool share", f"{pool_pct:g}%"),
+                                  ("Paid out", ab.coins(pool))],
+                            groups=[("Holders",
+                                     "\n".join(f"<@{uid}> — {ab.coins(amt)}"
+                                               for uid, amt in paid[:20])[:1024])],
+                            foot="Paid automatically when monthly results record",
+                            colour=ab.GAIN)
+                    else:
+                        emb = ab.embed(
+                            title=f"Shareholder dividend — {mname} · {month}",
+                            desc="Paid from the market treasury to all common "
+                                 "shareholders.",
+                            band=[("Total paid",
+                                   ab.coins(int(entry.get("total") or 0))),
+                                  ("Per share",
+                                   f"{ab.coins(float(entry.get('per_share') or 0), 4)} "
+                                   f"per share"),
+                                  ("Holders",
+                                   f"{int(entry.get('holders') or 0)}")],
+                            colour=ab.GAIN)
+                    await channel.send(embed=emb)
+                    await asyncio.sleep(0.5)
+                except Exception as _pe:
+                    remaining.append(entry)
+                    log.warning("[dividend_flush] post failed: %s", _pe)
+            _db.set_config("pending_dividend_posts", _json.dumps(remaining))
+        except Exception as e:
+            log.warning("[dividend_flush] loop error: %s", e)
+
+    @dividend_report_flush_loop.before_loop
+    async def _before_dividend_report_flush_loop(self, ):
+        await bot.wait_until_ready()
+
+    @tasks.loop(minutes=30)
+    async def bond_service_loop(self, ):
+        """Monthly bond coupons + maturities (item-collateralized corporate bonds).
+        All real work is sync in core._service_bonds(); announcements ride the
+        dividend-report queue."""
+        try:
+            core._service_bonds()
+        except Exception as e:
+            log.warning("[bonds] service loop error: %s", e)
+        try:
+            core._accrue_vault_retention()      # 10% of monthly net → mandatory vault due
+        except Exception as e:
+            log.warning("[vault] accrual error: %s", e)
+        try:
+            core._check_rating_changes()        # ratings-agency upgrade/downgrade posts
+        except Exception as e:
+            log.warning("[ratings] check error: %s", e)
+        try:
+            core._monthly_investor_report()     # first run each month per listing
+        except Exception as e:
+            log.warning("[report] monthly report error: %s", e)
+        # Monthly ETF quality rebalance: composition-change rebalances are event-driven,
+        # but quality DRIFTS continuously (traffic accrues, inventories move, treasuries
+        # fill). Once a month the fund re-tracks its defensive weights so it's always
+        # holding what the hard data says it should.
+        try:
+            import Restocker_db as _db
+            from datetime import datetime as _dt, timezone as _tz
+            _cur = _dt.now(_tz.utc).strftime("%Y-%m")
+            if (_db.get_config("etf_last_quality_rebalance") or "") != _cur:
+                r = core._etf_rebalance("monthly_quality")
+                _db.set_config("etf_last_quality_rebalance", _cur)
+                if r.get("changes"):
+                    core._queue_dividend_post({
+                        "type": "bond_event",
+                        "title": f"⚖️ ABX Index Fund — monthly quality rebalance · {_cur}",
+                        "lines": [f"{'Bought' if d > 0 else 'Sold'} `{abs(d):,}` sh {m} (`{t:,}` 🪙)"
+                                  for _k, m, d, t in r["changes"][:12]] or ["No adjustments needed."]})
+        except Exception as e:
+            log.warning("[etf] monthly quality rebalance error: %s", e)
+
+    @bond_service_loop.before_loop
+    async def _before_bond_service_loop(self, ):
+        await bot.wait_until_ready()
+
+    @tasks.loop(hours=24)
+    async def weekly_interest_loop(self, ):
+        try:
+            applied_users, total_paid = apply_weekly_interest(force=False)
+            if applied_users <= 0 or total_paid <= 0:
+                return
+        except Exception:
+            return
+
+    @weekly_interest_loop.before_loop
+    async def _wait_ready_interest(self, ):
+        await bot.wait_until_ready()
+
+    @tasks.loop(hours=24)
+    async def weekly_funds_report_loop(self, ):
+        # Fully guarded: an unhandled exception would permanently stop this loop.
+        try:
+            data = _load_balances()
+            meta = data.setdefault("meta", {})
+            last = meta.get("last_funds_report_week")
+            now = datetime.now(timezone.utc)
+            iso_week = f"{now.isocalendar().year}-W{now.isocalendar().week}"
+            if last == iso_week:
+                return
+            if now.weekday() != 0:
+                return
+            # NOTE: no hour gate. tasks.loop(hours=24) ticks at whatever time-of-day the bot
+            # booted, so an "early-UTC only" window could simply never coincide with the tick
+            # and the report would never send. Weekday + the week-key above are sufficient.
+            ok = await _send_funds_report(bot)
+            if ok:
+                # AUDIT FIX (high): writing the PRE-AWAIT snapshot back reverted every
+                # balance change users made while the report was in flight (a /stock buy
+                # during the await had its coins resurrected — a mint). Re-load fresh
+                # state and let only the meta marker ride this write.
+                fresh = _load_balances()
+                fresh.setdefault("meta", {})["last_funds_report_week"] = iso_week
+                _save_balances(fresh)
+        except Exception as e:
+            log.warning("[weekly_funds_report_loop] %s", e)
+
+    @weekly_funds_report_loop.before_loop
+    async def _wait_ready_weekly_report(self, ):
+        await bot.wait_until_ready()
+
+    @tasks.loop(hours=24)
+    async def loyalty_decay_loop(self, ):
+        """Apply point decay to users inactive for > LOYALTY_DECAY_IDLE_DAYS."""
+        try:
+            import Restocker_db as _db_decay
+            now = datetime.now(timezone.utc)
+            # LOYALTY_DECAY_PCT_WEEKLY is a WEEKLY rate but this loop ticks DAILY — without a
+            # week guard an idle user lost 20% per DAY (0.8^7 ≈ 79%/week instead of 20%).
+            # Same once-per-week key pattern as apply_weekly_interest.
+            iso_week = f"{now.isocalendar().year}-W{now.isocalendar().week}"
+            if _db_decay.get_config("last_loyalty_decay_week") == iso_week:
+                return
+            idle_threshold = (now - timedelta(days=LOYALTY_DECAY_IDLE_DAYS)).isoformat()
+            all_loy = _db_decay.get_all_loyalty()
+            updates = []
+            for row in all_loy:
+                last = row.get("last_activity")
+                if not last:
+                    continue
+                if last >= idle_threshold:
+                    continue
+                pts = float(row.get("points", 0))
+                if pts <= 0:
+                    continue
+                new_pts = max(0.0, pts * (1.0 - LOYALTY_DECAY_PCT_WEEKLY / 100.0))
+                if abs(new_pts - pts) > 0.5:
+                    updates.append((new_pts, row["user_id"]))
+            if updates:
+                _db_decay.update_loyalty_points_bulk(updates)
+                log.info("[loyalty] Decay applied to %d users", len(updates))
+            _db_decay.set_config("last_loyalty_decay_week", iso_week)
+        except Exception as e:
+            log.warning("[loyalty] decay_loop failed: %s", e)
+
+    @loyalty_decay_loop.before_loop
+    async def _before_loyalty_decay(self, ):
+        await bot.wait_until_ready()
+
+    @tasks.loop(hours=24)
+    async def ign_deadline_loop(self, ):
+        """Remove employee role from users who didn't register IGN within deadline."""
+        try:
+            import Restocker_db as _db_ign_dl
+            now = datetime.now(timezone.utc).isoformat()
+            overdue = [p for p in _db_ign_dl.get_all_ign_pending() if p["deadline"] < now]
+            for pending in overdue:
+                uid = int(pending["user_id"])
+                # SAFETY: never strip someone who DID register. Pending-row cleanup is spread
+                # across several registration paths and one missed row here would cost a real
+                # employee their role — re-check the registry and self-heal the stale row.
+                if _db_ign_dl.get_ign(str(uid)):
+                    _db_ign_dl.delete_ign_pending(str(uid))
+                    continue
+                guild = bot.get_guild(int(pending["guild_id"]))
+                if not guild:
+                    continue
+                member = guild.get_member(uid)
+                if member:
+                    role = guild.get_role(int(pending["role_id"]))
+                    if role and role in member.roles:
+                        try:
+                            await member.remove_roles(role, reason="IGN not registered within 3 days")
+                            await member.send(
+                                f"⚠️ Your **{role.name}** role was removed because you didn't register "
+                                f"your in-game username within {LOYALTY_IGN_DEADLINE_DAYS} days.\n"
+                                f"Contact a manager to be reinstated."
+                            )
+                            log.info("[ign] Removed role %s from %s (deadline passed)", role.name, member)
+                        except Exception:
+                            pass
+                _db_ign_dl.delete_ign_pending(str(uid))
+        except Exception as e:
+            log.warning("[ign] deadline_loop failed: %s", e)
+
+    @ign_deadline_loop.before_loop
+    async def _before_ign_deadline(self, ):
+        await bot.wait_until_ready()
+
+    @tasks.loop(hours=24)
+    async def stock_reversion_loop(self, ):
+        """Daily mean-reversion pass over every public market."""
+        try:
+            import Restocker_db as _db
+            for mid in list(_db.get_public_markets().keys()):
+                try:
+                    _revert_price_toward_fundamental(mid)
+                except Exception as e:
+                    log.warning("[stock_reversion_loop] %s: %s", mid, e)
+        except Exception as e:
+            log.warning("[stock_reversion_loop] %s", e)
+
+    @stock_reversion_loop.before_loop
+    async def _before_stock_reversion(self, ):
+        await bot.wait_until_ready()
+
+    @tasks.loop(minutes=5)
+    async def stock_dashboard_loop(self, ):
+        """Keep the registered market dashboard message fresh."""
+        try:
+            # OFF THE EVENT LOOP. This walks every public market and, for each one,
+            # _backing_rating -> _market_quality -> _db.load_orders() — a FULL order
+            # load and normalisation PER MARKET. On the live bot that held the loop
+            # long enough for Discord to log "heartbeat blocked for more than 10
+            # seconds", which cascaded into gateway invalidation, cloudflared TLS
+            # timeouts and DNS lookups failing. The work is unchanged; it just no
+            # longer happens on the thread that has to answer heartbeats.
+            await asyncio.to_thread(core._snapshot_market_index, True)   # Abexilas index
+        except Exception:
+            pass
+        try:
+            import Restocker_db as _dbrb
+            if _dbrb.get_config("etf_rebalance_pending") == "1":
+                _dbrb.set_config("etf_rebalance_pending", "0")
+                if core._etf_nav().get("units", 0) > 0:
+                    core._etf_rebalance("composition_change")
+        except Exception as e:
+            log.warning("[etf-rebalance loop] %s", e)
+        try:
+            state = load_yaml("stock_dashboard.yml", {}) or {}
+            ch_id, msg_id = state.get("channel_id"), state.get("message_id")
+            if not ch_id or not msg_id:
+                return
+            channel = bot.get_channel(int(ch_id))
+            if channel is None:
+                return
+            try:
+                msg = await channel.fetch_message(int(msg_id))
+            except discord.NotFound:
+                save_yaml("stock_dashboard.yml", {})
+                return
+            await msg.edit(embed=_build_market_dashboard_embed())
+        except Exception as e:
+            log.warning("[stock_dashboard_loop] %s", e)
+
+    @stock_dashboard_loop.before_loop
+    async def _wait_ready_stock_dashboard(self, ):
+        await bot.wait_until_ready()
+
+    @tasks.loop(hours=24)
+    async def team_digest_loop(self, ):
+        # Whole body guarded: an unhandled exception (e.g. a transient "database is locked"
+        # from get_config/get_team_settings) would permanently stop this loop — tasks.loop
+        # only auto-retries connection errors. Also: no hour gate — the daily tick lands at
+        # boot time-of-day, so a narrow window could never coincide and the digest would
+        # never send. Monday + the week-key are sufficient.
+        try:
+            import Restocker_db as _db
+            now = datetime.now(timezone.utc)
+            iso_week = f"{now.isocalendar().year}-W{now.isocalendar().week}"
+            if _db.get_config("last_team_digest_week") == iso_week:
+                return
+            if now.weekday() != 0:      # Mondays only
+                return
+            try:
+                managers = sorted({r["manager_id"] for r in _db.get_all_team_perf(None)})
+            except Exception:
+                managers = []
+            posted = 0
+            for mgr in managers:
+                try:
+                    st = _db.get_team_settings(mgr)
+                    if not st or not ((st.get("webhook_url") or "").strip() or (st.get("channel_id") or "").strip()):
+                        continue
+                    embed = _team_perf_embed(mgr, 7)
+                    ok = await _team_post(mgr, content="📅 Weekly team performance digest", embed=embed)
+                    if ok:
+                        posted += 1
+                except Exception as e:
+                    log.warning("[team-digest] %s failed: %s", mgr, e)
+            _db.set_config("last_team_digest_week", iso_week)
+            log.info("[team-digest] posted %d team digest(s)", posted)
+        except Exception as e:
+            log.warning("[team-digest] loop error: %s", e)
+
+    @team_digest_loop.before_loop
+    async def _wait_ready_team_digest(self, ):
+        await bot.wait_until_ready()
+
+    @tasks.loop(hours=1)
+    async def db_backup_loop(self, ):
+        import os, glob, asyncio as _aio
+        # Ticks hourly but only writes once per DB_BACKUP_EVERY_HOURS-hour window (default 3 →
+        # ~8 snapshots/day), gated by a time-bucket key so a "database is locked" hiccup can't
+        # permanently stop it. The first tick after a (re)start backs up if the current window
+        # hasn't been captured yet — so you get a fresh restore point right after every restart,
+        # which is exactly when things tend to go wrong.
+        try:
+            import Restocker_db as _db
+            now = datetime.now(timezone.utc)
+            every = max(1, int(getattr(core, "DB_BACKUP_EVERY_HOURS", 3)))
+            bucket = now.strftime("%Y-%m-%d") + f"_{now.hour // every}"
+            if _db.get_config("last_db_backup_bucket") == bucket:
+                return
+            os.makedirs("backups", exist_ok=True)
+            dest = os.path.join("backups", f"restocker_{now.strftime('%Y%m%d_%H%M%S')}.db")
+            await _aio.to_thread(_db.backup_database, dest)
+            keep = int(getattr(core, "DB_BACKUP_KEEP", 56))   # ~1 week at 8/day (3-hourly)
+            files = sorted(glob.glob(os.path.join("backups", "restocker_*.db")))
+            for f in files[:-keep] if keep > 0 else []:
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
+            _db.set_config("last_db_backup_bucket", bucket)
+            log.info("[db-backup] wrote %s (every %dh, retain %d)", dest, every, keep)
+        except Exception as e:
+            log.warning("[db-backup] failed: %s", e)
+
+    @db_backup_loop.before_loop
+    async def _wait_ready_db_backup(self, ):
+        await bot.wait_until_ready()
+
+    @tasks.loop(seconds=30)
+    async def instance_heartbeat_loop(self, ):
+        """Detect a second bot process on the same token (root cause of duplicate
+        reports/payouts). Each instance writes instance_hb:<id>=<epoch>; we warn the
+        owners ONCE if another id's heartbeat is fresh AND advanced since our last look
+        (proves it's live, not a just-restarted stale key). Warning only, never a refuse."""
+        try:
+            import Restocker_db as _db, time as _t
+            now = int(_t.time())
+            try:
+                # Also off-loop: this was observed blocking heartbeats for over 20
+                # seconds — not because the query is heavy, but because it waits on
+                # the SQLite lock the index snapshot above was holding.
+                allcfg = (await asyncio.to_thread(_db.get_all_config)) or {}
+            except Exception:
+                allcfg = {}
+            live_others = []
+            for k, v in allcfg.items():
+                if not str(k).startswith("instance_hb:"):
+                    continue
+                oid = str(k)[len("instance_hb:"):]
+                if oid == _INSTANCE_ID:
+                    continue
+                try:
+                    ots = int(v)
+                except (TypeError, ValueError):
+                    continue
+                if now - ots > 86400:          # prune week-dead keys occasionally
+                    try: _db.delete_config(k)
+                    except Exception: pass
+                    continue
+                if now - ots < 75:
+                    prev = _INSTANCE_SEEN.get(oid)
+                    if prev is not None and ots > prev:   # actively updating -> genuinely live
+                        live_others.append(oid)
+                    _INSTANCE_SEEN[oid] = ots
+            if live_others and not _INSTANCE_WARNED["done"]:
+                _INSTANCE_WARNED["done"] = True
+                msg = ("⚠️ **Another bot instance appears to be running** on this token "
+                       f"(`{live_others[0]}`). This one is `{_INSTANCE_ID}`. Two instances cause "
+                       "duplicate reports and double payouts — shut one down (check Wispbyte + any local run).")
+                log.warning("[instance] %s", msg.replace("**", ""))
+                for _mid in MANAGER_DM_IDS:
+                    try:
+                        u = await bot.fetch_user(int(_mid))
+                        await u.send(msg)
+                    except Exception:
+                        pass
+            try:
+                _db.set_config(f"instance_hb:{_INSTANCE_ID}", str(now))
+            except Exception:
+                pass
+        except Exception as e:
+            log.debug("[instance] heartbeat failed: %s", e)
+
+    @instance_heartbeat_loop.before_loop
+    async def _wait_ready_instance_hb(self, ):
+        await bot.wait_until_ready()
+
+    # ── Crimson Bank monthly statement ───────────────────────────────────────
+    @tasks.loop(hours=6)
+    async def bank_report_loop(self):
+        """Once a month, post the closed month's earnings statement to Crimson Bank.
+
+        Guarded per month in bot_config so restarts and a second instance can never
+        double-post to someone else's server. On the very first run after deploy it
+        marks the already-closed month as sent WITHOUT posting — otherwise enabling
+        this would fire an unannounced statement into a third party's channel for a
+        month nobody agreed to report."""
+        try:
+            import Restocker_db as _db
+            now = datetime.now(timezone.utc)
+            first = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            closed = (first - timedelta(days=1)).strftime("%Y-%m")
+            if (now - first) < timedelta(hours=6):
+                return                      # let late final-day scans land first
+            flag = f"bank_report:{closed}"
+            if str(_db.get_config(flag) or "") == "done":
+                return
+            if not str(_db.get_config("bank_report_bootstrapped") or "").strip():
+                # First deploy: adopt the current backlog silently, start next month.
+                _db.set_config(flag, "done")
+                _db.set_config("bank_report_bootstrapped", "1")
+                log.info("[bank report] first run — %s marked as already reported, "
+                         "statements begin with the next closed month", closed)
+                return
+            cid = core._bank_report_channel_id()
+            if not cid:
+                return
+            body = core.build_bank_earnings_report(closed)
+
+            # Webhook first: it needs no bot invite into the lender's server. Only fall
+            # back to a channel send when no webhook is configured.
+            _wh = core._bank_report_webhook()
+            if _wh:
+                import aiohttp as _ah
+                try:
+                    async with _ah.ClientSession() as _s:
+                        async with _s.post(_wh, json={"content": body[:1900],
+                                                      "allowed_mentions": {"parse": []}}) as _r:
+                            if _r.status not in (200, 204):
+                                log.error("[bank report] webhook returned %s — statement for %s "
+                                          "was NOT sent.", _r.status, closed)
+                                return
+                except Exception as e:
+                    log.error("[bank report] webhook post failed (%s) — statement for %s was "
+                              "NOT sent, will retry.", e, closed)
+                    return
+                _db.set_config(flag, "done")
+                log.info("[bank report] %s statement posted via webhook", closed)
+                return
+
+            chan = bot.get_channel(cid)
+            if chan is None:
+                try:
+                    chan = await bot.fetch_channel(cid)
+                except Exception as e:
+                    # Loud: this posts to a server we do not own, so a silent failure
+                    # would look like the statement was filed when it never was.
+                    log.error("[bank report] CANNOT REACH CHANNEL %s (%s). Statement for "
+                              "%s was NOT sent. Check the bot is in that server and has "
+                              "View Channel + Send Messages.", cid, e, closed)
+                    return
+            await chan.send(body, allowed_mentions=discord.AllowedMentions.none())
+            _db.set_config(flag, "done")
+            log.info("[bank report] %s statement posted to #%s", closed, cid)
+        except Exception as e:
+            log.error("[bank report] failed: %s", e, exc_info=True)
+
+    @bank_report_loop.before_loop
+    async def _wait_ready_bank_report(self):
+        await bot.wait_until_ready()
+
+    # ── Standing split rules: finish anything that was interrupted ───────────
+    @tasks.loop(minutes=5)
+    async def split_resume_loop(self):
+        """Resume split runs that were interrupted, and name the ones nobody can.
+
+        Four candidate states and all four are real: a run parked in `unknown`
+        because its commit outcome was ambiguous; a run left `claimed` because its
+        money transaction rolled back; a `pending_funds` run on a `defer` account
+        waiting for a top-up; and a `pending` run minted by a process that died
+        before it could claim. In every one of them the plan is already pinned, so
+        the retry pays the same people the same integers.
+
+        NOT deadline-gated and not gated on anything else either (DECISIONS.md,
+        'Land resume sweep — un-gate it'). A run with a pinned plan is unfinished
+        work regardless of when it was created, and the whole reason it exists is
+        that something already went wrong.
+
+        Off the event loop: `resume_pending` opens real write transactions and a
+        money transaction blocking heartbeats is how the instance heartbeat loop
+        started reporting phantom second instances.
+        """
+        try:
+            import split_rules
+        except Exception:
+            return                                  # not deployed — nothing to do
+        try:
+            out = await asyncio.to_thread(split_rules.resume_pending, 25)
+        except Exception as e:
+            log.warning("[split] resume sweep failed: %s", e)
+            return
+        if any(out.get(k) for k in ("applied", "refused", "still_unknown", "errors")):
+            log.info("[split] resume sweep: %s", out)
+        try:
+            stuck = await asyncio.to_thread(split_rules.stuck_runs, 900.0)
+        except Exception:
+            stuck = []
+        if stuck:
+            # A run this sweep could not resolve is coins that are provably in the
+            # right account and provably not distributed. Silent is the one thing
+            # it must not be.
+            log.error("[split] %d run(s) need a human: %s", len(stuck),
+                      ", ".join(f"{r['run_id'][:14]}… {r['state']} "
+                                f"{r['source_account']} {r['amount_in']}"
+                                for r in stuck[:5]))
+        try:
+            unrouted = await asyncio.to_thread(split_rules.unrouted_runs)
+        except Exception:
+            unrouted = []
+        if unrouted:
+            # ERROR, at the same rate as `stuck`, and DELIBERATELY not the
+            # treatment `parked_runs` gets. The distinction is whether anything
+            # will ever retry it on its own:
+            #   parked  — `pending_funds` on a `defer` account. Not broken; the
+            #             sweep above picks it up the moment it is topped up, so
+            #             shouting every five minutes is noise. `/splits runs`.
+            #   stuck   — the sweep cannot resolve it. A human must.
+            #   unrouted— an income event whose only run REFUSED. Nothing will
+            #             re-plan it, because a re-plan needs a re-offer and
+            #             `land_commission` offers a settled lot exactly ONCE
+            #             (see `unrouted_runs` / the module docstring). It was
+            #             visible only in `/splits runs`, i.e. only if somebody
+            #             happened to look. That is the state that has to shout.
+            log.error("[split] %d commission(s) UNROUTED — nothing will re-plan "
+                      "these on its own; fix the rules and re-offer: %s",
+                      len(unrouted),
+                      ", ".join(f"{r['run_id'][:14]}… {r['source_account']} "
+                                f"{r['amount_in']} ({r.get('reason') or 'refused'})"
+                                for r in unrouted[:5]))
+
+    @split_resume_loop.before_loop
+    async def _wait_ready_split_resume(self):
+        await bot.wait_until_ready()
+
+    @tasks.loop(hours=6)
+    async def month_close_report_loop(self):
+        """Month-end closing post: once per market per month, after a month ends, post the
+        full report (embed + workbook) for the JUST-CLOSED month to that market's bound
+        channel. Guarded per market+month in bot_config, so restarts/instances never
+        double-post. Markets with no recorded data for the month are skipped silently."""
+        try:
+            import io as _io
+            import Restocker_db as _db
+            now = datetime.now(timezone.utc)
+            first_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            closed = (first_of_month - timedelta(days=1)).strftime("%Y-%m")   # e.g. "2026-07"
+            # small grace period: only start posting 6h into the new month, so late
+            # final K-scans from the old month land first
+            if (now - first_of_month) < timedelta(hours=6):
+                return
+            markets = (core._load_markets().get("markets", {}) or {})
+            for mid, m in markets.items():
+                if not isinstance(m, dict) or not m.get("active", True):
+                    continue
+                flag = f"month_close:{mid}:{closed}"
+                if str(_db.get_config(flag) or "") == "done":
+                    continue
+                months = (core._load_csn_for_market(mid) or {}).get("months", {}) or {}
+                md = months.get(closed)
+                if not isinstance(md, dict) or not (md.get("items") or {}):
+                    _db.set_config(flag, "done")     # nothing recorded — don't recheck forever
+                    continue
+                chan_id = m.get("report_channel_id")
+                channel = bot.get_channel(int(chan_id)) if chan_id else None
+                if channel is None:
+                    continue                          # unbound market — leave flag unset, retry later
+                items = md.get("items") or {}
+                income = float(md.get("income", 0) or 0)
+                spent = float(md.get("spent", 0) or 0)
+                label = md.get("label", closed)
+                name = m.get("name", mid)
+                title = f"📕 Month closed — {name} · {label}"
+                try:
+                    embed = core._build_csn_compact_embed(title, items, income, spent, mid, closed)
+                    embed.set_footer(text=f"Automatic month-end closing report • {name}")
+                    files = []
+                    xb = core._build_csn_xlsx(title, name, closed, items, income, spent, market_id=mid)
+                    if xb:
+                        files = [discord.File(_io.BytesIO(xb),
+                                              filename=f"closing_{mid}_{closed}.xlsx")]
+                    await channel.send(embed=embed, files=files)
+                    _db.set_config(flag, "done")
+                except Exception as e:
+                    core.log.warning("[month close] post failed for %s: %s", mid, e)
+                await asyncio.sleep(2)               # gentle between markets
+        except Exception as e:
+            core.log.warning("[month close] loop failed: %s", e)
+
+    @month_close_report_loop.before_loop
+    async def _wait_ready_month_close(self):
+        await bot.wait_until_ready()
+
+    def _all_loops(self):
+        return (self.worker_announce_loop, self.claimed_dm_cleanup_loop, self.employee_batch_dispatch_loop,
+                self.dividend_report_flush_loop, self.bond_service_loop,
+                self.weekly_interest_loop, self.weekly_funds_report_loop, self.loyalty_decay_loop,
+                self.ign_deadline_loop, self.stock_reversion_loop, self.stock_dashboard_loop,
+                self.team_digest_loop, self.db_backup_loop, self.instance_heartbeat_loop,
+                self.month_close_report_loop, self.bank_report_loop,
+                self.split_resume_loop)
+
+    def _start_loops(self):
+        for _lp in self._all_loops():
+            if not _lp.is_running():
+                _lp.start()
+
+    async def cog_load(self):
+        # NOTE: cog_load runs during load_extension, which happens BEFORE bot.start().
+        # Starting the loops here made each before_loop call wait_until_ready() while the
+        # client was still uninitialised -> RuntimeError "Client has not been properly
+        # initialised" -> every loop died at boot (no order posts, no employee DMs, no
+        # dashboard/report/backup loops). So only start here if the bot is ALREADY ready
+        # (e.g. a live cog reload); the normal boot path starts them from on_ready below.
+        if self.bot.is_ready():
+            self._start_loops()
+
+    def _register_split_resolver(self):
+        """Teach `split_rules` how to enumerate a Discord role — or that it can't.
+
+        THE RULE IS `== 0`, NEVER `not n` (DECISIONS.md NEW-5, and the bank paid
+        for it once already). Restocker does NOT request the privileged members
+        intent, so `role.members` is whatever happens to be in the member cache —
+        for a role with 40 holders that might be 3. Returning it as a fact would
+        pay 100% of a role's share to those 3. So:
+
+            role not found in any guild  -> None   ("cannot say")
+            members intent OFF           -> None   ("cannot say")
+            role found, intent on, empty -> []     (a FACT: nobody holds it)
+
+        `None` makes a `role` rule refuse safely and retryably; `[]` makes it
+        contribute zero and leave the coins in the source. Neither pays anybody.
+        If John turns the members intent on, this starts answering and role-based
+        rules become usable with no other change.
+        """
+        try:
+            import split_rules
+        except Exception:
+            return
+
+        def resolve(role_id):
+            try:
+                intents = getattr(bot, "intents", None)
+                if not bool(getattr(intents, "members", False)):
+                    return None                  # cannot say — see the docstring
+                for g in bot.guilds:
+                    role = g.get_role(int(role_id))
+                    if role is not None:
+                        return [str(m.id) for m in role.members]
+            except Exception:
+                return None
+            return None                          # no guild has this role
+        split_rules.set_member_resolver(resolve)
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        # Fires after login -> wait_until_ready() now returns instantly, loops run for real.
+        self._register_split_resolver()
+        self._start_loops()
+
+    def cog_unload(self):
+        for _lp in self._all_loops():
+            _lp.cancel()
+
+
+async def setup(bot):
+    await bot.add_cog(LoopsCog(bot))

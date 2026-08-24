@@ -1,0 +1,117 @@
+# ── Live data — NEVER commit these ───────────────────────────────────────────
+# The bot writes to restocker.db constantly. Committing it means every push carries
+# a stale snapshot, and every server pull fights (or overwrites) the live database.
+# It stays on disk; it just must not travel through git.
+restocker.db
+restocker.db-journal
+restocker.db-wal
+restocker.db-shm
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Automatic DB backups (see db_backup_loop) — local to each machine.
+backups/
+
+# ── Runtime state the bot writes ─────────────────────────────────────────────
+# The DB is the source of truth; these are its write-only mirrors and would cause
+# the same pull conflicts if tracked. Some of them also hold PLAYER DATA — real
+# Discord ids next to coin balances — and a rule here does nothing about a file
+# git is already tracking. `data/state/balances.yml` and `data/state/web_user_prefs.yml`
+# have been in this repo since before these rules existed; untracking them takes
+# `git rm --cached`, and clearing them out of the history takes filter-repo.
+data/state/*
+data/csn_history/
+data/exports/
+# Restore snapshots: a point-in-time copy of market state, written by hand during
+# an incident. Local to whoever made it.
+data/restore_*/
+
+# EXCEPTIONS — hand-maintained CONFIG the bot only READS. These must travel to the
+# server through git like code does, so they are excepted from `data/state/*` above.
+!data/state/brew_effects_manual.yml
+!data/state/brew_aliases.yml
+!data/state/market_tickers.yml
+
+# Secrets / environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# Editor / OS junk
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# working files (Claude)
+*.xlsx
+deploy.bat
+deploy_log.txt
+.fuse_hidden*
+
+# ── Scratch, backups and tooling leftovers ───────────────────────────────────
+# lock files moved aside by tooling — never belongs in git.
+# Git creates .git/index.lock and removes it a moment later; a bridge that cannot
+# delete leaves it behind, and GitHub Desktop then refuses to commit. They get
+# moved here instead.
+_git_stale_locks/
+restocker.log
+*.log
+# scratch/backup copies — kept on disk, never pushed to the server
+_to_delete/
+_baseline/
+_pre_audit_backup_*/
+# transfer scratch dirs — never belong in git
+_xfer*/
+
+# Cowork transfer scratch
+_incoming/
+Restocker_web.py.bak.*
+*.bak
+*.bak.*
+
+# Bundles and archives. `vtech_bundle.zip` is 21MB of working tree and arrived
+# truncated once already; nothing in this repo should be a zip.
+*.zip
+
+# ── Things that were tracked before these rules existed ──────────────────────
+# Each of these needs `git rm --cached` as well; a rule here only stops them
+# coming BACK. See the untrack list in the handoff.
+#
+# The Windows tunnel binary. 52MB, and the code never runs it: `_start_cloudflared`
+# execs `./cloudflared` — the Linux binary — so the .exe is local-dev weight only
+# and the server downloads its own.
+cloudflared.exe
+cloudflared
+# Dead mockups, superseded by abex_screens.py.
+dashboard_redesign_*.html
+# A one-off Windows helper that has already served its purpose.
+untrack_db.bat
+# Reports and workbooks: outputs, not source. `earnings_extended.xlsx` appears in
+# Restocker_main only as a provenance STRING ("restore:earnings_extended.xlsx"),
+# never opened, so untracking it changes no behaviour.
+*.docx
+csn_stock_MERGED.csv
+
+
+# ── AbexTech monorepo ────────────────────────────────────────────────────────
+# Three bots, three tokens, three guilds, one checkout. Each keeps its own env
+# file next to its own entry point; none of them travel through git.
+bank/.env
+stakes/.env
+stakes/channels.json
+bank/bank.db
+
+# leftover from the old Restocker repo; nothing to do in a fresh history
+_untrack.bat

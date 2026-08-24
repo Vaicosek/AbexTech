@@ -1,0 +1,776 @@
+"""
+abex_live.py — the live rows behind the Abex screens.
+
+`abex_data.py` holds the design's sample rows; the screens read them so the design
+could be looked at before anything was wired. This module returns the same row
+shapes from the real database, one screen at a time, so a screen can be promoted
+without touching its markup.
+
+Two rules it follows, both learned the hard way in this codebase:
+
+**Call the canonical function, never a parallel one.** Grade, index weight and the
+month's net all have exactly one implementation in `Restocker_main`
+(`_backing_rating`, `_group_net_for_month`, `_market_ticker`). A second copy here
+would drift from the one the bot quotes, and the screen would disagree with
+`/stock price` about the same market.
+
+**Do not invent a column.** The design shows "Next report" as a date. Nothing in
+this system stores a per-market report due date — reports arrive when an owner
+files them — so this returns the month each market last filed instead, and says
+so. A date computed from nothing looks exactly like a date that means something.
+
+`Restocker_main` is imported lazily inside each function. In production the web
+server shares a process with the bot, so it is already loaded; in a container
+without discord.py installed the import fails and the caller falls back to the
+sample rows rather than taking the page down.
+"""
+from __future__ import annotations
+
+import logging
+from typing import Optional
+
+log = logging.getLogger("abex_live")
+
+_MONTHS = ("January", "February", "March", "April", "May", "June", "July",
+           "August", "September", "October", "November", "December")
+
+
+def _month_name(month_key: Optional[str]) -> str:
+    """`2026-08` -> `August 2026`. A month key is an id; a month is a name."""
+    try:
+        y, m = str(month_key).split("-")[:2]
+        return f"{_MONTHS[int(m) - 1]} {y}"
+    except Exception:
+        return "—"
+
+
+def _core():
+    import Restocker_main as core  # noqa: WPS433 - lazy on purpose, see docstring
+    return core
+
+
+def _db():
+    import Restocker_db as db  # noqa: WPS433
+    return db
+
+
+def _owner_name(db, owner_id: Optional[str]) -> str:
+    """The owner's in-game name, never their Discord id.
+
+    An id is not a name, and a page that prints one has given up. When no IGN is
+    registered the column says so rather than falling back to the number.
+    """
+    if not owner_id:
+        return "no owner recorded"
+    try:
+        return db.get_ign(str(owner_id)) or "IGN not registered"
+    except Exception:
+        return "IGN not registered"
+
+
+def _latest_month(db, market_id: str) -> Optional[str]:
+    """The most recent month this market has actually filed.
+
+    `Restocker_db._get_conn` is the module's own accessor — going around it with a
+    fresh `sqlite3.connect` would open a second connection with different pragmas,
+    which is the bug class that cost a migration once already.
+    """
+    try:
+        row = db._get_conn().execute(
+            "SELECT MAX(month) FROM csn_history WHERE market_id=?",
+            (market_id,)).fetchone()
+        return row[0] if row and row[0] else None
+    except Exception as exc:
+        log.warning("[abex_live] last month for %s unreadable: %s", market_id, exc)
+        return None
+
+
+def _index_weights(core, db) -> dict:
+    """Each listed market's share of the Abexilas index.
+
+    `_backing_rating` returns a `weight` that SCALES a market's cap for the index —
+    its own docstring says so — it is not the share itself. Printing it as the
+    share was wrong by an order of magnitude: GreyHames read 85.6% when it holds
+    about a seventh of the index. The share is the scaled cap over the total.
+
+    A market that is not listed has no cap and therefore no weight, and gets no
+    number rather than a zero.
+    """
+    caps = {}
+    try:
+        listings = db.get_public_markets() or {}
+    except Exception:
+        return {}
+    for mid, listing in listings.items():
+        price = float(listing.get("share_price") or 0)
+        out = float(listing.get("shares_outstanding") or 0)
+        if price <= 0 or out <= 0:
+            continue
+        try:
+            _grade, weight, _b, _t = core._backing_rating(mid)
+        except Exception:
+            weight = 0.0
+        caps[mid] = price * out * float(weight or 0)
+    total = sum(caps.values())
+    if total <= 0:
+        return {}
+    return {mid: 100.0 * cap / total for mid, cap in caps.items()}
+
+
+def _ticker_of(core, market_id: str) -> str:
+    """The market's ticker, from the bot's own resolver."""
+    try:
+        return core._market_ticker(market_id)
+    except Exception:
+        return str(market_id)[:4].upper()
+
+
+def markets() -> Optional[list[tuple]]:
+    """Rows for the Markets screen, in `abex_data.MARKETS` shape.
+
+    (ticker, name, owner, grade, backing, last net, index weight, last report)
+
+    Returns None when the bot's modules are not importable, so the caller can
+    fall back to the design's rows instead of rendering an empty table.
+    """
+    try:
+        core, db = _core(), _db()
+    except Exception as exc:  # pragma: no cover - only in a bare container
+        log.warning("[abex_live] markets unavailable: %s", exc)
+        return None
+
+    try:
+        registry = db.get_markets() or {}
+    except Exception as exc:
+        log.warning("[abex_live] market registry unreadable: %s", exc)
+        return None
+
+    weights = _index_weights(core, db)
+    try:
+        listed = set(db.get_public_markets() or {})
+    except Exception:
+        listed = set()
+    rows = []
+    for market_id, market in registry.items():
+        if not market.get("active", 1):
+            continue
+        # A grade only means something for a listed market: `_backing_rating`
+        # divides by market cap, and an unlisted market has none, so it comes back
+        # C — which reads as "under 0.3x backed" when the truth is "not rated".
+        # Fourteen markets were being told they were junk for not being listed.
+        if market_id in listed:
+            try:
+                # The scaling weight is read separately, in `_index_weights`, where
+                # it becomes a share of the index rather than a factor.
+                grade, _scale, backed_pct, target_pct = core._backing_rating(market_id)
+            except Exception:
+                grade, backed_pct, target_pct = "—", 0.0, 0.0
+            backing_cell = f"{(float(backed_pct) / float(target_pct)) if target_pct else 0.0:,.2f}×"
+        else:
+            grade, backing_cell = "not rated", "—"
+        month = _latest_month(db, market_id)
+        # This market's own net, not `_group_net_for_month` — that one rolls up
+        # every member of the group plus their hive ledgers, which is right for a
+        # bank statement and wrong for a column headed "Last net" on a row that
+        # names one market. GreyHames read 4,864,129c against its own 660,151c.
+        net = 0.0
+        if month:
+            try:
+                months = (core._load_csn_for_market(market_id) or {}).get("months", {}) or {}
+                net = float((months.get(month) or {}).get("net", 0) or 0)
+            except Exception as exc:
+                log.warning("[abex_live] net for %s unreadable: %s", market_id, exc)
+        try:
+            ticker = core._market_ticker(market_id)
+        except Exception:
+            ticker = market_id[:4].upper()
+        rows.append((
+            ticker,
+            market.get("name") or market_id,
+            _owner_name(db, market.get("owner_id")),
+            str(grade),
+            backing_cell,
+            f"{net:,.0f}c",
+            (f"{weights[market_id]:,.1f}%" if market_id in weights else "—"),
+            _month_name(month),
+        ))
+
+    # Best grade first, then by index weight — the same order the design shows,
+    # and the order somebody comparing markets actually wants.
+    order = {g: i for i, g in enumerate(
+        ("AAA", "AA", "A", "BBB", "BB", "B", "CCC", "CC", "C", "D",
+         "not rated", "—"))}
+    def _weight_value(cell: str) -> float:
+        try:
+            return float(cell.rstrip("%").replace(",", ""))
+        except ValueError:
+            return -1.0
+
+    rows.sort(key=lambda r: (order.get(r[3], 99), -_weight_value(r[6])))
+    return rows
+
+
+def nav_counts() -> dict:
+    """Live counts for the nav, keyed by nav entry.
+
+    Only what can be counted honestly right now. An entry missing from this dict
+    keeps the tree's own number; an entry mapped to "" shows none at all, which is
+    the right answer when nobody knows it yet.
+    """
+    out: dict = {}
+    try:
+        db = _db()
+    except Exception:
+        return out
+    try:
+        registry = db.get_markets() or {}
+        out["markets"] = sum(1 for m in registry.values() if m.get("active", 1))
+    except Exception:
+        pass
+    try:
+        out["stocks"] = len(db.get_public_markets() or {})
+    except Exception:
+        pass
+    # Orders, Lands and Betting still carry the design's numbers. Rather than
+    # leave a figure nobody has checked standing next to live ones, they show
+    # nothing until each screen is wired.
+    for key in ("orders", "lands", "betting", "auctions", "investor"):
+        out.setdefault(key, "")
+    return out
+
+
+def stocks(user_id: str) -> Optional[dict]:
+    """The viewer's positions, plus how the price is set for their biggest one.
+
+    Returns `{"rows": [...], "formula": [...], "market": name}` in the shapes
+    `abex_screens.stocks` expects, or None when the bot's modules are absent.
+
+    The design's last column is "Next" — the date the position next settles. There
+    is no such date in this system: a market settles when its owner files. It shows
+    the month each market was last priced instead.
+    """
+    try:
+        core, db = _core(), _db()
+    except Exception as exc:  # pragma: no cover
+        log.warning("[abex_live] stocks unavailable: %s", exc)
+        return None
+
+    try:
+        portfolio = db.get_portfolio(str(user_id)) or []
+    except Exception as exc:
+        log.warning("[abex_live] portfolio unreadable: %s", exc)
+        return None
+
+    rows = []
+    for holding in portfolio:
+        market_id = holding.get("market_id") or ""
+        shares = float(holding.get("shares") or 0)
+        if shares <= 0:
+            continue
+        listing = {}
+        try:
+            listing = db.get_market_shares(market_id) or {}
+        except Exception:
+            pass
+        price = float(listing.get("share_price") or 0)
+        cost = float(holding.get("cost_basis") or 0)
+        value = shares * price
+        profit = value - cost
+        try:
+            grade, _w, _b, _t = core._backing_rating(market_id)
+        except Exception:
+            grade = "not rated"
+        if not listing.get("active"):
+            grade = "not rated"
+        try:
+            ticker = core._market_ticker(market_id)
+        except Exception:
+            ticker = market_id[:4].upper()
+        name = ((db.get_markets() or {}).get(market_id) or {}).get("name") or market_id
+        dividend = listing.get("dividend_pct")
+        rows.append((market_id, (
+            ticker, name, str(grade),
+            f"{shares:,.0f}",
+            # Average cost, not the total paid: the total is already implied by
+            # shares x average, and the column a holder compares against price is
+            # the per-share one.
+            f"{(cost / shares if shares else 0):,.2f}c",
+            f"{price:,.2f}c",
+            f"{value:,.0f}c",
+            f"{profit:+,.0f}c",
+            profit >= 0,
+            (f"{float(dividend):,.2f}%" if dividend else "none declared"),
+            _month_name(listing.get("last_priced_month")),
+        )))
+
+    # Biggest position first, and the price derivation shown is that market's —
+    # the one the reader has the most money in.
+    rows.sort(key=lambda pair: -float(pair[1][6].rstrip("c").replace(",", "") or 0))
+    formula, market_name = ([], "")
+    if rows:
+        formula, market_name = price_formula(rows[0][0])
+    return {"rows": [row for _mid, row in rows],
+            "formula": formula, "market": market_name}
+
+
+def price_formula(market_id: str) -> tuple[list, str]:
+    """How this market's share price is derived, from `_fundamental_for_market`.
+
+    The design lists a trailing three-report mean as its own row. That mean is
+    computed inside the pricing function and not returned, and recomputing it here
+    would be a second implementation of the number the bot quotes — so the rows
+    show what the pricing function actually hands back.
+    """
+    try:
+        core, db = _core(), _db()
+    except Exception:
+        return [], ""
+    try:
+        listing = db.get_market_shares(market_id) or {}
+        name = ((db.get_markets() or {}).get(market_id) or {}).get("name") or market_id
+        fundamental = core._fundamental_for_market(market_id)
+    except Exception as exc:
+        log.warning("[abex_live] price formula for %s unreadable: %s", market_id, exc)
+        return [], ""
+    if not fundamental:
+        return [], name
+    price, pe, month = fundamental
+    shares_out = float(listing.get("shares_outstanding") or 0)
+    current = float(listing.get("share_price") or 0)
+    text, dim, accent = "var(--text)", "var(--dim)", "var(--accent)"
+    return ([
+        ("Growth P/E multiple", f"{float(pe):,.2f}×", text),
+        ("Shares outstanding", f"{shares_out:,.0f}", text),
+        ("Priced from reports up to", _month_name(month), dim),
+        ("Fundamental, from trailing net", f"{float(price):,.2f}c a share", text),
+        ("Trading price now", f"{current:,.2f}c a share", accent),
+    ], name)
+
+
+def _holders(db, market_id: str) -> list:
+    try:
+        return [h for h in (db.get_holders(market_id) or [])
+                if float(h.get("shares") or 0) > 0]
+    except Exception:
+        return []
+
+
+def exchange() -> Optional[dict]:
+    """The share side: every listed market, and the band above it.
+
+    `{"rows": [...], "tiles": [...]}`, or None when the modules are absent.
+
+    Free float here means shares in someone else's hands — the register minus the
+    owner's own holding. Counting the owner would have GreyHames reading 93% free
+    float while one account holds 92,863 of its 100,000 shares.
+    """
+    try:
+        core, db = _core(), _db()
+    except Exception as exc:  # pragma: no cover
+        log.warning("[abex_live] exchange unavailable: %s", exc)
+        return None
+    try:
+        listings = db.get_public_markets() or {}
+        registry = db.get_markets() or {}
+    except Exception as exc:
+        log.warning("[abex_live] listings unreadable: %s", exc)
+        return None
+
+    rows, total_shares, everyone = [], 0.0, set()
+    for market_id, listing in listings.items():
+        market = registry.get(market_id) or {}
+        shares_out = float(listing.get("shares_outstanding") or 0)
+        price = float(listing.get("share_price") or 0)
+        holders = _holders(db, market_id)
+        everyone.update(str(h.get("user_id")) for h in holders)
+        owner_id = str(market.get("owner_id") or "")
+        outside = sum(float(h.get("shares") or 0) for h in holders
+                      if str(h.get("user_id")) != owner_id)
+        try:
+            grade, _scale, _b, _t = core._backing_rating(market_id)
+        except Exception:
+            grade = "not rated"
+        total_shares += shares_out
+        rows.append((
+            _ticker_of(core, market_id),
+            market.get("name") or market_id,
+            str(grade),
+            f"{shares_out:,.0f}",
+            f"{len(holders):,}",
+            f"{price:,.2f}c",
+            f"{(100.0 * outside / shares_out if shares_out else 0):,.1f}%",
+        ))
+    rows.sort(key=lambda r: -float(r[3].replace(",", "") or 0))
+
+    index_value, index_note = _index_now(db)
+    tiles = [
+        ("Markets listed", f"{len(rows)}",
+         f"of {sum(1 for m in registry.values() if m.get('active', 1))} active", "var(--text)"),
+        ("Shares outstanding", f"{total_shares:,.0f}", "across listed markets", "var(--text)"),
+        ("Holders", f"{len(everyone):,}", "accounts holding at least one share", "var(--text)"),
+        ("Index", index_value, index_note, "var(--text)"),
+    ]
+    return {"rows": rows, "tiles": tiles}
+
+
+def _index_now(db) -> tuple[str, str]:
+    """The Abexilas index, from the log the bot writes — not recomputed here."""
+    try:
+        rows = db._get_conn().execute(
+            "SELECT index_value, ts FROM market_index_log ORDER BY id DESC LIMIT 2"
+        ).fetchall()
+    except Exception:
+        return "—", "index log unreadable"
+    if not rows:
+        return "—", "not computed yet"
+    value = float(rows[0][0] or 0)
+    if len(rows) > 1 and rows[1][0]:
+        prev = float(rows[1][0])
+        if prev:
+            move = 100.0 * (value - prev) / prev
+            if abs(move) >= 0.005:
+                return f"{value:,.2f}", f"{move:+,.2f}% since the last reading"
+    return f"{value:,.2f}", "unchanged since the last reading"
+
+
+def filings(limit: int = 40) -> Optional[list[tuple]]:
+    """Every filing on record, newest first, in `abex_data.FILINGS` shape.
+
+    (ticker, name, month, net, per share, dividend, grade, missed)
+
+    `missed` is always False: a missed filing can only be spotted against a
+    schedule, and nothing in this system stores one. Rendering a guess in the loss
+    colour would accuse an owner of missing a deadline that does not exist.
+    """
+    try:
+        core, db = _core(), _db()
+    except Exception as exc:  # pragma: no cover
+        log.warning("[abex_live] filings unavailable: %s", exc)
+        return None
+    try:
+        registry = db.get_markets() or {}
+        listings = db.get_public_markets() or {}
+        history = db._get_conn().execute(
+            "SELECT market_id, month, net FROM csn_history "
+            "ORDER BY month DESC, market_id LIMIT ?", (int(limit),)).fetchall()
+    except Exception as exc:
+        log.warning("[abex_live] csn history unreadable: %s", exc)
+        return None
+
+    paid = {}
+    try:
+        for row in db._get_conn().execute(
+                "SELECT market_id, month, per_share FROM stock_dividend_log"):
+            paid[(row[0], row[1])] = row[2]
+    except Exception:
+        pass
+
+    out = []
+    for market_id, month, net in history:
+        market = registry.get(market_id) or {}
+        listing = listings.get(market_id) or {}
+        shares_out = float(listing.get("shares_outstanding") or 0)
+        net = float(net or 0)
+        try:
+            grade, _scale, _b, _t = core._backing_rating(market_id)
+        except Exception:
+            grade = "not rated"
+        if not listing:
+            grade = "not rated"
+        per_share = f"{net / shares_out:,.2f}c" if shares_out else "not listed"
+        dividend = paid.get((market_id, month))
+        out.append((
+            _ticker_of(core, market_id),
+            market.get("name") or market_id,
+            _month_name(month),
+            f"{net:,.0f}c",
+            per_share,
+            (f"{float(dividend):,.2f}c a share" if dividend else "none paid"),
+            str(grade),
+            False,
+        ))
+    return out
+
+
+def orders() -> Optional[list[tuple]]:
+    """Open production orders, in `abex_data.ORDERS` shape.
+
+    (item, market, owner, qty, detail, unit pay, per what, total, points,
+     priority?, window)
+
+    Quantities and pay come from `fmt_qty`, `_coin_rates_for_order` and
+    `_coins_for_pieces` — the same three the order card in Discord uses. A screen
+    that computed "8 stacks" or a per-piece rate itself would eventually disagree
+    with the card a worker claimed from, and the difference would be someone's pay.
+    """
+    try:
+        core, db = _core(), _db()
+    except Exception as exc:  # pragma: no cover
+        log.warning("[abex_live] orders unavailable: %s", exc)
+        return None
+    try:
+        # `load_orders` reads the production-order table the bot posts cards from.
+        # `list_web_orders` looks right and is not: it reads `web_orders`, a
+        # different table, and returned an empty list while one order was open.
+        open_orders = [o for o in (db.load_orders() or [])
+                       if str(o.get("status") or "").lower() == "open"]
+    except Exception as exc:
+        log.warning("[abex_live] orders unreadable: %s", exc)
+        return None
+    try:
+        items_data = core._load_items()
+    except Exception:
+        items_data = {"items": {}}
+    try:
+        registry = db.get_markets() or {}
+    except Exception:
+        registry = {}
+
+    import datetime as _dt
+
+    rows = []
+    for order in open_orders:
+        requested = int(order.get("requested") or 0)
+        market_id = order.get("market_id") or ""
+        market = registry.get(market_id) or {}
+        try:
+            qty = core.fmt_qty(order, requested, prefer_original_amount=True)
+        except Exception:
+            qty = f"{requested:,} pieces"
+        try:
+            # The barrel rate the same call returns is not used here — see below.
+            piece = core._coin_rates_for_order(order, items_data)[0]
+            total = core._coins_for_pieces(order, requested, items_data)
+        except Exception:
+            piece, total = 0.0, 0
+
+        # `_coin_rates_for_order`'s second rate is per BARREL, and a barrel here is
+        # 3,456 pieces. Printing it as "per stack" put a 345,600c figure under a
+        # label a worker reads as 64 pieces. The site quotes per piece and per
+        # stack of 64, which is the pair every price in this economy is stated in.
+        stackable = bool(order.get("stackable"))
+        stack_size = int(order.get("stack_size") or 64)
+        unit = f"{piece * stack_size:,.2f}c" if stackable else f"{piece:,.2f}c"
+        per = (f"per stack of {stack_size} · {piece:,.2f}c a piece"
+               if stackable else "per piece")
+
+        # The employee window, from the order's own `priority_until`. No window and
+        # no guessed one: an order past its head start is open to all, and says so.
+        window, priority = "Open to all", False
+        raw_until = order.get("priority_until")
+        if raw_until:
+            try:
+                until = _dt.datetime.fromisoformat(str(raw_until).replace("Z", "+00:00"))
+                now = _dt.datetime.now(until.tzinfo) if until.tzinfo else _dt.datetime.now()
+                left = (until - now).total_seconds()
+                if left > 0:
+                    priority = True
+                    minutes = int(left // 60)
+                    window = (f"{minutes} minutes left" if minutes >= 1
+                              else f"{int(left)} seconds left")
+            except Exception:
+                pass
+
+        rows.append((
+            order.get("item") or "unnamed item",
+            market.get("name") or order.get("shop") or market_id or "—",
+            _owner_name(db, market.get("owner_id")),
+            qty,
+            f"{requested:,} pieces in total",
+            unit, per,
+            f"{total:,}c" if isinstance(total, int) else f"{total}c",
+            "—",                       # loyalty points per order: not recorded yet
+            priority, window,
+        ))
+    return rows
+
+
+def parcels() -> Optional[list[tuple]]:
+    """Land listings, in `abex_data.PARCELS` shape.
+
+    (name, owner, tenant, price, state, note)
+
+    The design's rows describe leases with rent. This economy sells land outright —
+    `land_listings` has a price, a bidder and a status, and no rent anywhere — so
+    the columns carry what a listing actually has.
+    """
+    try:
+        db = _db()
+    except Exception:  # pragma: no cover
+        return None
+    try:
+        rows = db._get_conn().execute(
+            "SELECT title, land, chunks, seller_id, status, current_bid, buy_now, "
+            "       sold_price, sold_to "
+            "FROM land_listings ORDER BY COALESCE(closed_at, created_at) DESC LIMIT 40"
+        ).fetchall()
+    except Exception as exc:
+        log.warning("[abex_live] land listings unreadable: %s", exc)
+        return None
+
+    out = []
+    for title, land, chunks, seller_id, status, bid, buy_now, sold, sold_to in rows:
+        price = sold or bid or buy_now or 0
+        out.append((
+            title or land or "untitled listing",
+            _owner_name(db, seller_id),
+            (_owner_name(db, sold_to) if sold_to else "—"),
+            f"{float(price or 0):,.0f}c",
+            str(status or "—").replace("_", " "),
+            f"{int(chunks or 0):,} chunks" if chunks else "—",
+        ))
+    return out
+
+
+def hub(user_id: str) -> Optional[dict]:
+    """The front page: what is waiting, what you hold, what the index is doing.
+
+    Returns the keyword arguments `abex_hub.body` takes, or None when the modules
+    are absent.
+
+    The design's four tiles are Index, Dividends, Holdings and Next report. Three
+    of those are facts this system has. The fourth is not — nothing stores a report
+    due date — so that tile carries the count of markets that have filed for the
+    current month, which is the same question ("who still owes a report?") asked in
+    a way the data can answer.
+    """
+    try:
+        db = _db()
+    except Exception:  # pragma: no cover
+        return None
+
+    market_rows = markets() or []
+    order_rows = orders() or []
+    index_value, index_note = _index_now(db)
+
+    # Holdings: the reader's own, valued at the current price.
+    holdings_value, positions = 0.0, 0
+    live = stocks(user_id) or {"rows": []}
+    for row in live["rows"]:
+        positions += 1
+        try:
+            holdings_value += float(row[6].rstrip("c").replace(",", ""))
+        except ValueError:
+            pass
+
+    # Filed this month, against the markets that have ever filed. A market that has
+    # never filed anything is not "late", it is not participating.
+    month = ""
+    try:
+        row = db._get_conn().execute("SELECT MAX(month) FROM csn_history").fetchone()
+        month = row[0] if row and row[0] else ""
+    except Exception:
+        pass
+    filed = ever = 0
+    try:
+        conn = db._get_conn()
+        filed = conn.execute("SELECT COUNT(DISTINCT market_id) FROM csn_history "
+                             "WHERE month=?", (month,)).fetchone()[0]
+        ever = conn.execute("SELECT COUNT(DISTINCT market_id) FROM csn_history"
+                            ).fetchone()[0]
+    except Exception:
+        pass
+
+    gain, text = "var(--gain)", "var(--text)"
+    tiles = [
+        ("Index", index_value, index_note, text),
+        ("Your holdings", f"{holdings_value:,.0f}c",
+         f"{positions} position{'' if positions == 1 else 's'}",
+         gain if holdings_value else text),
+        ("Open orders", f"{len(order_rows)}",
+         "claimable right now" if order_rows else "nothing to claim", text),
+        ("Filed for " + (_month_name(month) if month else "this month"),
+         f"{filed} of {ever}", "markets that file at all", text),
+    ]
+
+    hub_work = []
+    for item, market, _owner, qty, _detail, unit, per, _total, _pts, prio, window in order_rows[:6]:
+        hub_work.append((item, qty, f"{unit} {per}", market, window,
+                         "var(--loss)" if prio else "var(--faint)"))
+
+    return {
+        "tiles": tiles,
+        "markets": market_rows[:8],
+        "work": hub_work,
+        # No dividend has ever been paid: `stock_dividend_log` is empty. An estimate
+        # here would be the only number on the page nobody could check.
+        "dividends": ("none paid yet", "none declared"),
+        "sub": f"{len(market_rows)} markets, each weighted by its credit grade.",
+        "market_count": len(market_rows),
+        "work_count": len(order_rows),
+        "last_col": "Last report",
+        "dividend_note": "No market has declared a dividend yet.",
+    }
+
+
+def investor(user_id: str) -> Optional[dict]:
+    """The preferred pool: your stake, what the pool is, and where it came from.
+
+    The formula is the bot's own, not a reading of the design: the pool is each
+    qualifying market's monthly net times `_investor_pool_pct()` (a live config
+    knob, default 10%), split by each investor's `share_pct`. Only markets
+    `_is_vtech_market` accepts feed it — pointing the page at every market would
+    have inflated the pool by everything the group does not own.
+    """
+    try:
+        core, db = _core(), _db()
+    except Exception:  # pragma: no cover
+        return None
+    try:
+        investors = db.get_investors() or {}
+        pool_pct = float(core._investor_pool_pct())
+    except Exception as exc:
+        log.warning("[abex_live] investor pool unreadable: %s", exc)
+        return None
+
+    mine = investors.get(str(user_id)) or {}
+    try:
+        row = db._get_conn().execute("SELECT MAX(month) FROM csn_history").fetchone()
+        month = row[0] if row and row[0] else ""
+    except Exception:
+        month = ""
+
+    registry = {}
+    try:
+        registry = db.get_markets() or {}
+    except Exception:
+        pass
+
+    rows, pool = [], 0.0
+    for market_id, market in registry.items():
+        try:
+            if not core._is_vtech_market(market_id):
+                continue
+        except Exception:
+            continue
+        months = {}
+        try:
+            months = (core._load_csn_for_market(market_id) or {}).get("months", {}) or {}
+        except Exception:
+            pass
+        net = float((months.get(month) or {}).get("net", 0) or 0)
+        if net <= 0:
+            continue          # a loss contributes nothing; it does not claw back
+        share = net * pool_pct / 100.0
+        pool += share
+        rows.append((_ticker_of(core, market_id), market.get("name") or market_id,
+                     f"{net:,.0f}c", f"{share:,.0f}c"))
+    rows.sort(key=lambda r: -float(r[3].rstrip("c").replace(",", "") or 0))
+
+    pref = float(mine.get("pref_shares") or 0)
+    share_pct = float(mine.get("share_pct") or 0)
+    total_pref = sum(float(i.get("pref_shares") or 0) for i in investors.values())
+    received = float(mine.get("total_received") or 0)
+
+    gain, text, dim = "var(--gain)", "var(--text)", "var(--dim)"
+    tiles = [
+        ("Your stake", f"{pref:,.0f} of {total_pref:,.0f}",
+         f"{share_pct:,.1f}% of the pool", text),
+        (f"Pool, {_month_name(month) if month else 'this month'}", f"{pool:,.0f}c",
+         f"{pool_pct:,.0f}% of each market's net", text),
+        ("Your share", f"{pool * share_pct / 100.0:,.0f}c",
+         (f"{received:,.0f}c paid to you so far" if received
+          else "nothing paid out yet"), gain if pool else dim),
+    ]
+    return {"tiles": tiles, "rows": rows, "pool_pct": pool_pct,
+            "is_investor": bool(mine)}
