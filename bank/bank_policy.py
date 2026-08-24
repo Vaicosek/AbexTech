@@ -136,3 +136,31 @@ def credit_limit_components(user_id) -> list[tuple[str, int]]:
             label = "Floored at zero"
         rows.append((label, limit - running))
     return rows
+
+
+def bond_redeem_value(bond: dict, now_iso: str | None = None) -> dict:
+    """What redeeming this bond RIGHT NOW pays, and what redeeming it early costs.
+
+    Interest on a bond is all-or-nothing at maturity: redeem early and you get your
+    principal back minus BOND_EARLY_PENALTY_PCT, and the interest is forfeited
+    entirely. So `earned_so_far` is 0 before maturity BY POLICY, not by rounding --
+    a website showing a pro-rata "earned so far" on a bond that pays nothing extra
+    until it matures would be promising money the bank will not hand over.
+
+    `interest_at_maturity` comes off the STORED payout, which `bond_payout` computed
+    when the bond was sold. It is never recomputed from the current rate table: the
+    rate a bond was bought at is the rate it pays, whatever BOND_TERMS says today.
+    """
+    if now_iso is None:
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
+    principal = int(round(bond["principal"]))
+    payout = int(round(bond["payout"]))
+    matured = now_iso >= bond["matures_at"]
+    if matured:
+        return {"matured": True, "amount": payout, "penalty": 0,
+                "interest_at_maturity": payout - principal,
+                "earned_so_far": payout - principal}
+    penalty = int(round(principal * BOND_EARLY_PENALTY_PCT))
+    return {"matured": False, "amount": max(0, principal - penalty), "penalty": penalty,
+            "interest_at_maturity": payout - principal, "earned_so_far": 0}

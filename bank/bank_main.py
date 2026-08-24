@@ -54,6 +54,7 @@ from bank_policy import (
     BOND_TERMS, BOND_EARLY_PENALTY_PCT,
     parse_bond_terms as _parse_bond_terms,
     bond_payout as _bond_payout,
+    bond_redeem_value,
     credit_limit_for,
 )
 
@@ -1143,14 +1144,14 @@ async def bond_redeem(interaction: discord.Interaction, bond_id: int):
         return
 
     now = utcnow()
-    matured = now.isoformat() >= bond["matures_at"]
+    # One implementation, shared with the website (bank_policy.bond_redeem_value).
+    _rv = bond_redeem_value(bond, now.isoformat())
+    matured = _rv["matured"]
+    amount = _rv["amount"]
     if matured:
-        amount = int(round(bond["payout"]))
         kind_note = "matured payout"
     else:
-        principal = int(round(bond["principal"]))
-        penalty = int(round(principal * BOND_EARLY_PENALTY_PCT))
-        amount = max(0, principal - penalty)
+        penalty = _rv["penalty"]
         kind_note = ("early redemption, interest forfeited"
                      + (f", {ab.coins(penalty)} penalty" if penalty else ""))
 

@@ -1,0 +1,332 @@
+"""Serve `banking_web`'s Osentar API from the local database instead of over HTTP.
+
+Why this exists
+---------------
+`banking_web` was written against a bank that answered HTTP on `OSENTAR_BASE_URL`.
+That bank never existed: the Bank bot has no `web.Application` and no routes, its only
+aiohttp use is a `ClientSession` making outbound calls *to* core. There was never a URL
+to set, which is why the site's banking section has always rendered its "bank not
+answering" state and why the Savings and Net segments of the header strip are
+em-dashes on every page.
+
+Now that both bots run in one container against one `restocker.db`, the HTTP call has
+nothing to cross. This module answers the same paths with the same payload shapes,
+reading `bank_*` tables directly, so `banking_web`'s twelve call sites and all of their
+error handling stay exactly as they are.
+
+What it will not do
+-------------------
+**It does not compute policy.** Credit limits, bond payouts and redemption values come
+from `bank_policy`, which the Bank bot itself imports. `banking_web`'s own contract is
+explicit that two implementations of one policy is how a FAQ says 7.5% while the embed
+says 10%, and being in-process makes recomputing things locally *easier*, not more
+correct.
+
+**It does not invent figures the bank never recorded.** A repayment `schedule` and a
+savings `ladder` are part of the HTTP contract, but the bank never implemented that API
+and so has never built either. They are omitted, and the contract already says the panel
+should report their absence rather than derive one from the terms. The same applies to
+the principal/interest split of past repayments: `bank_ledger` records the total moved,
+not how it was apportioned, so this returns what was recorded and nothing more.
+
+**It does not move money.** Every write path (deposit, withdraw, repay, bond buy and
+redeem, staff decide and collect) touches the coin wallet in core's ledger, is idempotent
+on a key the page minted, and is implemented in the Bank bot's own command handlers.
+Reimplementing those here would be a second money path. They return a refusal naming
+Discord as the place to do it, which `banking_web` already renders as the bank declining
+rather than as the bank being down.
+"""
+from __future__ import annotations
+
+import logging
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+log = logging.getLogger("banking.local")
+
+_ROOT = Path(__file__).resolve().parent
+_BANK_DIR = _ROOT / "bank"
+
+#: Version reported by /api/v1/health. Distinct from the bot's own, on purpose: this
+#: is the in-process provider, and an operator reading the health line should be able
+#: to tell which one answered.
+PROVIDER_VERSION = "local-1"
+
+_bdb: Any = None
+_pol: Any = None
+_import_error: str = ""
+
+
+def _load() -> bool:
+    """Import `bank_db` and `bank_policy` out of `bank/`, once.
+
+    `bank/` is appended to the END of sys.path, never prepended: `bank/main.py` and
+    the repo root's `main.py` share a name, and core's must keep winning.
+
+    `bank_main` is deliberately NOT imported -- its module body calls
+    `logging.basicConfig()` and constructs a `commands.Bot`, so importing it would give
+    the web process a second Discord bot and reconfigure its logging as a side effect
+    of rendering a page.
+    """
+    global _bdb, _pol, _import_error
+    if _bdb is not None and _pol is not None:
+        return True
+    if _import_error:
+        return False
+    try:
+        p = str(_BANK_DIR)
+        if p not in sys.path:
+            sys.path.append(p)
+        import bank_db as bdb
+        import bank_policy as pol
+        _bdb, _pol = bdb, pol
+        return True
+    except Exception as e:
+        _import_error = f"{type(e).__name__}: {e}"
+        log.warning("[banking] local provider unavailable: %s", _import_error)
+        return False
+
+
+def available() -> bool:
+    """True when the bank's tables are reachable in the database core is using.
+
+    Checks for the TABLE, not just the import: `bank_db` imports fine against a
+    database that has never had `init_db()` run on it, and answering "the bank is up"
+    in that state would turn a missing schema into a page full of zeroes.
+    """
+    if not _load():
+        return False
+    try:
+        with _bdb.db() as conn:
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='bank_accounts'"
+            ).fetchone()
+            return row is not None
+    except Exception as e:
+        log.warning("[banking] local provider table check failed: %s", e)
+        return False
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _month_start() -> str:
+    n = datetime.now(timezone.utc)
+    return n.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+
+
+def _ledger_sum(conn, user_id: str, kind: str, since: Optional[str] = None) -> float:
+    sql = "SELECT COALESCE(SUM(amount),0) FROM bank_ledger WHERE user_id=? AND kind=?"
+    args: list = [str(user_id), kind]
+    if since:
+        sql += " AND ts >= ?"
+        args.append(since)
+    return float(conn.execute(sql, args).fetchone()[0] or 0)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# GET /api/v1/account
+# ══════════════════════════════════════════════════════════════════════════
+
+def _account(user_id: str) -> dict:
+    uid = str(user_id)
+    acct = _bdb.get_account(uid)
+    sav = _bdb.get_savings(uid)
+    loans = _bdb.get_active_loans(uid)
+    bonds = _bdb.get_bonds(uid, "active")
+    now = _now()
+
+    with _bdb.db() as conn:
+        accrued_lifetime = _ledger_sum(conn, uid, "interest_savings")
+        accrued_month = _ledger_sum(conn, uid, "interest_savings", _month_start())
+        last_paid = sav.get("last_accrued")
+        accrued_since = (_ledger_sum(conn, uid, "interest_savings", last_paid)
+                         if last_paid else accrued_lifetime)
+        rep = conn.execute(
+            "SELECT COUNT(*) c, COALESCE(SUM(amount),0) t, MAX(ts) m "
+            "FROM bank_ledger WHERE user_id=? AND kind='loan_repay'", (uid,)).fetchone()
+
+    savings = {
+        "balance": int(round(float(sav.get("balance") or 0))),
+        "apr": _pol.SAVINGS_APR,
+        "opened": (acct or {}).get("created_at"),
+        "last_paid": last_paid,
+        "accrued_this_month": int(round(accrued_month)),
+        "accrued_since_last_paid": int(round(accrued_since)),
+        "accrued_lifetime": int(round(accrued_lifetime)),
+        # `ladder` and `avg90` need a balance history the bank has never kept.
+        # Omitted rather than derived -- see the module docstring.
+    }
+
+    loan = None
+    if loans:
+        l = loans[0]   # one open loan per player, per the API contract
+        loan = {
+            "id": l["id"],
+            "principal": int(round(float(l["principal"]))),
+            "apr": float(l["apr"]),
+            "terms": l.get("term_days"),
+            "disbursed": l.get("issued_at"),
+            "due": l.get("due_at"),
+            "outstanding": int(round(float(l["balance"]))),
+            # Interest is accrued INTO the balance by the bank's accrual loop, so the
+            # outstanding figure is already current -- payoff today is simply that.
+            "payoff_today": int(round(float(l["balance"]))),
+            "paid_count": int(rep["c"] or 0),
+            "paid_total": int(round(float(rep["t"] or 0))),
+            "last_paid_on": rep["m"],
+            "collected": int(round(float(l.get("collected") or 0))),
+            "closed": False,
+            # `schedule`, and the principal/interest split of past payments, are not
+            # recorded anywhere. Omitted rather than invented.
+        }
+
+    bond_rows = []
+    for b in bonds:
+        rv = _pol.bond_redeem_value(b, now)
+        bond_rows.append({
+            "id": b["id"],
+            "face": int(round(float(b["principal"]))),
+            "apr": float(b["apr"]),
+            "term_days": b.get("term_days"),
+            "bought": b.get("issued_at"),
+            "matures": b.get("matures_at"),
+            "interest_at_maturity": rv["interest_at_maturity"],
+            "earned_so_far": rv["earned_so_far"],
+            "redeem_value_today": rv["amount"],
+            "early_redemption_penalty": rv["penalty"],
+            "matured": rv["matured"],
+        })
+
+    h = _bdb.loan_history(uid)
+    limit_amount = _pol.credit_limit_for(uid)
+    debt = float(_bdb.total_debt(uid))
+
+    return {
+        "ok": True,
+        "savings": savings,
+        "loan": loan,
+        "bonds": bond_rows,
+        "bond_terms": [{"term_days": d, "apr": r} for d, r in _pol.BOND_TERMS.items()],
+        "record": {
+            "repaid_clean": h["repaid_count"],
+            "late": h["late_count"],
+            "defaults": h["written_off_count"],
+            "since": (acct or {}).get("created_at"),
+        },
+        "limit": {
+            "amount": limit_amount,
+            "cap": _pol.MAX_LOAN,
+            "headroom": max(0, limit_amount - int(round(debt))),
+            "components": [[label, value]
+                           for label, value in _pol.credit_limit_components(uid)],
+        },
+        "frozen": bool((acct or {}).get("frozen")),
+        "account_open": bool(acct and acct.get("opted_in")),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Staff reads
+# ══════════════════════════════════════════════════════════════════════════
+
+def _staff_queue() -> dict:
+    out = []
+    for l in _bdb.get_pending_loans():
+        uid = str(l["user_id"])
+        acct = _bdb.get_account(uid) or {}
+        h = _bdb.loan_history(uid)
+        out.append({
+            "id": l["id"],
+            "user_id": uid,
+            "name": acct.get("name") or uid,
+            "requested": int(round(float(l["principal"]))),
+            "terms": l.get("term_days"),
+            "asked": l.get("requested_at"),
+            "outstanding_debt": int(round(float(_bdb.total_debt(uid)))),
+            "limit": _pol.credit_limit_for(uid),
+            "repaid_clean": h["repaid_count"],
+            "late": h["late_count"],
+            "frozen": bool(acct.get("frozen")),
+            # `purpose` is part of the HTTP contract but the bank never stored it.
+        })
+    return {"ok": True, "requests": out}
+
+
+def _staff_collections() -> dict:
+    now = datetime.now(timezone.utc)
+    reachable = os.getenv("COLLECT_FROM_SAVINGS", "1").strip().lower() not in ("0", "false", "no")
+    out = []
+    for l in _bdb.overdue_loans(now.isoformat()):
+        uid = str(l["user_id"])
+        acct = _bdb.get_account(uid) or {}
+        days_late = None
+        try:
+            due = datetime.fromisoformat(str(l["due_at"]))
+            if due.tzinfo is None:
+                due = due.replace(tzinfo=timezone.utc)
+            days_late = max(0, (now - due).days)
+        except (TypeError, ValueError):
+            pass
+        sav = float(_bdb.get_savings(uid).get("balance") or 0)
+        out.append({
+            "loan_id": l["id"],
+            "user_id": uid,
+            "name": acct.get("name") or uid,
+            "days_late": days_late,
+            "owed": int(round(float(l["balance"]))),
+            "savings_reachable": int(round(sav)) if reachable else 0,
+        })
+    return {"ok": True, "overdue": out}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Dispatch
+# ══════════════════════════════════════════════════════════════════════════
+
+_WRITE_PATHS = {
+    "/api/v1/savings/deposit", "/api/v1/savings/withdraw", "/api/v1/loan/repay",
+    "/api/v1/bond/buy", "/api/v1/bond/redeem",
+    "/api/v1/staff/loan/decide", "/api/v1/staff/collect",
+}
+
+#: A refusal, NOT a transport failure. banking_web renders {"ok": false, "error": ...}
+#: as the bank declining -- which is the truth -- rather than as the bank being down.
+_WRITE_REFUSAL = ("This action is not available from the website yet — "
+                  "use the bank's Discord commands. (Reading is live.)")
+
+
+def handle(method: str, path: str, params: Optional[dict] = None,
+           body: Optional[dict] = None) -> dict:
+    """Answer one Osentar API call locally. Never raises: returns the API's own
+    `{"ok": false, "error": ...}` shape so the caller's existing handling applies."""
+    params = params or {}
+    body = body or {}
+    try:
+        if path == "/api/v1/health":
+            return {"ok": True, "service": "osentar-bank", "provider": "local",
+                    "version": PROVIDER_VERSION, "ts": _now()}
+
+        if path == "/api/v1/account":
+            uid = str(params.get("user_id") or body.get("user_id") or "").strip()
+            if not uid:
+                return {"ok": False, "error": "No user id was supplied."}
+            return _account(uid)
+
+        if path == "/api/v1/staff/queue":
+            return _staff_queue()
+
+        if path == "/api/v1/staff/collections":
+            return _staff_collections()
+
+        if path in _WRITE_PATHS:
+            return {"ok": False, "error": _WRITE_REFUSAL, "code": "not_implemented_locally"}
+
+        return {"ok": False, "error": f"Unknown bank endpoint {path}."}
+    except Exception as e:
+        log.exception("[banking] local provider failed on %s: %s", path, e)
+        return {"ok": False, "error": f"The bank's local read failed ({type(e).__name__})."}

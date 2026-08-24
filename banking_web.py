@@ -143,6 +143,32 @@ _cooldown_until = 0.0
 _cooldown_reason = ""
 
 
+#: The in-process bank. Imported lazily and probed once per process, because the
+#: answer cannot change while running: either the bank_* tables are in the database
+#: core opened at startup, or they are not.
+try:
+    import bank_local as _local
+except Exception:  # pragma: no cover - core must still boot without the bank
+    _local = None  # type: ignore[assignment]
+
+_local_state: Optional[bool] = None
+
+
+def _force_http() -> bool:
+    """Escape hatch: pin the old HTTP path even when the local bank is present."""
+    return os.getenv("OSENTAR_FORCE_HTTP", "").strip().lower() in ("1", "true", "yes")
+
+
+def _local_available() -> bool:
+    global _local_state
+    if _local_state is None:
+        _local_state = bool(_local) and _local.available()
+        log.info("[banking] provider: %s",
+                 "in-process (bank_* tables in this database)" if _local_state
+                 else "HTTP" if _base_url() else "NONE — banking will report unavailable")
+    return _local_state
+
+
 def _base_url() -> str:
     return os.getenv("OSENTAR_BASE_URL", "").strip().rstrip("/")
 
@@ -176,10 +202,23 @@ async def osentar(method: str, path: str, *, params: Optional[dict] = None,
     failure and 5xx are down.
     """
     global _cooldown_until, _cooldown_reason
+
+    # ── In-process first ──────────────────────────────────────────────────
+    # The bank now runs in this container against this database, so there is no
+    # HTTP call to make. This is the whole point of the monorepo move: the request
+    # that never had a server to answer it becomes a SELECT.
+    #
+    # Tried BEFORE the URL check, so a stale OSENTAR_BASE_URL left in .env cannot
+    # send reads back out over a network to a bank that was never listening.
+    # OSENTAR_FORCE_HTTP=1 pins the old path for a side-by-side comparison.
+    if not _force_http() and _local_available():
+        return _local.handle(method, path, params=params, body=body)
+
     base = _base_url()
     if not base:
-        raise OsentarDown("Osentar Bank is not configured on this server "
-                          "(OSENTAR_BASE_URL is unset).")
+        raise OsentarDown("Osentar Bank is not reachable: it is not running in this "
+                          "process (its tables are missing from the database) and no "
+                          "OSENTAR_BASE_URL is set to reach it over HTTP.")
     if aiohttp is None:  # pragma: no cover
         raise OsentarDown("Osentar Bank is unreachable (no HTTP client available).")
     now = time.time()
