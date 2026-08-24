@@ -55,6 +55,9 @@ GAIN = "#8fbf6a"
 LOSS = "#d87a6a"
 WARN = "#d87a6a"
 HELD = "#c3bdb0"     # money reserved in escrow: parked, not lost — never red
+INERT = "#6f6c66"    # a dormant or empty state. Matches --inert in THEME_CSS,
+                     # which existed while Python had no name for it, so screens
+                     # reached for stray literals (#6A6A6A, #B4B4B4) instead.
 
 #: Grade colour ramp, from the mockup's `gradeColor()`. Investment grade starts at BBB.
 #: A and BBB share a colour there and share one here; changing that is John's call.

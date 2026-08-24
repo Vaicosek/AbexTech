@@ -10,7 +10,7 @@ import html as _h
 
 from abex_shell import grade_chip
 import abex_data as D
-from abex_theme import DOMAINS, GAIN, LOSS
+from abex_theme import DOMAINS, GAIN, HELD, INERT, LOSS, WARN, money_tone
 
 
 def _e(x):
@@ -18,10 +18,29 @@ def _e(x):
 
 
 def _band(tiles, cls="four"):
-    return (f'<div class="band {cls}">' + "".join(
-        f'<div class="tile"><span class="k">{_e(k)}</span>'
-        f'<span class="v" style="color:{c}">{_e(v)}</span>'
-        f'<span class="n">{_e(n)}</span></div>' for k, v, n, c in tiles) + "</div>")
+    """Render a band of tiles: `(label, value, note)` or `(label, value, note, colour)`.
+
+    A three-item tile takes its colour from `money_tone(label)` -- the one rule, shared
+    with the bot and the mockup. Every tile here used to carry a hand-picked colour,
+    which is how a section hue ended up marking money on two of them (`abex_theme` says
+    the domain hues are "never a fill and never carry meaning about money") and how
+    three others carried `#F4F4F4`, a literal from the other skin that is not a token
+    in this one.
+
+    A fourth item still wins, exactly as an explicit cell tone beats the label rule in
+    the mockup. Use it where the label is outside the rule and the meaning is not in
+    doubt -- not to re-decide a label the rule already covers.
+    """
+    out = []
+    for tile in tiles:
+        k, v, n = tile[0], tile[1], tile[2]
+        colour = tile[3] if len(tile) > 3 else money_tone(k)
+        # No tone means the default text colour -- not an empty `color:` declaration.
+        style = f' style="color:{colour}"' if colour else ""
+        out.append(f'<div class="tile"><span class="k">{_e(k)}</span>'
+                   f'<span class="v"{style}>{_e(v)}</span>'
+                   f'<span class="n">{_e(n)}</span></div>')
+    return f'<div class="band {cls}">' + "".join(out) + "</div>"
 
 
 def _head(title, sub="", figure=""):
@@ -153,12 +172,19 @@ _BANK_TABS = [("banking.accounts", "Accounts", "/banking"),
 
 
 def banking_accounts() -> str:
+    # Same rule as the tiles: the label decides, an explicit colour overrides.
+    # "Outstanding" carried the banking section hue, which is not a money colour.
+    _gex_rows = [("Original stake", "128 shares"),
+                 ("Converted to", "68,400c"),
+                 ("Repaid so far", "26,800c", GAIN),
+                 ("Outstanding", "41,600c")]
     gex = "".join(
-        f'<tr><td>{_e(k)}</td><td class="num" style="color:{c}">{_e(v)}</td></tr>'
-        for k, v, c in [("Original stake", "128 shares", "#F4F4F4"),
-                        ("Converted to", "68,400c", "#F4F4F4"),
-                        ("Repaid so far", "26,800c", GAIN),
-                        ("Outstanding", "41,600c", DOMAINS["banking"])])
+        '<tr><td>{}</td><td class="num"{}>{}</td></tr>'.format(
+            _e(r[0]),
+            (lambda c: f' style="color:{c}"' if c else "")(
+                r[2] if len(r) > 2 else money_tone(r[0])),
+            _e(r[1]))
+        for r in _gex_rows)
     return (_head("Banking") + _tabs(_BANK_TABS, "banking.accounts",
                                      "Veteran &middot; 0.8% a month on savings") +
             _band(D.BANK_TILES) +
@@ -177,8 +203,8 @@ def banking_loans() -> str:
         f'<td class="faint">{_e(n)}</td></tr>' for t, r, n, c in D.TIERS)
     return (_head("Banking") + _tabs(_BANK_TABS, "banking.loans",
                                      "Veteran &middot; 18% a year on loans") +
-            _band([("Borrowed", "9,400c", "across 2 loans", "#F4F4F4"),
-                   ("Due this cycle", "1,200c", "paid before dividends", DOMAINS["banking"]),
+            _band([("Borrowed", "9,400c", "across 2 loans"),
+                   ("Due this cycle", "1,200c", "paid before dividends"),
                    ("Headroom", "8,290c", "you can borrow", GAIN)], "three") +
             '<div class="grid two">'
             '<div class="panel accented"><div class="h2">What you can borrow</div>'
@@ -204,8 +230,7 @@ def banking_bonds() -> str:
         f'<td class="faint">{_e(back)}</td></tr>'
         for t, i, g, term, cp, left, back in D.BONDS_OFFERED)
     return (_head("Banking") + _tabs(_BANK_TABS, "banking.bonds") +
-            _band(D.BOND_TILES + [("Next maturity", "in 2 cycles", "6,000c returned",
-                                   "#F4F4F4")], "three") +
+            _band(D.BOND_TILES + [("Next maturity", "in 2 cycles", "6,000c returned")], "three") +
             '<div class="panel accented"><div class="h2">Bonds you hold</div>' +
             _table([("Bond", ""), ("Term", ""), ("Face", "num"), ("Coupon", "num"),
                     ("Paid so far", "num"), ("Matures", "num")], held) + "</div>"
@@ -243,11 +268,15 @@ def work(rows_data=None, note: str = "") -> str:
 # ── Lands ───────────────────────────────────────────────────────────────────
 def lands(rows_data=None, note: str = "") -> str:
     """Land listings. `rows_data` defaults to the design's rows."""
-    tone = {"Leased": GAIN, "Expiring": DOMAINS["banking"], "Vacant": "#6A6A6A"}
+    # Lease STATE, not money -- money_tone does not apply. But "Expiring" carried the
+    # BANKING section's hue on the lands screen, which marks the wrong section, and the
+    # other two were stray literals. WARN is the reserved semantic for "attention", and
+    # a vacant plot is dormant rather than a loss.
+    tone = {"Leased": GAIN, "Expiring": WARN, "Vacant": INERT}
     rows = "".join(
         f'<tr><td><strong>{_e(n)}</strong></td><td class="faint">{_e(o)}</td>'
         f'<td>{_e(t)}</td><td class="num">{_e(r)}</td>'
-        f'<td style="color:{tone.get(st, "#B4B4B4")}">{_e(st)}</td>'
+        f'<td style="color:{tone.get(st, INERT)}">{_e(st)}</td>'
         f'<td class="faint">{_e(term)}</td></tr>'
         for n, o, t, r, st, term in (rows_data or D.PARCELS))
     # Land here is bought outright — there is no rent and no lease anywhere in the
@@ -296,8 +325,8 @@ def investor(rows_data=None, tiles=None, pool_pct: float = 10.0) -> str:
     return (_head("Investor", "GEX.PR preferred. A separate class from common shares "
                               "&mdash; common holders take no cut of this pool.") +
             _band(tiles or
-                  [("Your stake", "45 / 500", "9.0% of the pool", DOMAINS["banking"]),
-                   ("Pool, July", "11,400c", "10% of group net", "#F4F4F4"),
+                  [("Your stake", "45 / 500", "9.0% of the pool", HELD),
+                   ("Pool, July", "11,400c", "10% of group net"),
                    ("Your share", "+1,026c", "paid 09:16", GAIN)], "three") +
             '<div class="panel accented"><div class="h2">Where the pool came from</div>' +
             _table([("Market", ""), ("Net", "num"), ("Share of pool", "num")], rows,
