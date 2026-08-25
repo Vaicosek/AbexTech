@@ -49,6 +49,13 @@ _NAV = {
 #:
 #: These are prefix-relative: `render(prefix=PREFIX)` prepends `/canvas`, so the
 #: Hub entry is the empty string rather than "/canvas".
+#: The canvas screens a signed-out visitor may open at all. Taken from the live
+#: side's PUBLIC so the two cannot disagree about what "public" means.
+try:
+    _PUBLIC_CANVAS = set(abex_livescreens.PUBLIC)
+except Exception:                                   # pragma: no cover
+    _PUBLIC_CANVAS = {"hub", "markets", "exchange", "work", "lands"}
+
 _PATHS = {
     "hub": "", "banking": "/banking", "exchange": "/exchange",
     "stocks": "/stocks", "markets": "/markets", "work": "/work",
@@ -113,9 +120,17 @@ td.countdown{font-variant-numeric:tabular-nums}
 """
 
 
-def _page(key: str) -> str:
+def _page(key: str, public: bool = False) -> str:
+    """One canvas screen. `public` strips the reader-facing parts.
+
+    These rows are the design's sample data, so nothing here is anyone's - but a
+    signed-out visitor should still not be shown "You hold" columns, because the
+    page would be teaching them a shape the site will not give them.
+    """
     screen = SCREENS.get(key)
-    body = abex_render.screen_html(screen, owner=True)
+    if screen is not None and public and abex_livescreens is not None:
+        screen = abex_livescreens.depersonalise(screen)
+    body = abex_render.screen_html(screen, owner=not public)
     return abex_shell.render(
         _NAV.get(key, key),
         body,
@@ -130,8 +145,26 @@ def _page(key: str) -> str:
 
 def _handler(key: str):
     async def handle(request):
-        return web.Response(text=_page(key), content_type="text/html",
-                            charset="utf-8")
+        # These pages carry the DESIGN's sample rows, so nothing here belongs to
+        # anybody - but they were also the only unauthenticated pages on the
+        # site, which was an accident rather than a decision anyone made. A
+        # signed-out visitor now gets the same treatment as everywhere else: the
+        # public screens with their reader-facing columns stripped, and a
+        # sign-in for the ones that are personal end to end.
+        signed_in = False
+        try:
+            import hub_web
+            signed_in = bool(hub_web.current_user(request))
+        except Exception:                            # pragma: no cover
+            pass
+        if not signed_in and key not in _PUBLIC_CANVAS:
+            try:
+                import hub_web
+                return hub_web._login_required_page(request)
+            except Exception:                        # pragma: no cover
+                raise web.HTTPFound("/hub/login")
+        return web.Response(text=_page(key, public=not signed_in),
+                            content_type="text/html", charset="utf-8")
     handle.__name__ = f"canvas_{key}"
     return handle
 
@@ -174,11 +207,20 @@ def register_live_routes(app) -> None:
         def _make(k):
             async def handle(request):
                 user = hub_web.current_user(request)
-                if not user:
-                    return hub_web._login_required_page(request)
-                snap = hub_web.money_snapshot(user["user_id"])
-                screen = abex_livescreens.screen(k, str(user["user_id"]))
-                body = abex_render.screen_html(screen, owner=True)
+                if user:
+                    snap = hub_web.money_snapshot(user["user_id"])
+                    screen = abex_livescreens.screen(k, str(user["user_id"]))
+                else:
+                    # Public read. `screen(public=True)` is passed no user id, so
+                    # nothing is looked up against an account, and then strips
+                    # the reader-facing columns. It returns None for a screen
+                    # that is personal end to end - the only case that still
+                    # asks a stranger to sign in.
+                    screen = abex_livescreens.screen(k, public=True)
+                    if screen is None:
+                        return hub_web._login_required_page(request)
+                    snap = None
+                body = abex_render.screen_html(screen, owner=bool(user))
                 title = f'{screen.get("title", k.title())} · Abex Tech'
                 return hub_web._html(hub_web.page(title, k, user, snap, body))
             handle.__name__ = f"live_{k}"

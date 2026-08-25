@@ -1487,7 +1487,13 @@ def _markets_body(uid: str) -> str:
 async def h_markets(request: Any) -> Any:
     user = current_user(request)
     if not user:
-        return _login_required_page(request)
+        # Markets, grades, backing and disclosure are public facts about the
+        # economy; the "You hold" column is not, and is dropped rather than
+        # dashed - see `abex_livescreens.depersonalise`.
+        body = _canvas_body("markets", "", public=True)
+        if body is None:
+            return _login_required_page(request)
+        return _html(page("Markets · Abex Tech", "markets", None, None, body))
     snap = money_snapshot(user["user_id"])
     body = _canvas_body("markets", user["user_id"]) or _markets_body(user["user_id"])
     return _html(page("Markets · Abex Tech", "markets", user, snap, body))
@@ -1835,7 +1841,7 @@ except Exception:                                   # pragma: no cover
     _CANVAS_CSS = ""
 
 
-def _canvas_body(key: str, user_id: str):
+def _canvas_body(key: str, user_id: str, public: bool = False):
     """The designed screen for `key`, built from live data — or None.
 
     `abex_livescreens` produces the canvas's screen shape from the database and
@@ -1853,10 +1859,10 @@ def _canvas_body(key: str, user_id: str):
         import abex_render
     except Exception:                               # pragma: no cover
         return None
-    screen = abex_livescreens.screen(key, str(user_id))
+    screen = abex_livescreens.screen(key, str(user_id), public=public)
     if screen is None:
         return None
-    return abex_render.screen_html(screen, owner=True)
+    return abex_render.screen_html(screen, owner=not public)
 
 
 async def h_root(request: Any) -> Any:
@@ -1864,8 +1870,14 @@ async def h_root(request: Any) -> Any:
     user. It used to redirect to the first section (Markets), which made the Hub
     tab indistinguishable from Markets."""
     user = current_user(request)
+    # Public read. The Hub's public half is the economy - the index, the markets
+    # and their grades. Its personal half - your holdings, your open orders - is
+    # not built at all for a stranger, rather than built and hidden.
     if not user:
-        return _login_required_page(request)
+        body = _canvas_body("hub", "", public=True)
+        if body is None:
+            return _login_required_page(request)
+        return _html(page("Abex Tech", "hub", None, None, body))
     snap = money_snapshot(user["user_id"])
     # The designed Hub — Index / holdings / open orders band, the waiting-on-you
     # queue, markets by grade — on live rows. `_hub_home_body`'s section-card

@@ -51,6 +51,52 @@ except Exception:                                   # pragma: no cover
 
 from abex_canvas import SCREENS as _CANVAS
 
+#: Column headings that are about the READER, not about the thing listed.
+PERSONAL_COLUMNS = {"you hold", "your position", "shares", "value", "cost",
+                    "unrealised", "dividend last cycle"}
+
+#: Band tiles that are about the reader, matched on the label, case-folded.
+PERSONAL_TILES = {"your holdings", "holdings", "unrealised", "cost",
+                  "your positions", "open orders"}
+
+
+def depersonalise(screen: dict) -> dict:
+    """The same screen with everything about the reader removed.
+
+    Spec §7: "Role gating changes visibility, not copy - an investor and an owner
+    see the same sentence structure, just fewer blocks." So this drops columns,
+    tiles and whole blocks; it does not rewrite a sentence or swap in a friendlier
+    heading. A stranger reads the same page with less in it.
+
+    Columns are DROPPED, not dashed. An em dash already means something specific
+    in this design - "the product has this column and this market did not
+    disclose it", a fact about the market. For a signed-out reader the truth is
+    different: the column is about them, and there is no them yet. A wall of
+    dashes would say the wrong thing in the design's own vocabulary.
+
+    A balance block goes entirely. Portfolio, credit limit, your bids - each is a
+    personal statement end to end, and there is no public half of one.
+    """
+    out = dict(screen)
+    out["band"] = [t for t in (screen.get("band") or [])
+                   if str(t[0]).strip().lower() not in PERSONAL_TILES]
+    blocks = []
+    for b in screen.get("blocks", []):
+        if "bal" in b:
+            continue
+        nb = dict(b)
+        heads = nb.get("c") or []
+        keep = [i for i, h in enumerate(heads)
+                if str(h).rstrip("#").strip().lower() not in PERSONAL_COLUMNS]
+        if heads and len(keep) != len(heads):
+            nb["c"] = [heads[i] for i in keep]
+            nb["r"] = [[row[i] for i in keep if i < len(row)]
+                       for row in (nb.get("r") or [])]
+        blocks.append(nb)
+    out["blocks"] = blocks
+    return out
+
+
 def _num(cell) -> float:
     """A bare number out of a formatted cell. 0.0 when it is not one."""
     try:
@@ -327,12 +373,35 @@ BUILDERS = {
 }
 
 
-def screen(key: str, user_id: str = "") -> dict | None:
+#: What a signed-out visitor may read AT ALL. Markets, their grades, the listed
+#: share prices, the open work and the land register are public facts about the
+#: economy - the same things a player can see in Discord without an account here.
+#:
+#: `stocks` is deliberately absent: that screen IS your positions, and with the
+#: personal parts removed there is no page left to serve. Banking, Messages,
+#: History, My market and the owner console are absent for the same reason.
+PUBLIC = {"hub", "markets", "exchange", "work", "lands"}
+
+
+def screen(key: str, user_id: str = "", public: bool = False) -> dict | None:
+    """One screen. `public=True` builds it for a reader who is not signed in.
+
+    Two independent halves, both needed. The build is passed NO user id, so
+    nothing is ever looked up against an account - there is nothing personal in
+    the result to leak even if the stripping were wrong. Then the result is
+    stripped, so the page does not advertise columns the reader cannot fill.
+
+    Returns None for a key that is not public, and the caller sends them to sign
+    in. None here is "not for strangers", never "does not exist".
+    """
+    if public and key not in PUBLIC:
+        return None
     fn = BUILDERS.get(key)
     if fn is None:
         return None
     try:
-        return fn(user_id)
+        built = fn("" if public else user_id)
     except Exception as exc:                        # pragma: no cover
         log.warning("[livescreens] %s failed: %s", key, exc, exc_info=True)
         return _empty(key, "That screen could not be built from live data.")
+    return depersonalise(built) if public else built
