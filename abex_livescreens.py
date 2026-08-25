@@ -313,6 +313,56 @@ def stocks(user_id: str) -> dict:
                   band, blocks)
 
 
+def _item_block(market_id: str, listed: bool, owner: bool) -> dict | None:
+    """What moves through a market, item by item, month by month.
+
+    Two columns per month because in and out are different trades. An item that
+    sold 4,465 and bought 3,727 is a shop turning stock over; a single
+    "movement" figure would read as one number and hide which direction the
+    shop is leaning.
+
+    §6.7 gates it: a LISTED market discloses its ledger to everyone, so this is
+    public on one. A PRIVATE market discloses nothing — except to its own owner,
+    who is not a stranger to his own shop. Anyone else gets no block at all
+    rather than an empty table, which would advertise that there is something
+    here to see.
+    """
+    if not (listed or owner):
+        return None
+    if abex_live is None:
+        return None
+    data = abex_live.market_items(market_id, months=3, limit=30)
+    if data is None or not data.get("months"):
+        return None
+
+    cols = ["Item"]
+    for _key, name in data["months"]:
+        short = name.split()[0]
+        cols += [f"{short} out#", f"{short} in#"]
+    cols.append("Net#")
+
+    rows = []
+    for r in data["rows"]:
+        cells = [r["item"]]
+        for sold, bought in r["cells"]:
+            cells.append(f"{sold:,}" if sold else DASH)
+            cells.append(f"{bought:,}" if bought else DASH)
+        net = r["net"]
+        cells.append(("g|" if net >= 0 else "l|") + f"{net:+,.0f}c")
+        rows.append(cells)
+
+    shown, total = len(rows), data["total_items"]
+    more = ("" if shown >= total
+            else f" {total - shown} further item"
+                 f"{'' if total - shown == 1 else 's'} moved less and are not listed.")
+    note = (f"{shown} of {total} items, most moved first. OUT is what the shop "
+            f"sold to players; IN is what it bought from them — opposite trades, "
+            f"so they are opposite columns. Net is coins across the window.{more}")
+    if not listed:
+        note += (" This market is private: only you can see this.")
+    return {"h2": "What moves here", "c": cols, "r": rows, "n": note}
+
+
 # ── One stock ───────────────────────────────────────────────────────────────
 def stock(user_id: str = "", market_id: str = "") -> dict:
     """One market's page: the price, its shape, its months, its register.
@@ -334,6 +384,17 @@ def stock(user_id: str = "", market_id: str = "") -> dict:
     if d is None:
         return _empty("stocks", "No such market.")
 
+    # Whether the reader owns this market. It decides one thing only: whether a
+    # PRIVATE market's item table is built. §6.7 keeps a private market's trade
+    # from everyone else; it was never meant to keep it from its own owner.
+    owner = False
+    if user_id:
+        try:
+            owner = any(m["market_id"] == d["market_id"]
+                        for m in abex_live.owned_markets(str(user_id)))
+        except Exception:
+            owner = False
+
     grade_sub = (f"{d['backing']:,.2f}× backed" if d["backing"] else "not scored")
     if not d["listed"]:
         band = [("Grade", d["grade"], grade_sub),
@@ -347,7 +408,15 @@ def stock(user_id: str = "", market_id: str = "") -> dict:
                 "btns": [["Back to the exchange", "s", "/hub/exchange"]],
                 "n": "Its grade is still scored from the same pillars as everyone "
                      "else's, which is why it can be shown."}
-        out = _shell("stocks", f"{d['name']} · private", band, [note])
+        # Its OWNER is not a stranger to his own shop. §6.7 keeps a private
+        # market's trade from everybody else, and returning here without this
+        # meant it was kept from him too — he would have had to list the market
+        # publicly to read his own item ledger.
+        blocks = [note]
+        mine = _item_block(d["market_id"], False, owner)
+        if mine is not None:
+            blocks.append(mine)
+        out = _shell("stocks", f"{d['name']} · private", band, blocks)
         out["title"] = d["name"]
         return out
 
@@ -411,7 +480,10 @@ def stock(user_id: str = "", market_id: str = "") -> dict:
                       "holds which shares is a fact about a person, and nothing "
                       "asks him to publish it.")}
 
-    blocks = [b for b in (chart, months, price_block, register) if b is not None]
+    items = _item_block(d["market_id"], d["listed"], owner)
+
+    blocks = [b for b in (chart, months, items, price_block, register)
+              if b is not None]
     # Both halves, as everywhere else that serves a signed-out reader: the
     # detail call is passed no user id so nothing is looked up against an
     # account, AND the block is not built without one. Either alone is a bug

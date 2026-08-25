@@ -1253,3 +1253,67 @@ def stock_detail(market_id: str, user_id: str = "") -> Optional[dict]:
         "price_rows": (price_formula(mid)[0] if listing else []),
         "series": price_series(mid, 90),
     }
+
+
+def market_items(market_id: str, months: int = 3, limit: int = 30) -> Optional[dict]:
+    """What moves through one market, item by item, month by month.
+
+    `csn_history_items` is the per-item half of a CSN filing: for each month it
+    holds how many of an item the shop SOLD to players and how many it BOUGHT
+    from them. Those two are opposite directions of trade and the table keeps
+    them apart, so this does too — an item with 4,465 sold and 3,727 bought is a
+    shop turning stock over, and one figure for "movement" would hide that.
+
+    Direction, stated once so no caller has to guess: `sold_qty` is out of the
+    shop and is income; `bought_qty` is into the shop and is what it paid for.
+    `net_coins` is signed the same way — negative means the shop spent more on
+    that item than it took.
+
+    Items are ranked by TOTAL pieces moved across the window, not by coins, so a
+    cheap high-volume line is not buried under one expensive sale.
+    """
+    try:
+        db = _db()
+    except Exception:                               # pragma: no cover
+        return None
+    mid = str(market_id or "")
+    try:
+        keys = [r[0] for r in db._get_conn().execute(
+            "SELECT DISTINCT month FROM csn_history_items WHERE market_id = ? "
+            "ORDER BY month DESC LIMIT ?", (mid, int(months)))]
+    except Exception as exc:
+        log.warning("[abex_live] item months for %s unreadable: %s", mid, exc)
+        return None
+    if not keys:
+        return {"months": [], "rows": [], "total_items": 0}
+    keys.reverse()                                   # oldest first, left to right
+
+    marks = ",".join("?" for _ in keys)
+    try:
+        rows = db._get_conn().execute(
+            f"SELECT item, month, sold_qty, bought_qty, net_coins "
+            f"FROM csn_history_items WHERE market_id = ? AND month IN ({marks})",
+            (mid, *keys)).fetchall()
+    except Exception as exc:
+        log.warning("[abex_live] items for %s unreadable: %s", mid, exc)
+        return None
+
+    by_item: dict = {}
+    for item, month, sold, bought, net in rows:
+        slot = by_item.setdefault(str(item), {"months": {}, "moved": 0, "net": 0.0})
+        slot["months"][str(month)] = (int(sold or 0), int(bought or 0),
+                                      float(net or 0))
+        slot["moved"] += int(sold or 0) + int(bought or 0)
+        slot["net"] += float(net or 0)
+
+    ranked = sorted(by_item.items(), key=lambda kv: -kv[1]["moved"])
+    out = []
+    for item, slot in ranked[:limit]:
+        cells = []
+        for key in keys:
+            sold, bought, _n = slot["months"].get(key, (0, 0, 0.0))
+            cells.append((sold, bought))
+        out.append({"item": item, "cells": cells, "moved": slot["moved"],
+                    "net": slot["net"]})
+    return {"months": [(k, _month_name(k)) for k in keys], "rows": out,
+            "total_items": len(by_item)}
