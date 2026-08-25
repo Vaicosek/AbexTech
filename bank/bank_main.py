@@ -522,7 +522,7 @@ async def bank_balance(interaction: discord.Interaction):
     if not await ensure_account(interaction, write=False):
         return
     await interaction.response.defer(ephemeral=True)
-    wallet = await _safe(interaction, client_rs.get_balance(interaction.user.id))
+    wallet = await _core_read_safe(interaction, "get_balance", interaction.user.id)
     if wallet is None:
         return
     sav = bdb.get_savings(interaction.user.id)["balance"]
@@ -583,6 +583,51 @@ async def _bank_money_call(op: str, interaction: discord.Interaction,
         await interaction.followup.send("The bank could not complete that.",
                                         ephemeral=True)
     return None
+
+
+async def _core_read(op: str, *args):
+    """One of core's READ endpoints, in-process when possible, over HTTP when not.
+
+    `bank_api`'s h_stocks / h_portfolio / h_balance reach `Restocker_db` and nothing
+    else, and both bots now run against one restocker.db -- so these are a SELECT, not
+    a network call. `core_read` mirrors those three handlers field for field.
+
+    TRADES ARE NOT HERE, on purpose. h_stock_buy/h_stock_sell call
+    `run_on_bot_loop(exec_stock_trade, ...)`, which awaits a state-mutating function on
+    CORE'S OWN EVENT LOOP -- that is how core serialises trades, and it is a property of
+    the running bot, not of the database. The Bank is a separate OS process, so HTTP is
+    the only way to reach that loop. A direct-DB trade would bypass both the
+    serialisation and the slippage bounds `_trade_bounds` forwards.
+
+    Raises RestockerError when NEITHER path is available, so the existing
+    `except RestockerError` at every call site keeps working unchanged.
+    """
+    import asyncio as _aio
+    try:
+        import core_read as _cr
+        if _cr.available():
+            return await _aio.to_thread(getattr(_cr, op), *args)
+    except Exception:
+        log.warning("[bank] in-process %s failed; falling back to HTTP", op, exc_info=True)
+    if client_rs is None:
+        raise RestockerError(
+            "core is not reachable: its tables are not in the database this process "
+            "opened, and RESTOCKER_API_URL/RESTOCKER_BANK_TOKEN are not configured")
+    return await getattr(client_rs, op)(*args)
+
+
+async def _core_read_safe(interaction: discord.Interaction, op: str, *args):
+    """`_core_read`, surfacing a failure to the user. Returns None when it failed.
+
+    NOT `_safe`: that one refuses outright when `client_rs is None`, which would now
+    block a read the in-process path can serve perfectly well without any HTTP config
+    at all.
+    """
+    try:
+        return await _core_read(op, *args)
+    except RestockerError as e:
+        await _reply(interaction, f"Couldn't reach the exchange: {e}", error=True)
+        return None
 
 
 @bank_group.command(name="deposit", description="Move coins from your wallet into savings")
@@ -1230,7 +1275,7 @@ async def _market_autocomplete(interaction: discord.Interaction, current: str):
     if client_rs is None:
         return []
     try:
-        markets = await client_rs.list_stocks()
+        markets = await _core_read("list_stocks")
     except RestockerError:
         return []
     cur = (current or "").lower()
@@ -1266,8 +1311,9 @@ INVEST_MAX_SLIPPAGE_BPS = int(os.getenv("INVEST_MAX_SLIPPAGE_BPS", "200"))
 
 async def _quote_for(interaction: discord.Interaction, market_id: str):
     """The current price of one market, from the same list `/invest list` shows."""
-    markets = await _safe(interaction, client_rs.list_stocks())
-    if markets is None:
+    try:
+        markets = await _core_read("list_stocks")
+    except RestockerError:
         return None
     for m in markets:
         if str(m.get("market_id")) == str(market_id):
@@ -1411,7 +1457,7 @@ async def _quote_then_confirm(interaction: discord.Interaction, market: str,
 
 async def invest_list(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
-    markets = await _safe(interaction, client_rs.list_stocks())
+    markets = await _core_read_safe(interaction, "list_stocks")
     if markets is None:
         return
     if not markets:
@@ -1452,7 +1498,7 @@ async def invest_portfolio(interaction: discord.Interaction):
     if not await ensure_account(interaction, write=False):
         return
     await interaction.response.defer(ephemeral=True)
-    holdings = await _safe(interaction, client_rs.portfolio(interaction.user.id))
+    holdings = await _core_read_safe(interaction, "portfolio", interaction.user.id)
     if holdings is None:
         return
     if not holdings:
@@ -1502,7 +1548,7 @@ async def admin_account(interaction: discord.Interaction, member: discord.Member
     wallet = "Unknown"
     if client_rs is not None:
         try:
-            wallet = ab.coins((await client_rs.get_balance(member.id))["coins"])
+            wallet = ab.coins((await _core_read("get_balance", member.id))["coins"])
         except RestockerError as e:
             wallet = f"Unavailable: {e}"
 

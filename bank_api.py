@@ -512,12 +512,25 @@ async def h_stocks(request):
     db = _db()
     out = []
     try:
-        markets = db.get_markets() if hasattr(db, "get_markets") else []
+        markets = db.get_markets() if hasattr(db, "get_markets") else {}
     except Exception:
-        markets = []
+        markets = {}
     seen = set()
-    for mk in (markets or []):
-        mid = mk.get("id") or mk.get("market_id") if isinstance(mk, dict) else None
+
+    # get_markets() returns a DICT KEYED BY market_id. Iterating it as a list yields the
+    # KEY STRINGS, so `isinstance(mk, dict)` was False for every entry, `mid` stayed None
+    # and every market hit the `continue` below -- this endpoint returned an EMPTY list
+    # against a database with two active listings, which is why /invest list showed
+    # nothing. Both shapes are handled so a future change to get_markets cannot re-break
+    # it silently.
+    if isinstance(markets, dict):
+        pairs = list(markets.items())
+    else:
+        pairs = [((m.get("market_id") or m.get("id")) if isinstance(m, dict) else None, m)
+                 for m in (markets or [])]
+
+    for key, mk in pairs:
+        mid = key or ((mk.get("market_id") or mk.get("id")) if isinstance(mk, dict) else None)
         if not mid:
             continue
         listing = db.get_market_shares(mid)
