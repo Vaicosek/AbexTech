@@ -904,6 +904,14 @@ def page(title: str, active: str, user: Optional[dict], snap: Optional[dict],
     # a route behind it.
     paths = {_NAV_KEY.get(s["key"], s["key"]): s["path"] for s in sections()
              if staff or not s.get("staff_only")}
+    # Spec §3: the nav's counts are live data, not decoration. Without this the
+    # sidebar kept the design's 8/13/7/6/3/2/3 beside live pages, which told a
+    # reader he had three unread messages when he had none.
+    try:
+        import abex_live
+        counts = abex_live.nav_counts(str((user or {}).get("user_id") or ""))
+    except Exception:
+        counts = None
     return abex_shell.render(
         _NAV_KEY.get(active, active),
         body,
@@ -917,6 +925,7 @@ def page(title: str, active: str, user: Optional[dict], snap: Optional[dict],
         tail=f"<script>{_STRIP_JS}</script>",
         available=mounted,
         paths=paths,
+        counts=counts,
     )
 
 

@@ -142,6 +142,13 @@ def _cell(head: str, raw, numeric: bool, identity: bool) -> str:
 
 
 def _table(block: dict, mine=None) -> str:
+    # A block may name its own "your position" rows. `mine=` on `screen_html` is
+    # one set applied to every table on the screen, which is right when a screen
+    # has one table and wrong the moment it has two — the indices from the
+    # holdings table would wash arbitrary rows of the filings table beside it.
+    # A block's own list wins.
+    if block.get("mine") is not None:
+        mine = set(block["mine"])
     heads = block.get("c") or []
     numeric = [h.endswith("#") or h == "#" for h in heads]
     labels = ["" if h == "#" else h.rstrip("#") for h in heads]

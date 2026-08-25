@@ -210,12 +210,22 @@ def markets() -> Optional[list[tuple]]:
     return rows
 
 
-def nav_counts() -> dict:
+def nav_counts(user_id: str = "") -> dict:
     """Live counts for the nav, keyed by nav entry.
 
-    Only what can be counted honestly right now. An entry missing from this dict
-    keeps the tree's own number; an entry mapped to "" shows none at all, which is
-    the right answer when nobody knows it yet.
+    Spec §3 is explicit that these are data, not decoration: "recompute them from
+    data, don't hardcode". The design ships 8 / 13 / 7 / 6 / 3 / 2 / 3 as part of
+    its picture, and a sidebar that keeps those next to live pages tells a reader
+    there are three unread messages when there are none — a wrong number in the
+    one place he looks before deciding whether to click.
+
+    So every entry here is counted or blank. An entry mapped to "" shows no badge
+    at all, which is the honest answer where nobody knows the number; an entry
+    missing from this dict falls back to the tree's own figure, and nothing is
+    left missing on purpose.
+
+    `user_id` is only for the counts that are about the reader — Messages. Called
+    without one, that count is blank rather than somebody else's.
     """
     out: dict = {}
     try:
@@ -231,12 +241,32 @@ def nav_counts() -> dict:
         out["stocks"] = len(db.get_public_markets() or {})
     except Exception:
         pass
-    # Orders and Lands still carry the design's numbers. Rather than
-    # leave a figure nobody has checked standing next to live ones, they show
-    # nothing until each screen is wired.
-    for key in ("orders", "lands", "auctions", "investor"):
+    try:
+        open_orders = sum(1 for o in (db.load_orders() or [])
+                          if str(o.get("status") or "").lower() == "open")
+        out["work"] = open_orders
+        out["orders"] = open_orders
+    except Exception:
+        pass
+    try:
+        listings = db.get_active_land_listings() or []
+        out["auctions"] = sum(1 for l in listings
+                              if str(l.get("mode") or "") == "auction")
+        out["lands"] = sum(1 for l in listings if str(l.get("kind") or "") == "land")
+    except Exception:
+        pass
+    if user_id:
+        try:
+            import messages_web
+            out["messages"] = messages_web._unread_total(str(user_id))
+        except Exception:
+            pass
+    # Blank, not the design's number, for everything still uncounted.
+    for key in ("investor", "mine", "mine.report"):
         out.setdefault(key, "")
-    return out
+    out.setdefault("messages", "")
+    # A zero badge is noise — "Auctions 0" says less than "Auctions".
+    return {k: ("" if v == 0 else v) for k, v in out.items()}
 
 
 def stocks(user_id: str) -> Optional[dict]:

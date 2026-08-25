@@ -354,10 +354,14 @@ def exchange(user_id: str = "") -> dict:
             ("Holders", str(sum(int(str(r[4]).replace(",", "") or 0) for r in rows)),
              "share accounts on the register"),
             ("Dividends", "none paid yet", "no market has declared one")]
+    # §5: the rows this reader holds are flagged, and only while they are the
+    # minority of the table - `_table` enforces that half. A wash on most of the
+    # rows is a zebra stripe, not a flag.
+    held_rows = [i for i, r in enumerate(out) if r[7] != DASH]
     table = {"h2": "Listed markets", "ac": 1,
              "c": ["Market", "Ticker", "Grade", "Share price#", "Shares out#",
                    "Holders#", "Free float#", "You hold#"],
-             "r": out,
+             "r": out, "mine": held_rows,
              "n": ("Free float counts shares in someone else's hands - the "
                    "register minus the owner's own holding."
                    if out else "No market is listed.")}

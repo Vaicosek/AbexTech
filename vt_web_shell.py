@@ -427,8 +427,16 @@ _PAGE_CTX: "contextvars.ContextVar[Optional[dict]]" = contextvars.ContextVar(
     "vt_page_ctx", default=None)
 
 
-def set_page_ctx(view_as: Optional[dict], staff: bool) -> None:
-    _PAGE_CTX.set({"view_as": view_as, "staff": bool(staff)})
+def set_page_ctx(view_as: Optional[dict], staff: bool, user_id: str = "") -> None:
+    """Per-request render context. `user_id` is WHOSE PAGE IS BEING DRAWN.
+
+    Under view-as that is the target, not the staff member, because everything
+    the shell derives from it — the unread badge above all — has to match the
+    pages beside it. A sidebar saying three unread while the inbox under it is
+    somebody else's is the exact confusion view-as exists to avoid.
+    """
+    _PAGE_CTX.set({"view_as": view_as, "staff": bool(staff),
+                   "user_id": str(user_id or "")})
 
 
 def page_ctx() -> dict:
@@ -526,13 +534,13 @@ def require_page_session(request):
                       "real_name": sess.get("name") or str(sess["user_id"]),
                       "target_id": str(va["target_id"]),
                       "target_name": va.get("target_name") or str(va["target_id"])},
-                     staff)
+                     staff, str(va["target_id"]))
         rendered = {"user_id": str(va["target_id"]),
                     "name": va.get("target_name") or str(va["target_id"]),
                     "csrf": sess.get("csrf") or "",
                     "view_as": True, "real_user_id": str(sess["user_id"])}
         return rendered, None
-    set_page_ctx(None, staff)
+    set_page_ctx(None, staff, str(sess["user_id"]))
     return sess, None
 
 
@@ -1567,6 +1575,15 @@ def page(title: str, nav_key: str, body: str, page_js: str = "", strip: bool = T
     head = (_STRIP_HTML if strip else _BARE_HEAD_HTML)
     tail = page_scripts(page_js)
 
+    # Spec §3: the nav's counts are live. Passed here as well as in `hub_web` so
+    # the sidebar reads the same on a transactional page as on a designed one —
+    # a badge that changes when you cross between them is worse than no badge.
+    try:
+        import abex_live
+        counts = abex_live.nav_counts(str(ctx.get("user_id") or ""))
+    except Exception:
+        counts = None
+
     doc = abex_shell.render(
         _NAV_KEY.get(nav_key, ""),
         body,
@@ -1577,6 +1594,7 @@ def page(title: str, nav_key: str, body: str, page_js: str = "", strip: bool = T
         tail=tail,
         available=_MOUNTED,
         paths=_NAV_PATHS,
+        counts=counts,
     )
     return web.Response(text=doc, content_type="text/html", charset="utf-8")
 
