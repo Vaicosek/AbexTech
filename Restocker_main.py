@@ -1696,7 +1696,19 @@ def pieces_to_unit(order: dict, pieces: int) -> tuple[float, str]:
     unit = (order.get("unit_type") or "pieces").lower()
 
     if unit == "barrels":
-        return (pieces / BARREL_PIECES, "barrels")
+        # THE SAME AUDIT FIX AS `unit_to_pieces`, WHICH ONLY GOT HALF DONE. A
+        # barrel is 54 SLOTS, so for a stackable item it is 54 x stack_size
+        # pieces. `unit_to_pieces` was corrected to multiply by both; its
+        # inverse kept dividing by the flat 54, so the pair disagreed 64x and
+        # the round trip did not close: one barrel converts to 3,456 pieces and
+        # 3,456 pieces converted back read "64 barrels".
+        #
+        # This is what `fmt_qty` prints as an order's REMAINING quantity, on the
+        # Discord order card and on Work. A worker filling a one-barrel order
+        # would have been told he still owed 64 of them.
+        stack_size = int(order.get("stack_size", 64 if order.get("stackable", True) else 1) or 1)
+        per_barrel = int(BARREL_PIECES) * max(1, stack_size)
+        return (pieces / per_barrel, "barrels")
     if unit == "stacks":
         stack_size = int(order.get("stack_size", 64 if order.get("stackable", True) else 1) or 1)
         stack_size = max(1, stack_size)
