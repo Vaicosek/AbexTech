@@ -5758,6 +5758,12 @@ async def start_webserver(port: int = 8080):
         # answer when the bot is down, because it is what someone reads
         # BEFORE they have an account.
         ("terms_web",    "register_terms_routes",    "Terms"),
+        # The canvas screens, under /canvas/*. Mounted BESIDE the live pages,
+        # not over them: they still carry the design's sample rows, and sample
+        # money on a real route would be worse than an ugly page - it would be
+        # a lying one. Each moves onto its real route as it is wired to live
+        # data.
+        ("canvas_web",   "register_canvas_routes",   "Canvas screens"),
     ):
         try:
             _mod = __import__(_mod_name)
