@@ -19,8 +19,19 @@ A tiny bot you OWN and "trust" into partner Discord servers. What it does today:
   3. When someone claims, capture their Discord ID, tell Abex Tech, and DM them an
      invite to your home server to finish and open their ticket.
 
-It carries NO market/DB/dashboard logic — everything authoritative lives in Abex Tech.
-That's what keeps it lightweight and safe to place in servers you don't fully control.
+It carries NO market/valuation/escrow logic — everything authoritative lives in Abex
+Tech. That's what keeps it lightweight and safe to place in servers you don't fully
+control.
+
+One exception, and it is a read: since `run_all.py` puts core and this bot in the same
+container against one `restocker.db`, the LAND BOARD is rendered from a `SELECT` on
+core's own `land_listings` (see `stakes_local.py`) instead of a network round trip to
+a server in the same filesystem. Nothing else moved. Every write — claiming an order,
+bidding, buying, listing, cancelling, closing — still goes to core over
+`/api/network/*`, because each of those takes or releases a hold and core owns the one
+state machine for that. The orders board also still goes over HTTP: its `pay` figure
+is computed by core, not stored, and recomputing it here would be a second
+implementation of order pricing.
 
 Why this works when a mirrored post doesn't: a Discord component only routes to the bot
 that POSTED it. Because THIS bot is present in each partner server, its dropdown really
@@ -40,6 +51,7 @@ Two ways, and they stack:
 Invite the bot with: Send Messages + Embed Links + Use Application Commands.
 No privileged intents needed.
 """
+import asyncio
 import os
 import json
 import logging
@@ -112,6 +124,46 @@ def _auth_describe():
     if SECRET:
         return "legacy shared secret (NETWORK_SHARED_SECRET) — due for retirement"
     return "NONE"
+
+
+# ── The in-process land read ─────────────────────────────────────────────────
+# `run_all.py` runs core and this bot as separate PROCESSES over ONE `restocker.db`,
+# so the land board's data is already in a file this process can open. `stakes_local`
+# answers `/api/network/land/listings` with the same payload shape from a `SELECT`.
+#
+# It is a READ, and it is the only thing that moved. `stakes_local` implements no
+# write and must not be given one: a bid places a hold and releases the outbid
+# holder's, and `ledger_v2`'s hold primitives each open their own non-re-entrant
+# transaction, so that sequence cannot be made atomic from here the way
+# `bank_money.deposit` can. Core owns that state machine; a second one in this process
+# writing the same rows is how coins go missing.
+#
+# Imported defensively: a deployment that has this bot but not the monorepo (a partner
+# satellite on its own box) still runs, and simply keeps using HTTP.
+try:
+    import stakes_local as _local
+except Exception:                     # pragma: no cover - satellite without the repo
+    _local = None                     # type: ignore[assignment]
+
+_local_state = None                   # None = not probed yet
+
+
+def _force_http() -> bool:
+    """Escape hatch: pin the old HTTP path even when the database is right here."""
+    return _env("SAT_FORCE_HTTP", "").strip().lower() in ("1", "true", "yes")
+
+
+def _local_land() -> bool:
+    """Whether the land board reads the database directly. Probed once per process —
+    the answer cannot change while running: either core's tables are in the database
+    this container opened, or they are not."""
+    global _local_state
+    if _local_state is None:
+        _local_state = bool(_local) and not _force_http() and _local.available()
+        log.info("land listings: %s",
+                 "reading restocker.db directly (in-process)" if _local_state
+                 else f"over HTTP to {API_BASE}")
+    return _local_state
 
 
 CHANNELS_FILE = _env("SAT_CHANNELS_FILE", "channels.json")
@@ -313,13 +365,48 @@ async def _push_board(channel, embed, view):
 # Same thin-relay contract as orders: this bot renders a board and captures the
 # clicker's real Discord ID; ALL money/valuation/escrow lives in Abex Tech and is
 # reached over /api/network/land/*. Enabled when SAT_FEATURES includes "land".
+#
+# The one exception is the board's own READ, which now comes from `stakes_local`
+# when core's tables are in this container's database — same payload, no network.
+# Bid, buy, create, cancel and close are untouched and still POST to core: they each
+# take, capture or release a ledger hold, and `place_hold`/`capture_hold`/
+# `release_hold` each open their own non-re-entrant `_tx()`, so there is no way to
+# compose one from here the way `bank_money` composes a deposit. The scoped service
+# token is also what limits this bot to {read, transfer, hold} with no mint — a
+# direct-DB write would be trusting a string instead.
 # ══════════════════════════════════════════════════════════════════════════════
 _land_boards: dict[int, int] = {}          # {channel_id: message_id}
 _land_cache: dict[int, dict] = {}          # {listing_id: last-seen listing dict}
 
 
 async def _api_get_land_listings(session):
-    """Fetch active land listings from Abex Tech. Returns a list, or None on failure."""
+    """Active land listings. Returns a list, or None on failure.
+
+    None means "we do not know what the listings are", and the callers turn that into
+    "leave the last board up" (:refresh_boards) rather than into an empty board. An
+    empty LIST means the auction genuinely has nothing open, and the board says so.
+    Keeping those two apart is the whole reason this returns None instead of [].
+
+    The local read is tried first, so a stale `VHELPER_API_BASE` left in .env cannot
+    send the board back out over a network to fetch rows that are on this disk. It is
+    dispatched with `to_thread` because it is a blocking SQLite call on the bot's
+    event loop otherwise — the same shape `bank_main` uses for `bank_money`.
+    """
+    # The probe rides in the same worker thread as the read: it is what imports
+    # `ledger_v2` (and core's `Restocker_db` behind it) the first time, and that
+    # import has no business happening on the thread holding the Discord heartbeat.
+    if await asyncio.to_thread(_local_land):
+        try:
+            data = await asyncio.to_thread(
+                _local.handle, "GET", "/api/network/land/listings")
+        except Exception as e:                 # handle() does not raise; belt and braces
+            log.warning("local land listings read failed: %s", e)
+            return None
+        if not data.get("ok"):
+            log.warning("local land listings read declined: %s", data.get("error"))
+            return None
+        return data.get("listings", [])
+
     try:
         async with session.get(f"{API_BASE}/api/network/land/listings",
                                headers=_auth_headers(),
@@ -425,11 +512,16 @@ class BidModal(discord.ui.Modal, title="Place a bid"):
     def __init__(self, listing):
         super().__init__(timeout=300)
         self.listing = listing
+        # `min_next_bid` is core's figure. The local read omits it rather than
+        # deriving a second one (see stakes_local's docstring), so the no-hint
+        # placeholder has to carry the "leave it blank" affordance on its own —
+        # otherwise converting the read would quietly cost players the easiest
+        # correct way to bid. Blank is valid either way: core picks the minimum.
         hint = listing.get("min_next_bid")
         self.amount = discord.ui.TextInput(
             label="Bid in coins",
             placeholder=(f"Minimum {ab.coins(hint)} — leave blank to bid the minimum"
-                         if hint else "Amount in coins"),
+                         if hint else "Leave blank to bid the minimum"),
             required=False, max_length=15)
         self.add_item(self.amount)
 
