@@ -1,4 +1,8 @@
-"""Orders and Work quote the same pay for the same order.
+"""Work quotes one pay figure, and its Orders section quotes the same one.
+
+Work and Orders are one page: the same order table read from two sides, what
+can I claim and what did I commit. They cannot disagree about a number a worker
+sizes a job by.
 
 They read one table and they must not disagree about a number a worker sizes a
 job by. The first draft of the Orders screen did: it read `orders.coin_per_piece`
@@ -60,7 +64,11 @@ class _FakeDb:
 
     @staticmethod
     def get_markets():
-        return {"vtech": {"name": "V Tech Hives"}}
+        return {"vtech": {"name": "V Tech Hives", "owner_id": "someone"}}
+
+    @staticmethod
+    def csn_month_totals(mid, month):
+        return {"income": 0, "spent": 0, "sources": 0}
 
 
 def _with_fakes(fn):
@@ -74,8 +82,8 @@ def _with_fakes(fn):
 
 
 def test_orders_quotes_the_canonical_rate_not_the_null_column():
-    screen = _with_fakes(lambda: LS.orders("someone"))
-    row = screen["blocks"][0]["r"][0]
+    blocks = _with_fakes(lambda: LS._order_blocks("someone"))
+    row = blocks[0]["r"][0]
     pay, total = row[3], row[4]
     assert pay != LS.DASH, "pay came out blank — the NULL column was read again"
     assert "100.00c a piece" in pay, pay
@@ -83,8 +91,8 @@ def test_orders_quotes_the_canonical_rate_not_the_null_column():
 
 
 def test_orders_never_prints_the_barrel_rate_as_a_stack():
-    screen = _with_fakes(lambda: LS.orders("someone"))
-    pay = screen["blocks"][0]["r"][0][3]
+    blocks = _with_fakes(lambda: LS._order_blocks("someone"))
+    pay = blocks[0]["r"][0][3]
     assert f"{BARREL_RATE:,.2f}c" not in pay, f"barrel rate reached a label: {pay}"
     assert "per stack of 64" in pay, pay
     assert f"{PIECE_RATE * 64:,.2f}c per stack" in pay, pay
@@ -92,8 +100,8 @@ def test_orders_never_prints_the_barrel_rate_as_a_stack():
 
 def test_quantity_is_the_unit_the_order_was_written_in():
     """`requested` is pieces, `amount` is stacks. 108 stacks, never 6,912."""
-    screen = _with_fakes(lambda: LS.orders("someone"))
-    qty = screen["blocks"][0]["r"][0][2]
+    blocks = _with_fakes(lambda: LS._order_blocks("someone"))
+    qty = blocks[0]["r"][0][2]
     assert qty == "108 stacks", qty
 
 
@@ -107,10 +115,10 @@ def test_no_core_means_a_dash_not_a_wrong_figure():
     abex_live._core = _boom
     abex_live._db = lambda: _FakeDb
     try:
-        screen = LS.orders("someone")
+        blocks = LS._order_blocks("someone")
     finally:
         abex_live._core, abex_live._db = real_core, real_db
-    row = screen["blocks"][0]["r"][0]
+    row = blocks[0]["r"][0]
     assert row[3] == LS.DASH and row[4] == LS.DASH, row
 
 

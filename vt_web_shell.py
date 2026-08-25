@@ -1863,7 +1863,7 @@ _NAV_KEY = {
     # The owner's console. Two sections rather than one because the nav tree has
     # the report as a child of My market, and a child needs its own key to be the
     # thing that lights when you are on it.
-    "market": "mine", "filing": "mine.report", "orders": "orders",
+    "market": "mine", "filing": "mine.report",
 }
 
 #: Which sections this deployment actually mounted. The tree is the structure;
@@ -1896,7 +1896,9 @@ _NAV_PATHS = {
     "work":     "/hub/work",
     "mine":        "/hub/market",
     "mine.report": "/hub/filing",
-    "orders":      "/hub/orders",
+    # Orders is a section of Work, not a page: same table read from the poster's
+    # side. The nav entry is an anchor onto that page.
+    "orders":      "/hub/work",
     # The designed read view, with a button through to the tool that acts. The
     # old paths (/auctions, /banking, /messages, /history) still serve and are
     # where those buttons go; putting one line here back to the old path is how

@@ -103,6 +103,18 @@ tr.mine td{background:var(--raised)}
 /* Countdown cells tick client-side; this is only their resting shape. */
 td.countdown{font-variant-numeric:tabular-nums}
 
+/* The price line. No script and no library — an inline SVG polyline stretched to
+   the column, so it costs one element and cannot fail to load. The box is a
+   fixed height and a free width: `preserveAspectRatio:none` is what lets the
+   same 0-100 viewBox fill a sidebar-narrow column and a wide one. */
+.sparkwrap{margin:2px 0 4px}
+svg.spark{display:block;width:100%;height:64px}
+.skmeta{display:flex;align-items:baseline;gap:12px;margin-top:6px;
+  font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums}
+.skmeta .skhi{margin-left:auto}
+.skmeta .skhi::before{content:"high ";color:var(--faint)}
+.skmeta .sklo::before{content:"low ";color:var(--faint)}
+
 /* The sticky-bottom draft bar. Only present on a screen with work in progress. */
 .dockbar{position:sticky;bottom:0;display:flex;align-items:baseline;gap:14px;
   padding:12px 0;border-top:1px solid var(--accent);background:var(--ground);
@@ -179,8 +191,7 @@ LIVE_SECTIONS = [
     ("work",     "Work",      "/hub/work",     40),
     ("market",   "My market", "/hub/market",   50),
     ("filing",   "Report",    "/hub/filing",   51),
-    ("orders",   "Orders",    "/hub/orders",   41),
-    ("auctions", "Auctions",  "/hub/auctions", 60),
+    ("auctions", "Auctions",  "/hub/auctions", 60),   # items
     ("banking",  "Banking",   "/hub/banking",  20),
     ("messages", "Messages",  "/hub/messages", 70),
     ("history",  "History",   "/hub/history",  80),
@@ -253,9 +264,17 @@ def register_live_routes(app) -> None:
         print(f"     Live canvas screens: {', '.join(mounted)}")
 
 
+async def _orders_moved(request):
+    """`/hub/orders` used to be its own page. Orders is a section of Work now —
+    same table, two sides of it — so the old path lands on the page that holds
+    it rather than 404ing a link somebody has bookmarked."""
+    raise web.HTTPFound("/hub/work")
+
+
 def register_canvas_routes(app) -> None:
     if web is None:                                 # pragma: no cover
         return
+    app.router.add_get("/hub/orders", _orders_moved)
     for key in SCREENS:
         path = PREFIX if key == "hub" else f"{PREFIX}/{key}"
         app.router.add_get(path, _handler(key))

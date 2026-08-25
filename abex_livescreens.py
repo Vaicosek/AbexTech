@@ -267,9 +267,37 @@ def stocks(user_id: str) -> dict:
                          ["Less cost", f"{cost:,.2f}c", "what you paid for it"]],
                  "tot": ["Unrealised", ("g|" if unrealised >= 0 else "l|")
                          + f"{unrealised:+,.2f}c"]}
+    # A price line for the position that most decides this portfolio's value.
+    # One chart, not one per row: the biggest holding is the one whose shape
+    # actually changes what the reader does, and seven sparklines down a column
+    # is decoration.
+    blocks = [pos, portfolio]
+    biggest = None
+    if rows:
+        try:
+            biggest = max(rows, key=lambda r: _coins(r[6]))
+        except (ValueError, IndexError):
+            biggest = None
+    if biggest is not None:
+        series = None
+        try:
+            registry = abex_live._db().get_markets() or {}
+            match = [k for k, m in registry.items()
+                     if str((m or {}).get("name") or "") == str(biggest[1])]
+            if match:
+                series = abex_live.price_series(match[0], 60)
+        except Exception as exc:
+            log.warning("[livescreens] price series unreadable: %s", exc)
+        blk = _spark_block(f"{biggest[1]} · share price", series,
+                           note="Your largest position. Every point is a price "
+                                "the exchange actually recorded — the series is "
+                                "sampled, never averaged, so no drawn point is "
+                                "a price nobody saw.")
+        if blk is not None:
+            blocks.insert(1, blk)
     return _shell("stocks", f"{len(rows)} position"
                   f"{'' if len(rows) == 1 else 's'} in your name.",
-                  band, [pos, portfolio])
+                  band, blocks)
 
 
 # ── Work ────────────────────────────────────────────────────────────────────
@@ -294,32 +322,52 @@ def work(user_id: str = "") -> dict:
              "r": out,
              "n": ("A new job is employee-only for its first 45 minutes, then "
                    "open to all." if out else "No open jobs.")}
+    # Work and Orders are ONE PAGE. Same table, two sides of it: what can I
+    # claim, and what did I commit. The design already says so - Orders hangs off
+    # Work as a child, not a sibling - and as two pages you scrolled one list to
+    # size a job and another to see who took it. These blocks carry `own:1`, so
+    # a worker who posts nothing sees the page he saw before.
+    blocks = [table] + _order_blocks(user_id)
     return _shell("work", f"{len(rows)} open job{'' if len(rows) == 1 else 's'}.",
-                  band, [table])
+                  band, blocks)
 
 
-# ── Claims (land) ───────────────────────────────────────────────────────────
+# ── Claims — the LAND auction ───────────────────────────────────────────────
 def lands(user_id: str = "") -> dict:
+    """Land auctions. The item auction is a different page (`auctions`).
+
+    `land_listings` holds both and separates them by `kind`. They are different
+    things to bid on and different things to think about — a claim is ground with
+    whatever is built on it, priced in chunks — so they get a page each rather
+    than one table where a stack of diamonds sits above a 2,000-chunk claim.
+    """
     if abex_live is None:
         return _empty("lands", "Estates are not reachable from this process.")
-    rows = abex_live.parcels()
+    rows = abex_live.parcels("land")
     if rows is None:
-        return _empty("lands", "Land listings are not readable right now.")
+        return _empty("lands", "Land auctions are not readable right now.")
 
     out = [[name, owner or DASH, price, state, note or ""]
            for name, owner, _tenant, price, state, note in rows]
-    band = [("Claims", str(len(rows)), "on the register"),
-            ("For sale", str(sum(1 for r in rows if "sale" in str(r[4]).lower())),
-             "listed right now"),
-            ("Owned", str(sum(1 for r in rows if r[1])), "have an owner"),
-            ("Rent", "none", "claims are bought outright")]
-    table = {"h2": "Claims", "ac": 1,
-             "c": ["Claim", "Owner", "Price#", "State", "Note"], "r": out,
+    live = sum(1 for r in rows if str(r[4]).lower() in ("active", "open"))
+    band = [("Land lots", str(len(rows)), "on the register"),
+            ("Live now", str(live), "open for bidding"),
+            ("Sellers", str(len({r[1] for r in rows})), "with land listed"),
+            ("Rent", "none", "a claim is bought outright")]
+    table = {"h2": "Land auctions", "ac": 1,
+             "c": ["Claim", "Seller", "Price#", "State", "Size"], "r": out,
              "n": ("A claim is bought outright and transfers with whatever is "
-                   "built on it — there is no recurring rent."
-                   if out else "No claims on the register.")}
-    return _shell("lands", f"{len(rows)} claim{'' if len(rows) == 1 else 's'} "
-                  "on the register.", band, [table])
+                   "built on it — there is no recurring rent. Items are auctioned "
+                   "separately, under Auctions."
+                   if out else "No land is listed. Items are auctioned separately, "
+                   "under Auctions.")}
+    act = {"h2": "Bidding",
+           "act": "Bids on land are placed in the auction room.",
+           "btns": [["Open the auction room", "p", "/lands"]],
+           "n": "A bid reserves the coins against your wallet; it moves nothing "
+                "until the lot settles."}
+    return _shell("lands", f"{len(rows)} land lot{'' if len(rows) == 1 else 's'} "
+                  "on the register.", band, [table, act])
 
 
 # ── Exchange ────────────────────────────────────────────────────────────────
@@ -358,6 +406,12 @@ def exchange(user_id: str = "") -> dict:
     # minority of the table - `_table` enforces that half. A wash on most of the
     # rows is a zebra stripe, not a flag.
     held_rows = [i for i, r in enumerate(out) if r[7] != DASH]
+    index = _spark_block(
+        "The index", abex_live.index_series(30),
+        unit="",
+        note=("The index is written every five minutes whether or not anything "
+              "moved, so a flat stretch is a real flat stretch — nothing traded "
+              "— and not a gap in the record."))
     table = {"h2": "Listed markets", "ac": 1,
              "c": ["Market", "Ticker", "Grade", "Share price#", "Shares out#",
                    "Holders#", "Free float#", "You hold#"],
@@ -365,8 +419,9 @@ def exchange(user_id: str = "") -> dict:
              "n": ("Free float counts shares in someone else's hands - the "
                    "register minus the owner's own holding."
                    if out else "No market is listed.")}
+    blocks = [table] if index is None else [index, table]
     return _shell("exchange", f"{listed} market{'' if listed == 1 else 's'} listed.",
-                  band, [table])
+                  band, blocks)
 
 
 # ── My market, and the report it files ──────────────────────────────────────
@@ -595,23 +650,52 @@ def filing(user_id: str = "") -> dict:
     return screen_d
 
 
-# ── Orders (the owner's side of Work) ───────────────────────────────────────
-def orders(user_id: str = "") -> dict:
-    """Open orders with who claimed them, and what was filled this week.
+def _spark_block(heading: str, series, unit: str = "c", note: str = "") -> dict | None:
+    """A price-line block, or None when there is nothing truthful to draw.
 
-    `work` is the same table read as a worker: what can I claim. This is the
-    poster's read: what did I commit, who took it, what have I paid. They share a
-    source on purpose — two order lists that disagree about a quantity disagree
-    about somebody's pay.
+    None on an unreadable log, because a missing chart is quieter than a chart
+    of nothing. A series of one point still returns a block: `_spark` renders it
+    as a sentence saying one reading is not a trend, which is worth saying — the
+    reader can see the market exists and has simply never moved.
+    """
+    if not series:
+        return None
+    return {"h2": heading,
+            "spark": {"points": series.get("points") or [], "unit": unit,
+                      "window": series.get("window") or "",
+                      "note": note}}
+
+
+# ── Orders — the owner's half of Work, on the same page ─────────────────────
+def _order_blocks(user_id: str = "") -> list:
+    """The poster's read of the order table, as blocks for the Work screen.
+
+    Work and Orders are ONE PAGE. They are the same table read from two sides —
+    what can I claim, and what did I commit — and the design already says so by
+    hanging Orders off Work as a child rather than a sibling. Two pages meant
+    scrolling one list to size a job and another to see who took it.
+
+    Owner blocks are filtered to markets this account owns. Without that filter
+    every reader saw every order twice: once as work to claim, once as if he had
+    posted it.
     """
     if abex_live is None:
-        return _empty("orders", "The exchange is not reachable from this process.")
+        return []
     try:
         db = abex_live._db()
         raw = db.load_orders() or []
     except Exception as exc:
         log.warning("[livescreens] orders unreadable: %s", exc)
-        return _empty("orders", "Orders are not readable right now.")
+        return []
+    try:
+        owned = {m["market_id"] for m in abex_live.owned_markets(str(user_id))}
+    except Exception:
+        owned = set()
+    if not owned:
+        return []
+    raw = [o for o in raw if str(o.get("market_id") or "") in owned]
+    if not raw:
+        return []
 
     try:
         registry = db.get_markets() or {}
@@ -693,38 +777,35 @@ def orders(user_id: str = "") -> dict:
     filled.sort(key=lambda r: str(r[0]), reverse=True)
     filled = filled[:12]
 
-    band = [("Open orders", str(len(open_rows)), f"{committed:,.0f}c committed"),
-            ("Claimed", str(sum(1 for r in open_rows if not str(r[5]).startswith("m|"))),
-             "taken, not yet closed"),
-            ("Filled on record", str(len(filled)), "most recent first"),
-            ("Employee priority", "45 minutes", "before an order opens to all")]
-
-    a = {"h2": "Open orders", "ac": 1,
+    a = {"h2": "Orders you posted", "own": 1,
          "c": _cols("orders", 0) or ["Item", "Market", "Quantity", "Pay#", "Total#",
                                      "Claimed by", "Status"],
          "r": open_rows,
          "n": (f"{len(open_rows)} open, {committed:,.0f}c committed. Pay is per "
                "piece unless the order says per stack; a stack is 64."
-               if open_rows else "No open orders.")}
-    b = {"h2": "Filled this week",
+               if open_rows else "You have no open orders.")}
+    b = {"h2": "Filled this week", "own": 1,
          "c": _cols("orders", 1) or ["Filled", "Item", "Market", "Worker",
                                      "Quantity", "Paid#"],
          "r": filled,
          "n": ("Paid is the order's rate against the quantity claimed. What was "
                "actually transferred is in History."
                if filled else "Nothing filled on record.")}
-    act = {"h2": "Posting work",
+    act = {"h2": "Posting work", "own": 1,
            "act": ("Orders are posted and approved from Discord. A new order is "
                    "employee-only for its first 45 minutes, then open to all."),
            "btns": [],
            "n": "Claims are approved on the order card, not here."}
-    return _shell("orders", f"{len(open_rows)} open order"
-                  f"{'' if len(open_rows) == 1 else 's'}.", band, [a, b, act])
+    return [a, b, act]
 
 
 # ── Auctions ────────────────────────────────────────────────────────────────
 def auctions(user_id: str = "") -> dict:
-    """Live lots and your bids.
+    """ITEM auctions — live lots and your bids. Land is a different page.
+
+    `land_listings` carries both kinds; this one takes `kind='item'`. Showing
+    both put goods and ground in one table under one price column, which reads
+    as one market and is two.
 
     A BID IS A HOLD, NOT A DEBIT — the coins stay yours until a lot settles, and
     that is the one thing every screen showing a bid has to say rather than imply.
@@ -734,7 +815,8 @@ def auctions(user_id: str = "") -> dict:
         return _empty("auctions", "The exchange is not reachable from this process.")
     try:
         db = abex_live._db()
-        lots = db.get_active_land_listings() or []
+        lots = [l for l in (db.get_active_land_listings() or [])
+                if str(l.get("kind") or "item") == "item"]
     except Exception as exc:
         log.warning("[livescreens] lots unreadable: %s", exc)
         return _empty("auctions", "The auction exchange is not answering.")
@@ -768,7 +850,7 @@ def auctions(user_id: str = "") -> dict:
                      (f"{yours:,.0f}c" if yours else DASH), str(len(bids)),
                      str(lot.get("ends_at") or "")[:16] or DASH, position])
 
-    band = [("Live lots", str(len(rows)), "open for bidding"),
+    band = [("Item lots", str(len(rows)), "open for bidding"),
             ("Held in bids", f"{held:,.0f}c", "released when a lot closes"),
             ("Your bids", str(len(mine)), "lots you are in"),
             ("Sellers", str(len({r[1] for r in rows})), "with a lot open")]
@@ -777,10 +859,12 @@ def auctions(user_id: str = "") -> dict:
              "c": _cols("auctions", 0) or ["Lot", "Seller", "Current bid#",
                                            "Your bid#", "Bids#", "Closes",
                                            "Your position"],
-             "r": rows,
+             "r": rows, "mine": [i for i, r in enumerate(rows) if r[3] != DASH],
              "n": ("A bid is held from your wallet until the lot closes — the "
-                   "coins stay yours until a lot settles."
-                   if rows else "No lots are open.")}
+                   "coins stay yours until a lot settles. Land is auctioned "
+                   "separately, under Claims."
+                   if rows else "No item lots are open. Land is auctioned "
+                   "separately, under Claims.")}
     act = {"h2": "Bidding", "ac": 1,
            "act": ("Bids are placed in the auction room. A bid reserves the coins "
                    "against your wallet and moves nothing until a lot settles."),
@@ -791,8 +875,8 @@ def auctions(user_id: str = "") -> dict:
         blocks.append({"h2": "Your bids", "bal": mine,
                        "tot": ["Held in bids", f"{held:,.0f}c"],
                        "n": "Held, not spent."})
-    return _shell("auctions", f"{len(rows)} lot{'' if len(rows) == 1 else 's'} live.",
-                  band, blocks)
+    return _shell("auctions", f"{len(rows)} item lot"
+                  f"{'' if len(rows) == 1 else 's'} live.", band, blocks)
 
 
 # ── Messages ────────────────────────────────────────────────────────────────
@@ -1040,7 +1124,7 @@ BUILDERS = {
     "hub": hub, "markets": markets, "stocks": stocks, "work": work,
     "lands": lands, "exchange": exchange,
     "market": market, "filing": filing,
-    "orders": orders, "auctions": auctions, "messages": messages,
+    "auctions": auctions, "messages": messages,
     "history": history, "banking": banking,
 }
 

@@ -34,9 +34,22 @@ PRIVATE = ("stocks", "banking", "messages", "history", "market", "filing")
 NOBODY = "000000000000000000"
 
 
+#: Canvas screens that are deliberately not their own page. `orders` is a
+#: section of Work — the same order table read from the poster's side — so it is
+#: built by `_order_blocks` into that screen rather than served at a URL.
+MERGED = {"orders"}
+
+
 def test_every_canvas_screen_has_a_live_builder():
-    missing = sorted(set(CANVAS) - set(LS.BUILDERS))
+    missing = sorted(set(CANVAS) - set(LS.BUILDERS) - MERGED)
     assert not missing, f"no live source for: {missing}"
+
+
+def test_merged_screens_are_not_mounted_anywhere():
+    import canvas_web
+    mounted = {k for k, _l, _p, _o in canvas_web.LIVE_SECTIONS}
+    assert not (MERGED & mounted), "a merged screen is mounted as its own page"
+    assert not (MERGED & set(LS.BUILDERS)), "a merged screen is still a builder"
 
 
 def test_every_screen_builds_and_renders():

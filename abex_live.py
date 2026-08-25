@@ -249,9 +249,12 @@ def nav_counts(user_id: str = "") -> dict:
     except Exception:
         pass
     try:
+        # Two auction houses, counted apart: Auctions is items, Claims is land.
+        # One combined figure on either badge is a number for a table nobody can
+        # see.
         listings = db.get_active_land_listings() or []
         out["auctions"] = sum(1 for l in listings
-                              if str(l.get("mode") or "") == "auction")
+                              if str(l.get("kind") or "item") == "item")
         out["lands"] = sum(1 for l in listings if str(l.get("kind") or "") == "land")
     except Exception:
         pass
@@ -264,6 +267,11 @@ def nav_counts(user_id: str = "") -> dict:
     # Blank, not the design's number, for everything still uncounted.
     for key in ("investor", "mine", "mine.report"):
         out.setdefault(key, "")
+    # Orders is Work's own section now, and it means "orders YOU posted" — a
+    # figure this function has no reader to compute. The open-jobs count already
+    # sits on Work directly above it; repeating it here would badge the anchor
+    # with a number that is not what the anchor counts.
+    out["orders"] = ""
     out.setdefault("messages", "")
     # A zero badge is noise — "Auctions 0" says less than "Auctions".
     return {k: ("" if v == 0 else v) for k, v in out.items()}
@@ -615,12 +623,18 @@ def orders() -> Optional[list[tuple]]:
     return rows
 
 
-def parcels() -> Optional[list[tuple]]:
-    """Land listings, in `abex_data.PARCELS` shape.
+def parcels(kind: str = "land") -> Optional[list[tuple]]:
+    """Listings of one kind, in `abex_data.PARCELS` shape.
 
     (name, owner, tenant, price, state, note)
 
-    The design's rows describe leases with rent. This economy sells land outright —
+    `land_listings` holds BOTH auction kinds and tells them apart by `kind`:
+    'land' is a claim, 'item' is goods. They are different surfaces to a player —
+    Claims is the land auction, Auctions is the item auction — so a caller asks
+    for the one it means. A page that showed both put a stack of diamonds and a
+    2,000-chunk claim in one table under one price column.
+
+    The design's rows describe leases with rent. This economy sells outright —
     `land_listings` has a price, a bidder and a status, and no rent anywhere — so
     the columns carry what a listing actually has.
     """
@@ -632,7 +646,8 @@ def parcels() -> Optional[list[tuple]]:
         rows = db._get_conn().execute(
             "SELECT title, land, chunks, seller_id, status, current_bid, buy_now, "
             "       sold_price, sold_to "
-            "FROM land_listings ORDER BY COALESCE(closed_at, created_at) DESC LIMIT 40"
+            "FROM land_listings WHERE kind = ? "
+            "ORDER BY COALESCE(closed_at, created_at) DESC LIMIT 40", (str(kind),)
         ).fetchall()
     except Exception as exc:
         log.warning("[abex_live] land listings unreadable: %s", exc)
@@ -1061,3 +1076,82 @@ def filing(user_id: str, market_id: str = "") -> Optional[dict]:
     data["last_dividend"] = dividend
     data["filed_net"] = filed_this_month
     return data
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Price history — the shape of a number over time
+# ══════════════════════════════════════════════════════════════════════════
+
+def _thin(rows: list, target: int = 120) -> list:
+    """Evenly sample a long series down to `target` points, keeping both ends.
+
+    The index is logged every five minutes: a month is ~8,600 readings and the
+    chart is a few hundred pixels wide. Sampling is honest here in a way that
+    averaging would not be — every point drawn is a reading that happened, at the
+    time it happened. An average would draw a price nobody ever saw.
+
+    Both ends are kept because the first and last readings are the two the
+    caption quotes; dropping either would make the change figure disagree with
+    the line above it.
+    """
+    if len(rows) <= target:
+        return rows
+    step = (len(rows) - 1) / float(target - 1)
+    out = [rows[int(round(i * step))] for i in range(target)]
+    out[-1] = rows[-1]
+    return out
+
+
+def price_series(market_id: str, days: int = 30) -> Optional[dict]:
+    """One market's share price over `days`, oldest first.
+
+    Returns None when the log is unreadable — distinct from an empty series,
+    which means the market has never been priced and is a fact worth showing.
+    """
+    try:
+        db = _db()
+    except Exception:                               # pragma: no cover
+        return None
+    try:
+        rows = db._get_conn().execute(
+            "SELECT logged_at, price FROM stock_price_log "
+            "WHERE market_id = ? AND logged_at >= datetime('now', ?) "
+            "ORDER BY id ASC", (str(market_id), f"-{int(days)} days")).fetchall()
+    except Exception as exc:
+        log.warning("[abex_live] price log for %s unreadable: %s", market_id, exc)
+        return None
+    rows = _thin([(r[0], float(r[1] or 0)) for r in rows])
+    return {
+        "points": [p for _t, p in rows],
+        "from": (rows[0][0] or "")[:10] if rows else "",
+        "to": (rows[-1][0] or "")[:10] if rows else "",
+        "window": f"{days} days",
+    }
+
+
+def index_series(days: int = 30) -> Optional[dict]:
+    """The market index over `days`, oldest first.
+
+    `market_index_log` is written every five minutes whether or not anything
+    moved, so a flat stretch here is a real flat stretch — nothing has traded —
+    rather than a gap in the record.
+    """
+    try:
+        db = _db()
+    except Exception:                               # pragma: no cover
+        return None
+    try:
+        rows = db._get_conn().execute(
+            "SELECT ts, index_value FROM market_index_log "
+            "WHERE ts >= datetime('now', ?) ORDER BY id ASC",
+            (f"-{int(days)} days",)).fetchall()
+    except Exception as exc:
+        log.warning("[abex_live] index log unreadable: %s", exc)
+        return None
+    rows = _thin([(r[0], float(r[1] or 0)) for r in rows])
+    return {
+        "points": [p for _t, p in rows],
+        "from": (rows[0][0] or "")[:10] if rows else "",
+        "to": (rows[-1][0] or "")[:10] if rows else "",
+        "window": f"{days} days",
+    }

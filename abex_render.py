@@ -1,7 +1,8 @@
 """abex_render.py — turn a canvas screen (`abex_canvas.SCREENS`) into page HTML.
 
 One renderer, thirteen screens. The design describes a screen as data — a band of
-tiles and a list of blocks — and the spec fixes exactly three block shapes (§4)
+tiles and a list of blocks — and the spec fixes three block shapes (§4; a fourth, the price line,
+is added here and `_spark` says why)
 and the order in which a cell's colour is decided (§5). So the screens do not
 each need their own page-builder; they need one that obeys those rules, and then
 a screen is a dict.
@@ -209,6 +210,65 @@ def _balance(block: dict) -> str:
 _BTN = {"p": "btn p", "s": "btn s", "d": "btn d"}
 
 
+def _spark(block: dict) -> str:
+    """A price line. The fourth block shape, and the only one not in the design.
+
+    The spec fixes three (§4: table, balance, action) and a chart is genuinely a
+    new thing, so it is worth saying why it is here: a share price is the one
+    figure on this site whose SHAPE carries information a number cannot. "999.77c"
+    and "999.77c, down from 1,004c over three weeks, and falling all month" are
+    different facts, and only the second tells a reader whether to act.
+
+    Drawn as inline SVG with no script and no library — the same reason the rest
+    of this file emits markup rather than mounting a component. It is a polyline
+    over a 0-100 box with `preserveAspectRatio="none"`, so the box stretches to
+    whatever width the column gives it and the line stretches with it.
+
+    Direction sets the colour by §1's money rule: last against first, gain up,
+    loss down, `dim` when they are equal — flat is not a gain. A series of one
+    point draws NO line and says so. One point is not a trend, and a flat line
+    across a chart is a specific claim: that the price was steady over the
+    window. Drawing that from a single reading would be inventing the window.
+    """
+    d = block.get("spark") or {}
+    pts = [float(v) for v in (d.get("points") or [])]
+    unit = str(d.get("unit") or "")
+    note = str(d.get("note") or "")
+    if len(pts) < 2:
+        why = note or "Only one reading on record — not enough for a line."
+        return f'<div class="sparkwrap"><div class="bnote">{_e(why)}</div></div>'
+
+    lo, hi = min(pts), max(pts)
+    span = (hi - lo) or 1.0
+    n = len(pts)
+    # y is inverted: SVG grows downward and a price does not.
+    coords = " ".join(
+        "%.2f,%.2f" % (i * 100.0 / (n - 1), 28.0 - ((v - lo) / span) * 26.0 - 1.0)
+        for i, v in enumerate(pts))
+    first, last = pts[0], pts[-1]
+    if last > first:
+        tone, arrow = "var(--gain)", "▲"
+    elif last < first:
+        tone, arrow = "var(--loss)", "▼"
+    else:
+        tone, arrow = "var(--dim)", "="
+    change = last - first
+    pct = (change / first * 100.0) if first else 0.0
+    caption = (f"{arrow} {change:+,.2f}{unit} ({pct:+,.2f}%) "
+               f"over {_e(str(d.get('window') or f'{n} readings'))}")
+    scale = (f'<span class="skhi">{hi:,.2f}{unit}</span>'
+             f'<span class="sklo">{lo:,.2f}{unit}</span>')
+    svg = (f'<svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none" '
+           f'role="img" aria-label="{_e(caption)}">'
+           f'<polyline points="{coords}" fill="none" stroke="{tone}" '
+           f'stroke-width="1.2" vector-effect="non-scaling-stroke" '
+           f'stroke-linejoin="round" stroke-linecap="round"/></svg>')
+    foot = f'<div class="bnote">{_e(note)}</div>' if note else ""
+    return (f'<div class="sparkwrap">{svg}'
+            f'<div class="skmeta"><span style="color:{tone}">{_e(caption)}</span>'
+            f'{scale}</div>{foot}</div>')
+
+
 def _action(block: dict) -> str:
     """An action block. A button may carry a third element: where it goes.
 
@@ -234,7 +294,9 @@ def _action(block: dict) -> str:
 
 
 def _block(block: dict, mine=None) -> str:
-    if "bal" in block:
+    if "spark" in block:
+        inner = _spark(block)
+    elif "bal" in block:
         inner = _balance(block)
     elif "act" in block or "btns" in block:
         inner = _action(block)

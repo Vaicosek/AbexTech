@@ -94,6 +94,9 @@ NAV: list[tuple[str, list]] = [
         ("work",     "Work",      "/work",     "work",     "7", [
             ("orders", "Orders", "/orders", "6"),
         ]),
+        # Two auction houses, and the labels have to say which is which: a claim
+        # is ground, a lot is goods, and they are separate tables in one listings
+        # table (`land_listings.kind`).
         ("auctions", "Auctions",  "/auctions", "auctions", "3",  []),
         ("lands",    "Claims",    "/lands",    "lands",    "2",  []),
         ("mine",     "My market", "/my",       "mymarket", "", [
