@@ -29,6 +29,28 @@ from abex_theme import THEME_CSS, FONTS_LINK, GRADES
 #: marks (AMAZ, GREY). Nothing to serve, nothing to 404.
 MARK = "ABEX"
 
+#: The site-wide notice. It states what this platform DOES — never converts
+#: coins to money — rather than making a claim about what they are worth, which
+#: is not something this software can know or keep. Full wording lives in
+#: `terms_web.SECTIONS`; this is the one line that rides every page, and it is
+#: imported from there so the two cannot drift apart.
+try:
+    from terms_web import FOOTER_LINE as _FOOTER_LINE
+except Exception:  # terms_web must never be able to take the site down
+    _FOOTER_LINE = ("Coins are in-game currency for Discord and Minecraft. "
+                    "Abex Tech neither sells nor redeems them for money.")
+
+_FOOTER_HTML = ('<footer class="sitefoot"><p>' + _h.escape(_FOOTER_LINE)
+                + ' <a href="/terms">Terms</a>.</p></footer>')
+
+_FOOTER_CSS = """
+.sitefoot{border-top:1px solid var(--line);margin:4rem 0 0;padding:1.1rem 0 2rem;
+  color:var(--inert);font-size:.82rem;line-height:1.5;max-width:78ch}
+.sitefoot p{margin:0}
+.sitefoot a{color:var(--inert);text-decoration:none;border-bottom:1px solid var(--line)}
+.sitefoot a:hover{color:var(--dim)}
+"""
+
 #: (key, label, href, domain, [(subkey, label, href), ...])
 #: Groups follow the approved information architecture: the shop side lives under
 #: Markets, the share side under Exchange, and the owner's own market under My market.
@@ -241,6 +263,7 @@ def render(active: str, body: str, *, title: str = "", who=None, stats=None,
 <title>{_h.escape(page_title)} &middot; Abex Tech</title>
 {FONTS_LINK}
 <style>{THEME_CSS}</style>
+<style>{_FOOTER_CSS}</style>
 {css_extra}
 </head><body data-domain="{dom}">
 <nav class="side" aria-label="Sections">
@@ -254,6 +277,7 @@ def render(active: str, body: str, *, title: str = "", who=None, stats=None,
 <div class="col">
   {head_row}
   <main>{body}</main>
+  {_FOOTER_HTML}
   {dock_html}
 </div>
 {tail}

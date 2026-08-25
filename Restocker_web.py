@@ -5733,6 +5733,10 @@ async def start_webserver(port: int = 8080):
         # sample rows, so they are mounted beside the live pages rather than over
         # them; promoting one is a screen's worth of work, not a cutover.
         ("abex_web",     "register_abex_routes",     "Abex screens"),
+        # The public notice page. No session, no database — it must still
+        # answer when the bot is down, because it is what someone reads
+        # BEFORE they have an account.
+        ("terms_web",    "register_terms_routes",    "Terms"),
     ):
         try:
             _mod = __import__(_mod_name)
