@@ -1,0 +1,18 @@
+# Line endings are decided HERE, not by whichever machine touched the file last.
+#
+# Without this, editing through the Windows mount rewrote every file to CRLF while the
+# repo held LF, and `git status` reported all 15 touched files as fully modified --
+# 12,654 insertions and exactly 12,654 deletions, with `--ignore-cr-at-eol` showing
+# zero. A phantom diff that size makes a real one impossible to see.
+#
+# The server runs Linux, so LF is what should be committed and checked out.
+* text=auto eol=lf
+
+# Never translate these.
+*.db     binary
+*.xlsx   binary
+*.docx   binary
+*.png    binary
+*.jpg    binary
+*.gz     binary
+*.zip    binary
