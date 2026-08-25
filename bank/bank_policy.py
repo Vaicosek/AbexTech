@@ -28,11 +28,17 @@ This module imports `os` and `bank_db` and nothing else.
 from __future__ import annotations
 
 import logging
+import math
 import os
+from datetime import datetime, timedelta, timezone
 
 import bank_db as bdb
 
 log = logging.getLogger("bank.policy")
+
+
+def _env_bool(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "on")
 
 
 # ── Savings and loans ────────────────────────────────────────────────────────
@@ -72,9 +78,122 @@ BOND_TERMS = parse_bond_terms(os.getenv("BOND_TERMS", "7:0.06,30:0.09,90:0.14"))
 BOND_EARLY_PENALTY_PCT = float(os.getenv("BOND_EARLY_PENALTY_PCT", "0.0"))
 
 
+# ── Collections ──────────────────────────────────────────────────────────────
+# These four lived in `bank_main` and were read only by the bot, which is why the
+# website's staff-collections page had to re-read COLLECT_FROM_SAVINGS out of the
+# environment itself (`bank_local._staff_collections`) to decide whether savings
+# were reachable. That was a second implementation of a policy question, and the
+# two could disagree the moment either spelling of the env var changed. They live
+# here now; `bank_main` imports them back under the same names.
+COLLECT_FROM_SAVINGS = _env_bool("COLLECT_FROM_SAVINGS", "1")
+COLLECT_GRACE_DAYS = float(os.getenv("COLLECT_GRACE_DAYS", "3"))
+GARNISH_BOND_PAYOUTS = _env_bool("GARNISH_BOND_PAYOUTS", "1")
+OVERDUE_ANNOUNCE = _env_bool("OVERDUE_ANNOUNCE", "1")
+
+
+#: WHICH DEBT IS SETTLED FIRST, said once, for every path that settles debt.
+#:
+#: Oldest DUE first. A borrower with several loans has the one that has been
+#: overdue longest settled first, whether the coins arrive as a voluntary
+#: repayment, as a garnished bond payout, or as a savings seizure. `id ASC`
+#: breaks ties so two loans due the same second settle in a stable order, and
+#: `due_at IS NULL` sorts last because a loan with no due date can never be the
+#: most overdue one.
+#:
+#: This used to be two rules: `bdb.overdue_loans` ordered by `due_at` (used by
+#: garnishment and by the collections pass) while `bdb.get_active_loans` ordered
+#: by `issued_at` (used by /loan repay). Two orders for one question, so the same
+#: 500c settled different loans depending on how it was paid -- which changes
+#: which loan goes overdue next, and `overdue_notified` is a permanent black mark
+#: on the credit limit. One order, here, imported by both sides.
+SETTLEMENT_ORDER_SQL = "due_at IS NULL, due_at ASC, id ASC"
+
+
+def collection_grace_cutoff(now_iso: str) -> str:
+    """A loan due AFTER this instant is still inside its grace period."""
+    try:
+        now = datetime.fromisoformat(str(now_iso).replace("Z", "+00:00"))
+    except ValueError:
+        now = datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return (now - timedelta(days=COLLECT_GRACE_DAYS)).isoformat()
+
+
+#: Why a collection took nothing. `savings_collectable` returns one of these, and
+#: the staff page turns it into a sentence -- so "nothing happened" always names
+#: its reason instead of reporting a silent zero.
+COLLECT_REASONS = {
+    "collection_off": "Collection from savings is switched off (COLLECT_FROM_SAVINGS=0).",
+    "in_grace": "That loan is still inside its grace period.",
+    "no_savings": "There is nothing in that borrower's savings to take.",
+    "settled": "That loan has nothing left owing.",
+    "below_one_coin": "Less than one whole coin is reachable, and the bank rounds "
+                      "down in the borrower's favour.",
+}
+
+
+def savings_collectable(owed: float, savings: float, due_at: str | None,
+                        now_iso: str, cap: int | None = None) -> tuple[int, str]:
+    """How many coins may be taken from savings against this loan, and why not.
+
+    THE ONE PLACE that answers "is this debt reachable, and how much of it".
+    The hourly pass and the staff page both ask it, so a Lead Banker's screen can
+    never offer a collection the automatic pass would refuse to make.
+
+    What it encodes, all of it deliberate:
+      - savings only. The wallet, escrow holds, stock and land are out of reach;
+        that is the bank's promise and it is enforced by never being asked for.
+      - COLLECT_GRACE_DAYS of grace past `due_at`, savings-side ONLY. A bond
+        payout is garnished the moment it is redeemed, with no grace, because
+        those coins are passing through the bank's own hands.
+      - `math.floor`, so a fraction of a coin is never rounded up into a seizure.
+        Rounding always favours the borrower.
+      - `cap` is the staff page naming an amount. It can only ever reduce.
+    """
+    if not COLLECT_FROM_SAVINGS:
+        return 0, "collection_off"
+    if float(owed) <= 0:
+        return 0, "settled"
+    if (due_at or "") > collection_grace_cutoff(now_iso):
+        return 0, "in_grace"
+    if float(savings) <= 0:
+        return 0, "no_savings"
+    take = int(math.floor(min(float(owed), float(savings))))
+    if cap is not None:
+        take = min(take, int(cap))
+    if take < 1:
+        return 0, "below_one_coin"
+    return take, ""
+
+
 def bond_payout(principal: int, apr: float, term_days: int) -> int:
     """Fixed simple-interest payout at maturity, rounded to whole coins."""
     return int(round(principal * (1.0 + apr * term_days / 365.0)))
+
+
+def credit_limit_from(account: dict | None, history: dict) -> int:
+    """The limit arithmetic, on figures the caller already read. No I/O.
+
+    Split out from `credit_limit_for` for one reason: a loan approval has to
+    re-check the limit INSIDE its money transaction, and every `bdb` helper opens
+    its own connection -- which inside a `BEGIN IMMEDIATE` would sit outside the
+    transaction and then block on the write lock that transaction is holding.
+    So the caller reads `bank_accounts` and the loan history on ITS connection
+    and hands them here. `credit_limit_for` keeps its signature and calls this,
+    so there is still one implementation of the arithmetic and not two.
+    """
+    acct = account or {}
+    override = acct.get("credit_limit")
+    if override is not None:
+        return max(0, int(override))
+    limit = (BASE_CREDIT_LIMIT
+             + CREDIT_PER_REPAID_LOAN * history["repaid_count"]
+             - CREDIT_LATE_PENALTY * history["late_count"])
+    if history["written_off_count"]:
+        # A written-off loan means the bank ate a loss on this person.
+        limit = 0
+    return max(0, min(limit, MAX_LOAN))
 
 
 def credit_limit_for(user_id) -> int:
@@ -83,18 +202,7 @@ def credit_limit_for(user_id) -> int:
     A per-user override (set by /admin creditlimit) wins outright. Otherwise it
     grows with a clean repayment record and shrinks for every loan that went
     overdue -- so the limit is earned rather than flat."""
-    acct = bdb.get_account(user_id) or {}
-    override = acct.get("credit_limit")
-    if override is not None:
-        return max(0, int(override))
-    h = bdb.loan_history(user_id)
-    limit = (BASE_CREDIT_LIMIT
-             + CREDIT_PER_REPAID_LOAN * h["repaid_count"]
-             - CREDIT_LATE_PENALTY * h["late_count"])
-    if h["written_off_count"]:
-        # A written-off loan means the bank ate a loss on this person.
-        limit = 0
-    return max(0, min(limit, MAX_LOAN))
+    return credit_limit_from(bdb.get_account(user_id) or {}, bdb.loan_history(user_id))
 
 
 def credit_limit_components(user_id) -> list[tuple[str, int]]:
@@ -109,13 +217,28 @@ def credit_limit_components(user_id) -> list[tuple[str, int]]:
       - a written-off loan zeroes the limit outright, so it is the ONLY row;
       - MAX_LOAN capping is shown as an explicit negative row, not applied quietly.
     """
-    limit = credit_limit_for(user_id)
     acct = bdb.get_account(user_id) or {}
+    h = bdb.loan_history(user_id)
+    return credit_limit_components_from(acct, h)
+
+
+def credit_limit_components_from(account: dict | None,
+                                 history: dict) -> list[tuple[str, int]]:
+    """`credit_limit_components` on figures already read. Same invariant.
+
+    Both breakdown and total now come from ONE arithmetic (`credit_limit_from`)
+    over ONE pair of reads. Before, the total was read three times -- three
+    connections, three moments -- so a loan reaching 'paid' between the first and
+    the second was enough for the rows to stop summing to the total, which is the
+    one thing this function promises.
+    """
+    acct = account or {}
+    h = history
+    limit = credit_limit_from(acct, h)
     override = acct.get("credit_limit")
     if override is not None:
         return [("Set by a Lead Banker", limit)]
 
-    h = bdb.loan_history(user_id)
     if h["written_off_count"]:
         return [("A loan was written off — borrowing suspended", 0)]
 

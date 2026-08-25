@@ -29,12 +29,13 @@ should report their absence rather than derive one from the terms. The same appl
 the principal/interest split of past repayments: `bank_ledger` records the total moved,
 not how it was apportioned, so this returns what was recorded and nothing more.
 
-**It does not move money.** Every write path (deposit, withdraw, repay, bond buy and
-redeem, staff decide and collect) touches the coin wallet in core's ledger, is idempotent
-on a key the page minted, and is implemented in the Bank bot's own command handlers.
-Reimplementing those here would be a second money path. They return a refusal naming
-Discord as the place to do it, which `banking_web` already renders as the bank declining
-rather than as the bank being down.
+**It does not implement money.** All seven write paths (deposit, withdraw, repay, bond
+buy and redeem, staff decide and collect) move coins in core's ledger AND write the
+bank's own books, and both halves belong in one transaction. That transaction lives in
+`bank_money`, which the Bank bot calls too -- so this module maps a web body onto its
+arguments and translates its outcomes, and there is one money path rather than two.
+What it does NOT do is decide anything: no amount, no penalty, no limit and no
+ordering is computed in this file.
 """
 from __future__ import annotations
 
@@ -100,6 +101,18 @@ def available() -> bool:
     if not _load():
         return False
     try:
+        # The bank's books and the ledger's coins MUST be the same file. When they
+        # were not, this probe passed against a stale bank/bank.db and every read was
+        # served from it while every write went to restocker.db -- deposits appeared
+        # to vanish. A split brain is not "available"; it is the most dangerous state
+        # available, because it looks healthy.
+        import ledger_v2 as _lv
+        import os.path as _p
+        if _p.realpath(str(_bdb.DB_PATH)) != _p.realpath(str(_lv._db_path())):
+            log.error("[banking] REFUSING to serve: the bank reads %s but the ledger "
+                      "writes %s. Set BANK_DB_PATH to the ledger's file, or unset it "
+                      "so it defaults there.", _bdb.DB_PATH, _lv._db_path())
+            return False
         with _bdb.db() as conn:
             row = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='bank_accounts'"
@@ -259,7 +272,11 @@ def _staff_queue() -> dict:
 
 def _staff_collections() -> dict:
     now = datetime.now(timezone.utc)
-    reachable = os.getenv("COLLECT_FROM_SAVINGS", "1").strip().lower() not in ("0", "false", "no")
+    # From bank_policy, not from os.getenv here: this page's "reachable" figure and
+    # the amount a collection actually takes must come from ONE reading of the
+    # setting. Two readings is how a staff page offers a collection the collector
+    # then refuses to make.
+    reachable = _pol.COLLECT_FROM_SAVINGS
     out = []
     for l in _bdb.overdue_loans(now.isoformat()):
         uid = str(l["user_id"])
@@ -273,13 +290,28 @@ def _staff_collections() -> dict:
         except (TypeError, ValueError):
             pass
         sav = float(_bdb.get_savings(uid).get("balance") or 0)
+        # ASK THE POLICY. This used to report the raw savings balance, which got two
+        # things wrong at once: it ignored COLLECT_GRACE_DAYS entirely, so the page
+        # offered collections `staff_collect` then refused with "still inside its grace
+        # period"; and it ignored min(owed, savings) and the floor, so 900 was shown
+        # against a ceiling of 500. savings_collectable's own docstring claims this
+        # page asks it -- now it does.
+        take, why = _pol.savings_collectable(
+            float(l["balance"]), sav, l.get("due_at"), now.isoformat())
         out.append({
             "loan_id": l["id"],
             "user_id": uid,
             "name": acct.get("name") or uid,
             "days_late": days_late,
             "owed": int(round(float(l["balance"]))),
-            "savings_reachable": int(round(sav)) if reachable else 0,
+            # floor, to match the policy sitting next to it: int(round(0.6)) rendered
+            # "1 in savings, 0 reachable", which reads as a bug rather than a rule.
+            "savings_balance": int(sav) if reachable else 0,
+            # What a collection would ACTUALLY take, right now.
+            "savings_reachable": int(take),
+            # Why it is zero, so the row explains itself instead of looking broken:
+            # in_grace / no_savings / settled / collection_off / below_one_coin.
+            "blocked": None if take > 0 else why,
         })
     return {"ok": True, "overdue": out}
 
@@ -292,19 +324,80 @@ def _staff_collections() -> dict:
 _LIVE_WRITES = {
     "/api/v1/savings/deposit": "deposit",
     "/api/v1/savings/withdraw": "withdraw",
+    "/api/v1/loan/repay": "repay",
+    "/api/v1/bond/buy": "bond_buy",
+    "/api/v1/bond/redeem": "bond_redeem",
+    "/api/v1/staff/loan/decide": "staff_loan_decide",
+    "/api/v1/staff/collect": "staff_collect",
 }
 
-#: Still Discord-only. Each of these garnishes overdue debt or settles a loan, and
-#: that logic lives in bank_main's command handlers; porting it is its own change.
-_WRITE_PATHS = {
-    "/api/v1/loan/repay", "/api/v1/bond/buy", "/api/v1/bond/redeem",
-    "/api/v1/staff/loan/decide", "/api/v1/staff/collect",
-}
+#: Nothing is Discord-only any more. The set stays, empty, because `handle` still
+#: reads it: a path added to the HTTP contract before it has an implementation
+#: belongs HERE, answering "the bank declines" -- not in the fall-through, which
+#: answers "unknown endpoint" and reads on a banking page as the bank being lost.
+_WRITE_PATHS: set[str] = set()
 
 #: A refusal, NOT a transport failure. banking_web renders {"ok": false, "error": ...}
 #: as the bank declining -- which is the truth -- rather than as the bank being down.
 _WRITE_REFUSAL = ("This action is not available from the website yet — "
                   "use the bank's Discord commands. (Reading is live.)")
+
+
+class _BadField(Exception):
+    """A field the page sent that the bank cannot read. Its own message is shown."""
+
+
+def _need_int(body: dict, name: str, what: str) -> int:
+    try:
+        return int(str(body.get(name)).strip())
+    except (TypeError, ValueError, AttributeError):
+        raise _BadField(f"{what} was not sent as a whole number.")
+
+
+def _coins(body: dict, name: str = "amount") -> int:
+    try:
+        return int(body.get(name) or 0)
+    except (TypeError, ValueError):
+        raise _BadField("That amount is not a whole number of coins.")
+
+
+def _uid(body: dict) -> str:
+    uid = str(body.get("user_id") or "").strip()
+    if not uid:
+        raise _BadField("No user id was supplied.")
+    return uid
+
+
+def _actor(body: dict) -> str:
+    a = str(body.get("actor_id") or "").strip()
+    if not a:
+        raise _BadField("No staff member was named on that decision.")
+    return a
+
+
+#: op -> how to turn ONE web body into that function's arguments.
+#:
+#: Each of the seven takes a different shape, and the mapping is here rather than
+#: in `_write` because the bodies are `banking_web`'s, not ours: `bond_buy` sends
+#: `face` (not `amount`), the two staff paths send no `user_id` at all, and
+#: `repay` sends a `loan_id` the bank used to accept and silently discard.
+#: Getting one of these wrong is a TypeError at the worst moment, so they sit in
+#: one table next to the paths they serve.
+_WRITE_ARGS = {
+    "deposit":     lambda b, k: ((_uid(b), _coins(b), k), {}),
+    "withdraw":    lambda b, k: ((_uid(b), _coins(b), k), {}),
+    "repay":       lambda b, k: ((_uid(b), _coins(b), k),
+                                 {"loan_id": (_need_int(b, "loan_id", "The loan")
+                                              if b.get("loan_id") not in (None, "") else None)}),
+    "bond_buy":    lambda b, k: ((_uid(b), _coins(b, "face"),
+                                  _need_int(b, "term_days", "The bond term"), k), {}),
+    "bond_redeem": lambda b, k: ((_uid(b), _need_int(b, "bond_id", "The bond"), k), {}),
+    "staff_loan_decide": lambda b, k: ((_need_int(b, "request_id", "The request"),
+                                        str(b.get("decision") or ""), _actor(b), k),
+                                       {"note": str(b.get("note") or "")}),
+    "staff_collect":     lambda b, k: ((_need_int(b, "loan_id", "The loan"),
+                                        _coins(b), _actor(b), k), {}),
+}
 
 
 def _write(op: str, body: dict) -> dict:
@@ -325,10 +418,7 @@ def _write(op: str, body: dict) -> dict:
         log.exception("[banking] bank_money unavailable: %s", e)
         return {"ok": False, "error": "The bank's write path is not available."}
 
-    uid = str(body.get("user_id") or "").strip()
     key = str(body.get("idempotency_key") or "").strip()
-    if not uid:
-        return {"ok": False, "error": "No user id was supplied."}
     if not key:
         # Never mint one here: the caller mints it, per the house rule, so that a
         # retry carries the SAME key. A key invented at this layer would be new on
@@ -336,12 +426,15 @@ def _write(op: str, body: dict) -> dict:
         return {"ok": False, "error": "This action was submitted without an "
                                       "idempotency key; reload the page and retry."}
     try:
-        amount = int(body.get("amount") or 0)
-    except (TypeError, ValueError):
-        return {"ok": False, "error": "That amount is not a whole number of coins."}
+        args, kwargs = _WRITE_ARGS[op](body, key)
+    except _BadField as e:
+        return {"ok": False, "error": str(e)}
+    except KeyError:
+        log.error("[banking] no argument mapping for write op %r", op)
+        return {"ok": False, "error": "The bank's write path is not available."}
 
     try:
-        return getattr(bmoney, op)(uid, amount, key)
+        return getattr(bmoney, op)(*args, **kwargs)
     except bmoney.BankRefused as e:
         return {"ok": False, "error": str(e)}
     except Exception as e:
@@ -377,6 +470,15 @@ def handle(method: str, path: str, params: Optional[dict] = None,
     params = params or {}
     body = body or {}
     try:
+        # Every path below dereferences _bdb / _pol, which are None until _load()
+        # runs. In production _local_available() gets there first, but nothing
+        # GUARANTEED that -- a direct call raised AttributeError on NoneType and was
+        # caught below as "the bank's local read failed", which names the wrong cause.
+        if not _load():
+            return {"ok": False,
+                    "error": "The bank is not available in this process "
+                             f"({_import_error or 'not loaded'})."}
+
         if path == "/api/v1/health":
             return {"ok": True, "service": "osentar-bank", "provider": "local",
                     "version": PROVIDER_VERSION, "ts": _now()}

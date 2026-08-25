@@ -8,10 +8,10 @@ real elapsed time.
 from __future__ import annotations
 
 import os
-import math
 import asyncio
+import inspect as _inspect
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 import discord
 from discord import app_commands
@@ -52,6 +52,10 @@ from bank_policy import (
     SAVINGS_APR, LOAN_APR, LOAN_OVERDUE_EXTRA_APR, MAX_LOAN, DEFAULT_LOAN_DAYS,
     BASE_CREDIT_LIMIT, CREDIT_PER_REPAID_LOAN, CREDIT_LATE_PENALTY,
     BOND_TERMS, BOND_EARLY_PENALTY_PCT,
+    # Collections policy, moved out of this file for the same reason as the rest:
+    # the website's staff-collections page needs the same four answers, and it was
+    # re-reading the environment itself to get them.
+    COLLECT_FROM_SAVINGS, COLLECT_GRACE_DAYS, GARNISH_BOND_PAYOUTS, OVERDUE_ANNOUNCE,
     parse_bond_terms as _parse_bond_terms,
     bond_payout as _bond_payout,
     bond_redeem_value,
@@ -85,11 +89,7 @@ LOAN_REQUIRE_APPROVAL = _env_bool("LOAN_REQUIRE_APPROVAL", "1")
 # MAX_LOAN. A per-user override in accounts.credit_limit beats all of this.
 MAX_PENDING_LOANS = int(os.getenv("MAX_PENDING_LOANS", "1"))
 
-# Collections
-COLLECT_FROM_SAVINGS = _env_bool("COLLECT_FROM_SAVINGS", "1")
-COLLECT_GRACE_DAYS = float(os.getenv("COLLECT_GRACE_DAYS", "3"))
-GARNISH_BOND_PAYOUTS = _env_bool("GARNISH_BOND_PAYOUTS", "1")
-OVERDUE_ANNOUNCE = _env_bool("OVERDUE_ANNOUNCE", "1")
+# Collections policy is imported from bank_policy above, under these same names.
 
 
 
@@ -415,82 +415,35 @@ async def _stamp_proposal(interaction: discord.Interaction, title: str,
 
 
 async def approve_loan(interaction: discord.Interaction, loan_id: int) -> None:
-    """Disburse a pending loan. Safe to race: the pending->approving claim is a
-    conditional UPDATE, so of two bankers clicking Approve at the same instant
-    exactly one disburses."""
+    """Disburse a pending loan. ONE transaction, shared with the website's staff
+    page (bank_money.staff_loan_decide).
+
+    Safe to race for a better reason than before: the pending->active transition
+    is a conditional UPDATE in the same transaction as the disbursement, so of two
+    bankers clicking Approve at the same instant exactly one disburses AND there
+    is no 'approving' state left behind if the process dies mid-flight.
+
+    The borrower's lock is gone. It was per-process — the website's staff page
+    runs in core's — and the credit re-check it was protecting now happens inside
+    the transaction that acts on it.
+    """
     await interaction.response.defer(ephemeral=True)
     loan = bdb.get_loan(loan_id)
     if not loan:
         await interaction.followup.send("No such loan.", ephemeral=True)
         return
-    if loan["status"] != "pending":
-        await interaction.followup.send(
-            f"Loan #{loan_id} is already {loan['status']} — nothing to approve.",
-            ephemeral=True)
-        return
-
     borrower_id = loan["user_id"]
-
-    # The whole check→claim→disburse→finalize sequence runs under the borrower's
-    # lock. Without it, two proposals for the same person approved at the same
-    # moment would both read the pre-disbursement debt (total_debt only counts
-    # 'active' loans) and both pass the credit check — busting the limit.
-    async with _user_lock(borrower_id):
-        loan = bdb.get_loan(loan_id)
-        if not loan or loan["status"] != "pending":
-            await interaction.followup.send(
-                "Someone else just decided that loan.", ephemeral=True)
-            return
-
-        acct = bdb.get_account(borrower_id) or {}
-        if not acct.get("opted_in"):
-            await interaction.followup.send(
-                f"Loan #{loan_id}: the borrower's account is closed.", ephemeral=True)
-            return
-        if acct.get("frozen"):
-            await interaction.followup.send(
-                f"Loan #{loan_id}: the borrower's account is frozen. Unfreeze it first.",
-                ephemeral=True)
-            return
-
-        # Re-check the limit at approval time — debt can have grown since the request.
-        principal = float(loan["principal"])
-        limit = credit_limit_for(borrower_id)
-        debt = bdb.total_debt(borrower_id)
-        if debt + principal > limit:
-            await interaction.followup.send(
-                f"Loan #{loan_id} would put them at {ab.coins(debt + principal)} against a "
-                f"{ab.coins(limit)} limit. Raise it with `/admin creditlimit` or deny.",
-                ephemeral=True)
-            return
-
-        if not bdb.claim_pending_loan(loan_id, interaction.user.id):
-            await interaction.followup.send("Someone else just decided that loan.", ephemeral=True)
-            return
-
-        days = int(loan["term_days"] or DEFAULT_LOAN_DAYS)
-        try:
-            # A FIXED idempotency key, not a fresh uuid: if the credit lands on
-            # Restocker but the response is lost, this loan is released back to
-            # pending and someone clicks Approve again — the retry must be
-            # recognised as the same disbursement, or the borrower is paid twice.
-            res = await _safe(interaction, client_rs.adjust(
-                borrower_id, int(principal), reason=f"loan #{loan_id} disbursement",
-                count_principal=False, idempotency_key=f"loan-{loan_id}-disburse"))
-            if res is None:
-                bdb.release_pending_loan(loan_id)
-                return
-            due = (utcnow() + timedelta(days=days)).isoformat()
-            bdb.finalize_loan_approval(loan_id, due)
-        except Exception:
-            # Anything at all — a dead interaction token, a Discord 5xx while
-            # reporting the error — must not strand the loan in 'approving',
-            # where no command can see it and only manual SQL could free it.
-            bdb.release_pending_loan(loan_id)
-            log.exception("Approval of loan #%s failed after claim; released to pending", loan_id)
-            raise
-
-    bdb.log(borrower_id, "loan_out", principal, f"loan #{loan_id} {days}d approved by {interaction.user.id}")
+    # A key derived from the domain event, not from this click: if the response is
+    # lost and a banker clicks Approve again, the retry must be recognised as the
+    # same disbursement rather than paid a second time.
+    out = await _bank_money_call("staff_loan_decide", interaction, int(loan_id),
+                                 "approve", str(interaction.user.id),
+                                 f"bank-loan-{loan_id}-approve")
+    if out is None:
+        return
+    principal = out["disbursed"]
+    days = out["term_days"]
+    due = out["due_at"]
 
     due_dt = _parse_iso(due)
     await interaction.followup.send(
@@ -513,12 +466,13 @@ async def deny_loan(interaction: discord.Interaction, loan_id: int) -> None:
     if not loan:
         await interaction.followup.send("No such loan.", ephemeral=True)
         return
-    if loan["status"] != "pending":
-        await interaction.followup.send(
-            f"Loan #{loan_id} is already {loan['status']}.", ephemeral=True)
-        return
-    if not bdb.deny_loan(loan_id, interaction.user.id):
-        await interaction.followup.send("Someone else just decided that loan.", ephemeral=True)
+    # Same function as Approve and as the website's Decline — one decision path,
+    # three doors. 'deny' is mapped to the website's 'decline' at the boundary and
+    # stored as 'denied', so the three words never become three behaviours.
+    out = await _bank_money_call("staff_loan_decide", interaction, int(loan_id),
+                                 "deny", str(interaction.user.id),
+                                 f"bank-loan-{loan_id}-deny")
+    if out is None:
         return
     await interaction.followup.send(f"Denied loan #{loan_id}.", ephemeral=True)
     await _stamp_proposal(interaction, f"Loan denied #{loan_id}",
@@ -592,21 +546,26 @@ async def bank_balance(interaction: discord.Interaction):
 
 
 async def _bank_money_call(op: str, interaction: discord.Interaction,
-                           amount: int, key: str):
+                           *args, **kwargs):
     """Run a shared money write off the event loop, and surface its refusals.
 
     bank_money is synchronous and takes SQLite's write lock, so it runs in a worker
     thread -- holding BEGIN IMMEDIATE on the event loop thread would stall every
     other command in this bot for the duration.
 
+    `args`/`kwargs` are the bank_money function's own, verbatim: the seven writes
+    take seven different shapes (a bond names a term, a staff decision names a
+    request and a verdict), and inventing a uniform one here would mean a second
+    place that decides what an argument means.
+
     Returns the result dict, or None when the user has already been told why not.
     """
     import asyncio as _aio
+    import functools as _ft
     import bank_money as _bm
     import ledger_v2 as _lv
     try:
-        return await _aio.to_thread(getattr(_bm, op), str(interaction.user.id),
-                                    int(amount), key)
+        return await _aio.to_thread(_ft.partial(getattr(_bm, op), *args, **kwargs))
     except _bm.BankRefused as e:
         await interaction.followup.send(str(e), ephemeral=True)
     except _lv.Replay as e:
@@ -639,8 +598,8 @@ async def bank_deposit(interaction: discord.Interaction, amount: app_commands.Ra
     # so a failure after the debit took coins out of the wallet that never arrived in
     # savings. interaction.id is the key because it is stable across Discord's own
     # retries of the same invocation.
-    out = await _bank_money_call("deposit", interaction, amount,
-                                 f"discord-deposit-{interaction.id}")
+    out = await _bank_money_call("deposit", interaction, str(interaction.user.id),
+                                 int(amount), f"discord-deposit-{interaction.id}")
     if out is None:
         return
     new_sav = out["balance"]["savings"]
@@ -669,8 +628,8 @@ async def bank_withdraw(interaction: discord.Interaction, amount: app_commands.R
     # debited savings, called out over HTTP, and hand-rolled a compensating
     # add_savings() if that failed -- a rollback that only works if the process
     # survives long enough to run it.
-    out = await _bank_money_call("withdraw", interaction, amount,
-                                 f"discord-withdraw-{interaction.id}")
+    out = await _bank_money_call("withdraw", interaction, str(interaction.user.id),
+                                 int(amount), f"discord-withdraw-{interaction.id}")
     if out is None:
         return
     new_sav = out["balance"]["savings"]
@@ -703,8 +662,30 @@ async def bank_transfer(interaction: discord.Interaction, member: discord.Member
         await interaction.response.send_message("You can't pay a bot.", ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
-    res = await _safe(interaction, client_rs.transfer(interaction.user.id, member.id, amount,
-                                                      reason=f"transfer to {member.display_name}"))
+    # An explicit key. Without one the v1 alias SYNTHESISES it from the body hash, so
+    # paying the same person the same amount twice inside the 30-day TTL derives the
+    # SAME key: the second transfer replays, the sender is shown the first transfer's
+    # figures, and bank_ledger records a payment that never happened. interaction.id is
+    # unique per invocation and stable across Discord's own retries.
+    # An explicit key. Without one the v1 alias SYNTHESISES it from the body hash, so
+    # paying the same person the same amount twice inside the 30-day TTL derives the
+    # SAME key: the second transfer replays, the sender is shown the FIRST transfer's
+    # figures, and bank_ledger records a payment that never happened.
+    #
+    # Passed only if the client accepts it. `restocker_client` is a separate module and
+    # a kwarg it does not take would TypeError on every /bank transfer -- trading a
+    # replay bug for a total outage. When it is absent the call still works exactly as
+    # before, and the one-time warning says the collision is still live.
+    _tkw = {}
+    if "idempotency_key" in _inspect.signature(client_rs.transfer).parameters:
+        _tkw["idempotency_key"] = f"bank-transfer-{interaction.id}"
+    else:
+        log.warning("[bank] restocker_client.transfer takes no idempotency_key; "
+                    "repeat transfers of the same amount to the same person can "
+                    "still collide on a synthesised key")
+    res = await _safe(interaction, client_rs.transfer(
+        interaction.user.id, member.id, amount,
+        reason=f"transfer to {member.display_name}", **_tkw))
     if res is None:
         return
     bdb.log(interaction.user.id, "transfer_out", amount, f"to {member.id}")
@@ -737,7 +718,10 @@ async def bank_history(interaction: discord.Interaction):
         await interaction.response.send_message("No activity yet.", ephemeral=True)
         return
     # Entries that record a state change rather than a movement of coins.
-    NON_MONETARY = ("account_closed", "account_frozen", "account_unfrozen", "credit_limit_set")
+    # `loan_denied` is here because it is a decision, not a movement: it is logged
+    # with amount 0, and rendering it as "-0" would read as coins having moved.
+    NON_MONETARY = ("account_closed", "account_frozen", "account_unfrozen",
+                    "credit_limit_set", "loan_denied")
     GAINS = ("withdraw", "transfer_in", "loan_out", "interest_savings",
              "stock_sell", "bond_redeem", "loan_written_off")
     lines = []
@@ -832,16 +816,15 @@ async def bank_close(interaction: discord.Interaction):
     if not view.confirmed:
         return
 
-    if sav > 0:
-        res = await _safe(interaction, client_rs.adjust(
-            interaction.user.id, sav, reason="bank account closed — savings cashed out"))
-        if res is None:
-            return
-        bdb.add_savings(interaction.user.id, -sav)
-        bdb.log(interaction.user.id, "withdraw", sav, "savings->wallet (account closed)")
-
-    bdb.close_account(interaction.user.id)
-    bdb.log(interaction.user.id, "account_closed", 0, "")
+    # ONE transaction, and the balance is read INSIDE it. `sav` above is only for the
+    # confirm PROMPT: it was read before an await on a Discord button, and acting on it
+    # afterwards let a concurrent website withdrawal be paid out twice while
+    # bank_savings went negative.
+    out = await _bank_money_call("close_account", interaction, str(interaction.user.id),
+                                 f"discord-close-{interaction.id}")
+    if out is None:
+        return
+    sav = out["cashed_out"]
     await interaction.followup.send(
         "Your bank account is now closed."
         + (f" {ab.coins(sav)} was moved to your wallet." if sav > 0 else ""),
@@ -913,13 +896,22 @@ async def _do_loan_request(interaction: discord.Interaction, amount: int, days: 
         asyncio.create_task(_post_loan_proposal(interaction.user, loan, days, pending=True))
         return
 
-    res = await _safe(interaction, client_rs.adjust(interaction.user.id, amount,
-                                                    reason="loan disbursement", count_principal=False))
-    if res is None:
+    # LOAN_REQUIRE_APPROVAL=0: nobody clicks Approve, so this branch is the
+    # approval. It goes through the SAME function a Lead Banker's click does
+    # rather than disbursing on its own — that is what puts the disbursement and
+    # the FAIRNESS.md §12.4 gambling block in one transaction here too. The loan
+    # is written 'pending' first because the decision function's whole contract is
+    # "take this pending row to active and pay it out"; a second disbursement path
+    # that skipped that would be the second implementation this file keeps
+    # deleting.
+    loan = bdb.create_loan(interaction.user.id, float(amount), LOAN_APR, None,
+                           status="pending", term_days=days)
+    out = await _bank_money_call("staff_loan_decide", interaction, int(loan["id"]),
+                                 "approve", "auto-approval",
+                                 f"bank-loan-{loan['id']}-approve")
+    if out is None:
         return
-    due = (utcnow() + timedelta(days=days)).isoformat()
-    loan = bdb.create_loan(interaction.user.id, float(amount), LOAN_APR, due, term_days=days)
-    bdb.log(interaction.user.id, "loan_out", amount, f"loan #{loan['id']} {days}d")
+    due = out["due_at"]
     due_dt = _parse_iso(due)
     await interaction.followup.send(
         # Green: the principal has actually reached their wallet.
@@ -929,7 +921,7 @@ async def _do_loan_request(interaction: discord.Interaction, amount: int, days: 
                              f"{LOAN_APR*100:.1f}% APR. Repay with `/loan repay`."),
                        band=[("Principal", ab.coins(amount)),
                              ("Term", f"{days} days"),
-                             ("Wallet", ab.coins(res["coins"]))],
+                             ("Wallet", ab.coins(out["balance"]["wallet"]))],
                        groups=[("Repayment", ab.rows([
                            ("Due", ab.when(due_dt) if due_dt else due[:10]),
                            ("APR", f"{LOAN_APR*100:.1f}%"),
@@ -947,31 +939,29 @@ async def loan_repay(interaction: discord.Interaction, amount: app_commands.Rang
     if not await ensure_account(interaction):
         return
     await interaction.response.defer(ephemeral=True)
-    async with _user_lock(interaction.user.id):
-        loans = bdb.get_active_loans(interaction.user.id)
-        if not loans:
-            await interaction.followup.send("You have no active loans.", ephemeral=True)
-            return
-        debt = sum(float(l["balance"]) for l in loans)
-        pay = min(amount, math.ceil(debt))
-        res = await _safe(interaction, client_rs.adjust(interaction.user.id, -pay, reason="loan repayment"))
-        if res is None:
-            return
-        remaining = pay
-        for l in loans:
-            if remaining <= 0:
-                break
-            chunk = min(remaining, float(l["balance"]))
-            bdb.apply_loan_payment(l["id"], chunk)
-            remaining -= chunk
-        bdb.log(interaction.user.id, "loan_repay", pay, "repayment")
-        new_debt = bdb.total_debt(interaction.user.id)
+    # ONE transaction, shared with the website (bank_money.repay). What the old
+    # path did instead: debit over HTTP with NO idempotency key, then apply the
+    # payment loan by loan in separate transactions, then write the ledger line.
+    # A crash between the debit and the loop destroyed the coins; a second
+    # repayment of the same amount inside 30 days replayed the debit's synthesised
+    # key and reduced the balance again for free.
+    out = await _bank_money_call("repay", interaction, str(interaction.user.id),
+                                 int(amount), f"discord-repay-{interaction.id}")
+    if out is None:
+        return
+    pay, new_debt = out["applied"], out["outstanding"]
+    rows = [("Remaining debt", ab.coins(new_debt)),
+            ("Wallet", ab.coins(out["balance"]["wallet"]))]
+    if out["to_savings"] > 0:
+        # Say where every coin went. `pay` is rounded UP so a fractional debt can
+        # be cleared in whole coins; the fraction over the debt is not kept.
+        rows.insert(1, ("Rounding, to your savings", ab.coins(out["to_savings"])))
     await interaction.followup.send(
         embed=ab.embed(title="Repayment applied",
                        kicker="/loan repay",
-                       desc=f"Repaid {ab.coins(pay)} from your wallet.",
-                       band=[("Remaining debt", ab.coins(new_debt)),
-                             ("Wallet", ab.coins(res["coins"]))],
+                       desc=(f"Repaid {ab.coins(pay)} from your wallet, oldest due "
+                             f"loan first."),
+                       band=rows,
                        colour=ab.ACCENT),
         ephemeral=True,
     )
@@ -1107,23 +1097,27 @@ async def bond_buy(interaction: discord.Interaction,
             ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
-    apr = BOND_TERMS[term]
-    payout = _bond_payout(amount, apr, term)
-    res = await _safe(interaction, client_rs.adjust(interaction.user.id, -amount, reason=f"bond {term}d"))
-    if res is None:
+    # ONE transaction, shared with the website (bank_money.bond_buy). The old path
+    # debited over HTTP and then inserted the bond: a crash between them left the
+    # player having paid for a bond they did not own, and two identical bonds
+    # bought within 30 days collided on the synthesised key, so the second one was
+    # created without a second debit.
+    out = await _bank_money_call("bond_buy", interaction, str(interaction.user.id),
+                                 int(amount), int(term),
+                                 f"discord-bondbuy-{interaction.id}")
+    if out is None:
         return
-    matures = (utcnow() + timedelta(days=term)).isoformat()
-    bond = bdb.create_bond(interaction.user.id, float(amount), apr, term, float(payout), matures)
-    bdb.log(interaction.user.id, "bond_buy", amount, f"bond #{bond['id']} {term}d")
+    bond_id, payout = out["bond_id"], out["repaid_at_maturity"]
+    matures = out["matures"]
     matures_dt = _parse_iso(matures)
     await interaction.followup.send(
-        embed=ab.embed(title=f"Bond bought #{bond['id']}",
+        embed=ab.embed(title=f"Bond bought #{bond_id}",
                        kicker="/bond buy",
                        desc=(f"Locked {ab.coins(amount)} for a {term} day term at "
-                             f"{apr*100:.1f}% APR."),
+                             f"{out['apr']*100:.1f}% APR."),
                        band=[("Term", f"{term} days"),
                              ("Pays out", ab.coins(payout)),
-                             ("Wallet", ab.coins(res["coins"]))],
+                             ("Wallet", ab.coins(out["balance"]["wallet"]))],
                        groups=[("Maturity", ab.rows([
                            ("Matures", ab.when(matures_dt) if matures_dt else matures[:10]),
                            ("Payout at maturity", ab.coins(payout)),
@@ -1132,7 +1126,7 @@ async def bond_buy(interaction: discord.Interaction,
         ephemeral=True,
     )
     asyncio.create_task(_log_activity(ab.line(
-        "Bond bought", f"#{bond['id']}", interaction.user.mention, ab.coins(amount),
+        "Bond bought", f"#{bond_id}", interaction.user.mention, ab.coins(amount),
         f"{term} day term")))
 
 
@@ -1179,81 +1173,36 @@ async def bond_redeem(interaction: discord.Interaction, bond_id: int):
     if not bond or str(bond["user_id"]) != str(interaction.user.id):
         await interaction.followup.send("That bond isn't yours or doesn't exist.", ephemeral=True)
         return
-    if bond["status"] != "active":
-        await interaction.followup.send("That bond has already been redeemed.", ephemeral=True)
+
+    # ONE transaction, shared with the website (bank_money.bond_redeem): the
+    # garnish split, the bond's status flip, the wallet credit, the debt it
+    # settles and the ledger line all commit together or not at all.
+    #
+    # The user lock that used to wrap this is gone, and it is not a loss: it was
+    # per-process, so a website repayment or a collections pass in core's process
+    # never took it, and the window it was written to close — the debt changing
+    # between the split being decided and the coins being applied — was open the
+    # whole time. BEGIN IMMEDIATE closes it across both processes. `claim_bond`
+    # and `unclaim_bond` were the compensating pair that shape needed; there is
+    # nothing left to compensate for.
+    out = await _bank_money_call("bond_redeem", interaction, str(interaction.user.id),
+                                 int(bond_id), f"discord-bondredeem-{interaction.id}")
+    if out is None:
         return
-
-    now = utcnow()
-    # One implementation, shared with the website (bank_policy.bond_redeem_value).
-    _rv = bond_redeem_value(bond, now.isoformat())
-    matured = _rv["matured"]
-    amount = _rv["amount"]
-    if matured:
-        kind_note = "matured payout"
-    else:
-        penalty = _rv["penalty"]
-        kind_note = ("early redemption, interest forfeited"
-                     + (f", {ab.coins(penalty)} penalty" if penalty else ""))
-
-    # Everything below runs under the user's lock. The split between "goes to
-    # debt" and "goes to the wallet" is decided before an HTTP round trip and
-    # acted on after it; without the lock, a collections pass or a /loan repay
-    # landing in that window could clear the debt, leaving the garnished share
-    # applied to nothing and simply destroyed.
-    async with _user_lock(interaction.user.id):
-        if bdb.get_bond(bond_id)["status"] != "active":
-            await interaction.followup.send("That bond has already been redeemed.", ephemeral=True)
-            return
-
-        # A bond payout is money the bank is already holding, so overdue debt is
-        # settled out of it before the rest reaches the wallet. Only OVERDUE debt
-        # is garnished — a loan that's merely outstanding is left alone.
-        garnish = 0
-        if GARNISH_BOND_PAYOUTS:
-            garnish = int(min(amount, math.floor(_overdue_debt(interaction.user.id))))
-        to_wallet = amount - garnish
-
-        if not bdb.claim_bond(bond_id):
-            await interaction.followup.send("That bond has already been redeemed.", ephemeral=True)
-            return
-
-        res = None
-        if to_wallet > 0:
-            # Fixed idempotency key: if this credit lands but the response is
-            # lost, the bond is unclaimed and redeemable again — the retry has
-            # to be recognised as the same payout rather than paid twice.
-            res = await _safe(interaction, client_rs.adjust(
-                interaction.user.id, to_wallet, reason="bond redemption",
-                idempotency_key=f"bond-{bond_id}-redeem"))
-            if res is None:
-                bdb.unclaim_bond(bond_id)
-                return
-
-        applied = _apply_to_overdue(interaction.user.id, garnish,
-                                   f"garnished from bond #{bond_id}") if garnish else 0.0
-
-        # Belt and braces: if less debt was there to settle than we withheld,
-        # the remainder goes to savings rather than evaporating. Savings is a
-        # local write that can't fail, so no coins are lost either way.
-        shortfall = garnish - applied
-        if shortfall > 0:
-            bdb.add_savings(interaction.user.id, shortfall)
-            bdb.log(interaction.user.id, "deposit", shortfall,
-                    f"bond #{bond_id} garnish remainder -> savings")
-            log.warning("Bond #%s garnish shortfall of %s credited to savings for %s",
-                        bond_id, shortfall, interaction.user.id)
-
-        bdb.finalize_bond_redemption(bond_id, amount, now.isoformat())
-        bdb.log(interaction.user.id, "bond_redeem", amount, f"bond #{bond_id} {kind_note}")
+    amount = out["payout"]
+    to_wallet = out["paid"]
+    applied = out["garnished"]
+    shortfall = out["to_savings"]
+    kind_note = out["note"]
 
     split = [("To your wallet", ab.coins(to_wallet))]
     if applied:
         split.append(("Taken for overdue debt", ab.coins(applied)))
-        split.append(("Remaining debt", ab.coins(bdb.total_debt(interaction.user.id))))
+        split.append(("Remaining debt", ab.coins(out["outstanding"])))
     if shortfall > 0:
         split.append(("To your savings", ab.coins(shortfall)))
-    if res:
-        split.append(("Wallet", ab.coins(res["coins"])))
+    if to_wallet > 0:
+        split.append(("Wallet", ab.coins(out["balance"]["wallet"])))
 
     await interaction.followup.send(
         # Green only where coins actually reached the reader.
@@ -1714,6 +1663,16 @@ async def admin_forgive(interaction: discord.Interaction, member: discord.Member
     if not ids:
         await interaction.followup.send("Nothing to forgive — those loans aren't active.", ephemeral=True)
         return
+    # A write-off reduces the debt to nothing with no coins moving, so no wallet
+    # transaction carries the gambling block's clear with it. Without this the
+    # borrower stays blocked indefinitely for having had their debt forgiven.
+    import bank_money as _bm
+    try:
+        await asyncio.to_thread(_bm.clear_block_if_settled, str(member.id),
+                                f"debt written off by {interaction.user.id}")
+    except Exception:
+        log.exception("Could not recheck the gambling block for %s after a write-off",
+                      member.id)
     await interaction.followup.send(
         embed=ab.embed(title="Loans written off",
                        kicker="/admin forgive",
@@ -1812,20 +1771,30 @@ async def admin_collect(interaction: discord.Interaction):
     if not await ensure_banker(interaction):
         return
     await interaction.response.defer(ephemeral=True)
-    before = sum(float(l["balance"]) for l in bdb.overdue_loans())
     try:
-        await run_collections()
+        records = await run_collections()
     except Exception as e:
         log.exception("Manual collections pass failed")
         await interaction.followup.send(f"Collections failed: {e}", ephemeral=True)
         return
-    after = sum(float(l["balance"]) for l in bdb.overdue_loans())
+    # What the pass ACTUALLY took, from the pass itself. This used to be the
+    # difference between two uncoordinated reads of every overdue balance taken
+    # either side of the sweep, so a repayment or an interest tick landing during
+    # it was reported as "Recovered" — a figure the bank never collected.
+    recovered = sum(r["collected"] for r in records)
+    touched = [r for r in records if r["collected"]]
+    rows = [(f"Loan #{r['loan_id']} · <@{r['user_id']}>",
+             f"{ab.coins(r['collected'])} taken · {ab.coins(r['outstanding'])} left")
+            for r in touched[:25]]
     await interaction.followup.send(
         embed=ab.embed(title="Collections run",
                        kicker="/admin collect",
-                       band=[("Before", ab.coins(before)),
-                             ("After", ab.coins(after)),
-                             ("Recovered", ab.coins(max(0.0, before - after)))],
+                       band=[("Recovered", ab.coins(recovered)),
+                             ("Loans collected", str(len(touched))),
+                             ("Newly announced",
+                              str(sum(1 for r in records if r["announced"])))],
+                       # Empty stays empty: no rows rather than a placeholder line.
+                       groups=([("Collected", ab.rows(rows))] if rows else None),
                        foot="Taken from savings only, never from wallets.",
                        colour=ab.ACCENT),
         ephemeral=True)
@@ -1944,89 +1913,48 @@ async def admin_config(interaction: discord.Interaction):
     await interaction.response.send_message(embed=e, ephemeral=True)
 
 
-def _overdue_debt(user_id) -> float:
-    """Balance across this user's loans that are past due right now."""
-    return sum(float(l["balance"]) for l in bdb.overdue_loans() if str(l["user_id"]) == str(user_id))
+async def run_collections() -> list[dict]:
+    """Chase overdue loans, then say what happened.
 
+    The sweep itself is `bank_money.run_collections_pass` — ONE transaction per
+    loan, shared with the website's staff-collect button so a Lead Banker's manual
+    collection and this hourly pass can never take different amounts for the same
+    arrears. Two things still happen, both idempotent so the loop can run forever:
 
-def _apply_to_overdue(user_id, amount: float, meta: str) -> float:
-    """Pay `amount` against the user's overdue loans, oldest due first.
-    Returns how much was actually applied. Purely local — no coins move in
-    Restocker, because the money is already inside the bank."""
-    remaining = float(amount)
-    applied = 0.0
-    for l in bdb.overdue_loans():
-        if remaining <= 0:
-            break
-        if str(l["user_id"]) != str(user_id):
-            continue
-        chunk = min(remaining, float(l["balance"]))
-        if chunk <= 0:
-            continue
-        bdb.apply_loan_payment(l["id"], chunk)
-        bdb.record_collection(l["id"], chunk)
-        bdb.log(user_id, "loan_collect", chunk, f"loan #{l['id']} {meta}")
-        remaining -= chunk
-        applied += chunk
-    return applied
+      1. The first time a loan goes past due it is announced once (the
+         `overdue_notified` flag makes it once, not once per hour). That flag is
+         also `late_count` on the credit limit, so announcing and penalising are
+         deliberately the same write.
+      2. After COLLECT_GRACE_DAYS, savings are seized against the debt.
 
-
-
-async def run_collections():
-    """Chase overdue loans.
-
-    Two things happen here, both idempotent so the hourly loop can run forever:
-      1. The first time a loan goes past due it gets announced once (the
-         overdue_notified flag makes it once, not once per hour).
-      2. After COLLECT_GRACE_DAYS, savings are seized against the debt. Savings
-         sit inside the bank already, so this is a local transfer — no Restocker
-         call, nothing that can half-fail.
     The wallet is never touched: the bank can take what it holds, not reach into
     someone's pocket.
+
+    The Discord posts are HERE and the money is THERE, on purpose. A failed
+    announcement must not be able to roll back a collection, and holding a write
+    transaction open across a Discord round trip would block both processes for
+    the length of it.
     """
-    if not (COLLECT_FROM_SAVINGS or OVERDUE_ANNOUNCE):
-        return
-    now = utcnow()
-    grace_cutoff = (now - timedelta(days=COLLECT_GRACE_DAYS)).isoformat()
-
-    for loan in bdb.overdue_loans(now.isoformat()):
-        uid = loan["user_id"]
-        loan_id = loan["id"]
-
-        if OVERDUE_ANNOUNCE and bdb.mark_overdue_notified(loan_id):
-            due_dt = _parse_iso(loan["due_at"])
+    import bank_money as _bm
+    records = await asyncio.to_thread(_bm.run_collections_pass)
+    for rec in records:
+        uid, loan_id = rec["user_id"], rec["loan_id"]
+        if rec["announced"]:
+            due_dt = _parse_iso(rec["due_at"])
             await _log_activity(ab.line(
                 "Overdue", f"loan #{loan_id}", f"<@{uid}>",
-                f"{ab.coins(loan['balance'])} owed",
-                f"{loan['term_days']} day term" if loan.get("term_days") else "",
+                f"{ab.coins(rec['owed_before'])} owed",
+                f"{rec['term_days']} day term" if rec.get("term_days") else "",
                 f"was due {ab.when(due_dt)}" if due_dt else "",
                 "penalty APR now applies"))
-
-        if not COLLECT_FROM_SAVINGS:
-            continue
-        if (loan["due_at"] or "") > grace_cutoff:
-            continue  # still inside the grace period
-
-        async with _user_lock(uid):
-            fresh = bdb.get_loan(loan_id)
-            if not fresh or fresh["status"] != "active" or float(fresh["balance"]) <= 0:
-                continue
-            owed = float(fresh["balance"])
-            savings = float(bdb.get_savings(uid)["balance"])
-            take = math.floor(min(owed, savings))
-            if take < 1:
-                continue
-            if not bdb.try_debit_savings(uid, take):
-                continue  # lost a race with a withdrawal; next pass will retry
-            bdb.apply_loan_payment(loan_id, take)
-            bdb.record_collection(loan_id, take)
-            bdb.log(uid, "loan_collect", take, f"loan #{loan_id} seized from savings")
-            left = bdb.total_debt(uid)
-
-        log.info("[collections] seized %s from savings of %s for loan #%s", take, uid, loan_id)
-        await _log_activity(ab.line(
-            "Collected", f"loan #{loan_id}", f"<@{uid}>", ab.coins(take), "from savings",
-            f"remaining debt {ab.coins(left)}"))
+        if rec["collected"]:
+            log.info("[collections] seized %s from savings of %s for loan #%s",
+                     rec["collected"], uid, loan_id)
+            await _log_activity(ab.line(
+                "Collected", f"loan #{loan_id}", f"<@{uid}>",
+                ab.coins(rec["collected"]), "from savings",
+                f"remaining debt {ab.coins(rec['outstanding'])}"))
+    return records
 
 
 @tasks.loop(hours=1)
@@ -2041,27 +1969,38 @@ async def accrue_interest():
     daily_loan = LOAN_APR / 365.0
     daily_loan_overdue = (LOAN_APR + LOAN_OVERDUE_EXTRA_APR) / 365.0
 
+    import bank_money as _bm
     for s in bdb.all_savings():
         bal = float(s["balance"])
-        last = _parse_iso(s.get("last_accrued"))
+        raw_last = s.get("last_accrued")
+        last = _parse_iso(raw_last)
         if last is None:
-            bdb.set_savings_accrued(s["user_id"], now.isoformat(), bal)
+            await asyncio.to_thread(_bm.accrue_savings_row, s["user_id"], 0.0, raw_last,
+                                    now.isoformat(), "baseline")
             continue
         days = (now - last).total_seconds() / 86400.0
         if days <= 0 or bal <= 0:
             continue
-        new_bal = bal * ((1.0 + daily_sav) ** days)
-        interest = new_bal - bal
+        interest = bal * ((1.0 + daily_sav) ** days) - bal
         if interest < _MIN_ACCRUAL:
             continue
-        bdb.set_savings_accrued(s["user_id"], now.isoformat(), new_bal)
-        bdb.log(s["user_id"], "interest_savings", interest, f"{days:.3f}d")
+        # An AMOUNT, from the balance held across the period -- see accrue_savings_row.
+        # Off the event loop: it takes BEGIN IMMEDIATE, and holding that on the loop
+        # freezes every slash command and the Discord heartbeat for up to the full
+        # busy_timeout, per row. `run_collections` two dozen lines below already does
+        # this; the accrual half was breaking the rule the collections half obeys.
+        if not await asyncio.to_thread(_bm.accrue_savings_row, s["user_id"], interest,
+                                       raw_last, now.isoformat(), f"{days:.3f}d"):
+            log.debug("[interest] savings %s moved mid-pass; next pass covers it",
+                      s["user_id"])
 
     for l in bdb.all_active_loans():
         bal = float(l["balance"])
-        last = _parse_iso(l.get("last_accrued"))
+        raw_last = l.get("last_accrued")
+        last = _parse_iso(raw_last)
         if last is None:
-            bdb.set_loan_accrued(l["id"], now.isoformat(), bal)
+            await asyncio.to_thread(_bm.accrue_loan_row, l["id"], l["user_id"], 0.0,
+                                    raw_last, now.isoformat(), "baseline")
             continue
         if bal <= 0:
             continue
@@ -2077,13 +2016,13 @@ async def accrue_interest():
             on_time_days = (due - last).total_seconds() / 86400.0
             overdue_days = (now - due).total_seconds() / 86400.0
         factor = ((1.0 + daily_loan) ** on_time_days) * ((1.0 + daily_loan_overdue) ** overdue_days)
-        new_bal = bal * factor
-        interest = new_bal - bal
+        interest = bal * factor - bal
         if interest < _MIN_ACCRUAL:
             continue
-        bdb.set_loan_accrued(l["id"], now.isoformat(), new_bal)
         meta = f"{total_days:.3f}d" + (f" (+{overdue_days:.2f}d overdue)" if overdue_days > 0 else "")
-        bdb.log(l["user_id"], "interest_loan", interest, f"loan #{l['id']} {meta}")
+        if not await asyncio.to_thread(_bm.accrue_loan_row, l["id"], l["user_id"], interest,
+                                       raw_last, now.isoformat(), f"loan #{l['id']} {meta}"):
+            log.debug("[interest] loan #%s moved or settled mid-pass; skipped", l["id"])
 
     log.debug("[interest] elapsed-time accrual pass complete")
 
@@ -2103,6 +2042,22 @@ async def _before_accrue():
 
 @bot.event
 async def on_ready():
+    # The books and the coins must be the same file. bank_local guards this on the WEB
+    # side; the bot had no equivalent, and the bot is what runs accrual and collections.
+    # With BANK_DB_PATH pointing elsewhere, every accrual writes to a file nothing else
+    # reads and interest silently never accrues for anyone -- logged, until now, at
+    # DEBUG as the fix's own benign-race message.
+    try:
+        import ledger_v2 as _lv
+        import os.path as _p
+        _books, _coins = _p.realpath(str(bdb.DB_PATH)), _p.realpath(str(_lv._db_path()))
+        if _books != _coins:
+            log.critical("[bank] SPLIT BRAIN: the bank's books are %s but the coins are "
+                         "%s. Accrual and collections would write where nothing reads. "
+                         "Unset BANK_DB_PATH to use the shared file.", _books, _coins)
+    except Exception:
+        log.warning("[bank] could not verify the books and the ledger share a file",
+                    exc_info=True)
     bdb.init_db()
     try:
         if GUILD_ID:

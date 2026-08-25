@@ -542,6 +542,15 @@ IN_BAND_ENDPOINTS: frozenset[str] = frozenset({
     # These names match what banking_web mints keys against (`banking:<purpose>`),
     # so the same key is used end to end and a retry anywhere collapses.
     "banking:deposit", "banking:withdraw",
+    # The other five, same shape and same reason (bank_money.repay, bond_buy,
+    # bond_redeem, staff_loan_decide, staff_collect). Each is ONE `_tx()`: the
+    # wallet move, the bank_loans/bank_bonds/bank_savings write and the claim
+    # completion commit together. Spelled exactly as banking_web mints them
+    # (banking_web.py `_MONEY_ENDPOINT`, `h_staff_decide`, `h_staff_collect`) --
+    # a second spelling here is a key that dedupes nothing.
+    "banking:repay", "banking:bond_buy", "banking:bond_redeem",
+    "banking:staff_decide", "banking:staff_collect",
+    "banking:close",
 })
 
 
@@ -1842,7 +1851,8 @@ def transfer(service: str, from_user: str, to_user: str, amount: int,
 
 def wallet_move(conn: sqlite3.Connection, service: str, user_id: str, amount: int,
                 reason: str, key: Optional[str] = None,
-                *, respect_holds: bool = True) -> int:
+                *, respect_holds: bool = True,
+                counts_as_principal: bool = True) -> int:
     """Apply a wallet delta INSIDE a transaction the CALLER already opened.
 
     This is exactly the body of `adjust()` minus the transaction, and `adjust()` now
@@ -1862,6 +1872,16 @@ def wallet_move(conn: sqlite3.Connection, service: str, user_id: str, amount: in
         their own connection, so calling one here would sit outside this transaction
         AND block on the write lock this transaction is holding.
 
+    `counts_as_principal=False` credits the coins WITHOUT adding them to
+    `balances.principal`, and it exists for exactly one caller: a loan
+    disbursement. Borrowed coins are not the borrower's own capital, and the v1
+    HTTP alias has always carried `count_principal=False` for this
+    (`bank_main.approve_loan`). Without it here, moving that path into a
+    transaction would silently change what the number means -- every disbursed
+    loan would inflate lifetime principal, which is the input to tiering and to
+    "how much of this is really theirs". A default of True keeps every other
+    caller exactly as it was.
+
     Returns the balance after. Raises `LedgerError` exactly as `adjust` does.
     """
     amt = int(amount)
@@ -1873,7 +1893,7 @@ def wallet_move(conn: sqlite3.Connection, service: str, user_id: str, amount: in
     _ensure_wallet(conn, uid)
     _assert_not_frozen(conn, uid)
     if amt > 0:
-        after = _credit(conn, uid, amt, counts_as_principal=True)
+        after = _credit(conn, uid, amt, counts_as_principal=counts_as_principal)
     else:
         after = _debit(conn, uid, -amt, respect_holds=respect_holds)
     _record(conn, service=service, action="adjust", user_id=uid, delta=amt,

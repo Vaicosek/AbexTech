@@ -19,7 +19,55 @@ import sqlite3
 import contextlib
 from datetime import datetime, timezone
 
-DB_PATH = os.getenv("BANK_DB_PATH", os.path.join(os.path.dirname(__file__), "bank.db"))
+def _resolve_db_path() -> str:
+    """Which database file the bank's books live in.
+
+    ONE database is the whole point of the merge, and the default used to be
+    `bank/bank.db` with `BANK_DB_PATH` as the only way to point it at the shared file.
+    Nothing set that variable: `run_all.py`, `run_bank.py` and `run_core.py` do not,
+    and core's web process reads the ROOT `.env`, never `bank/.env` -- so the env var
+    that did exist could not reach the process that needed it most.
+
+    The two failures that produced, both reproduced:
+      - fresh box: `bank_local.available()` probes for `bank_accounts` in `bank/bank.db`,
+        CREATES that empty file, finds no table and reports the bank down. Every read
+        and every write on the website raises `OsentarDown` -- the exact "bank not
+        answering" state this whole migration exists to end.
+      - upgraded box: a stale `bank/bank.db` survives, the probe passes, and reads are
+        served from the OLD file while writes land in `restocker.db`. Deposits vanish.
+
+    So the default is now the shared file, resolved the way `ledger_v2._db_path()` does
+    it -- by asking `Restocker_db`, which is the one module that owns that answer.
+    `BANK_DB_PATH` still overrides, for anyone deliberately running the bank against
+    its own file.
+    """
+    override = os.getenv("BANK_DB_PATH")
+    if override:
+        return override
+    try:
+        import Restocker_db as _core
+        return str(_core.DB_PATH)
+    except Exception:
+        # Core is not importable (the bank running standalone). Keep the old
+        # behaviour rather than inventing a path.
+        return os.path.join(os.path.dirname(__file__), "bank.db")
+
+
+def __getattr__(name):
+    """`DB_PATH` is resolved on ACCESS, not at import.
+
+    `bank_main` imports `bank_db` at module line 20 and calls `load_dotenv()` at line
+    26, so a `BANK_DB_PATH` set in `bank/.env` was read before it existed and silently
+    ignored -- while `bank/.env.example` calls that setting "REQUIRED". Today the new
+    shared default rescues it; the day the operator's intent and `Restocker_db.DB_PATH`
+    diverge, the bank would run against a file nobody chose.
+
+    Module-level `__getattr__` (PEP 562) keeps `bank_db.DB_PATH` reading exactly as it
+    always did at every call site, while making it honest about when it decides.
+    """
+    if name == "DB_PATH":
+        return _resolve_db_path()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def utcnow() -> str:
@@ -28,7 +76,7 @@ def utcnow() -> str:
 
 @contextlib.contextmanager
 def db():
-    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn = sqlite3.connect(_resolve_db_path(), timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -160,6 +208,16 @@ def open_account(user_id: str, name: str | None) -> dict:
             "INSERT OR IGNORE INTO bank_savings (user_id, balance, last_accrued) VALUES (?,0,?)",
             (str(user_id), utcnow()),
         )
+        # REOPENING restarts the interest clock. all_savings() skips closed accounts, so
+        # last_accrued freezes for the length of a closure -- and close_account floors the
+        # cash-out, so a sub-coin remainder keeps the row alive. Reopen after 150 days and
+        # deposit, and the next pass charged the WHOLE 150 days against the new balance:
+        # 207,590 coins minted from a deposit held for zero seconds. Nothing is earned
+        # while closed, so the clock starts again here.
+        conn.execute(
+            "UPDATE bank_savings SET last_accrued=? WHERE user_id=?",
+            (utcnow(), str(user_id)),
+        )
         row = conn.execute("SELECT * FROM bank_accounts WHERE user_id=?", (str(user_id),)).fetchone()
         return dict(row)
 
@@ -217,7 +275,11 @@ def add_savings(user_id: str, delta: float) -> float:
     with db() as conn:
         conn.execute(
             "INSERT INTO bank_savings (user_id, balance, last_accrued) VALUES (?,?,?) "
-            "ON CONFLICT(user_id) DO UPDATE SET balance = bank_savings.balance + ?, last_accrued = excluded.last_accrued",
+            # last_accrued is NOT touched: it is the interest clock, not a "last
+            # modified" stamp. Advancing it here meant a Lead Banker's one-coin
+            # correction silently destroyed 4,117c of interest already owed to the
+            # player. Only the accrual pass may move that column.
+            "ON CONFLICT(user_id) DO UPDATE SET balance = bank_savings.balance + ?",
             (str(user_id), max(0.0, delta), utcnow(), delta),
         )
         row = conn.execute("SELECT balance FROM bank_savings WHERE user_id=?", (str(user_id),)).fetchone()
@@ -252,7 +314,14 @@ def set_savings_accrued(user_id: str, when: str, new_balance: float) -> None:
 
 def all_savings() -> list[dict]:
     with db() as conn:
-        return [dict(r) for r in conn.execute("SELECT * FROM bank_savings WHERE balance > 0").fetchall()]
+        # opted_in only. close_account floors the cash-out (coins are whole), so a
+        # closed account can keep a sub-coin remainder -- and without this filter that
+        # remainder compounds for ever on an account nobody can reach. The remainder is
+        # kept, not confiscated: /bank open returns the same row.
+        return [dict(r) for r in conn.execute(
+            "SELECT s.* FROM bank_savings s "
+            "JOIN bank_accounts a ON a.user_id = s.user_id "
+            "WHERE s.balance > 0 AND a.opted_in = 1").fetchall()]
 
 
 
@@ -546,5 +615,8 @@ def recent_ledger(user_id: str, limit: int = 10) -> list[dict]:
 
 
 if __name__ == "__main__":
+    # _resolve_db_path(), not DB_PATH: module-level __getattr__ (PEP 562) is only
+    # consulted for attribute access from OUTSIDE the module, so a bare `DB_PATH`
+    # in here is an undefined name at runtime.
     init_db()
-    print(f"Initialized bank DB at {DB_PATH}")
+    print(f"Initialized bank DB at {_resolve_db_path()}")
