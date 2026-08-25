@@ -910,7 +910,10 @@ def page(title: str, active: str, user: Optional[dict], snap: Optional[dict],
         body,
         title=title,
         staff=staff,
-        extra_css=_LEGACY_CSS + THEME_CSS,
+        # The canvas block styles ride along: /hub and /hub/markets now render
+        # canvas screens, and without these the balance blocks, buttons and the
+        # accent lead-rule come out unstyled.
+        extra_css=_LEGACY_CSS + THEME_CSS + _CANVAS_CSS,
         header=strip,
         tail=f"<script>{_STRIP_JS}</script>",
         available=mounted,
@@ -1486,8 +1489,8 @@ async def h_markets(request: Any) -> Any:
     if not user:
         return _login_required_page(request)
     snap = money_snapshot(user["user_id"])
-    return _html(page("Markets · Abex Tech", "markets", user, snap,
-                      _markets_body(user["user_id"])))
+    body = _canvas_body("markets", user["user_id"]) or _markets_body(user["user_id"])
+    return _html(page("Markets · Abex Tech", "markets", user, snap, body))
 
 
 async def h_api_markets(request: Any) -> Any:
@@ -1826,6 +1829,36 @@ def _hub_home_body(user: Optional[dict]) -> str:
     )
 
 
+try:
+    from canvas_web import CANVAS_CSS as _CANVAS_CSS
+except Exception:                                   # pragma: no cover
+    _CANVAS_CSS = ""
+
+
+def _canvas_body(key: str, user_id: str):
+    """The designed screen for `key`, built from live data — or None.
+
+    `abex_livescreens` produces the canvas's screen shape from the database and
+    `abex_render` draws it, so the main site gets the design's layout without the
+    design's sample money. None means the modules are not importable; the caller
+    keeps its existing body rather than showing an empty page for a missing
+    import.
+
+    What it will NOT do is fall back to `abex_canvas`'s rows. Those are the
+    design's numbers. On a page that says "your holdings" they would be a lie,
+    and a confident one.
+    """
+    try:
+        import abex_livescreens
+        import abex_render
+    except Exception:                               # pragma: no cover
+        return None
+    screen = abex_livescreens.screen(key, str(user_id))
+    if screen is None:
+        return None
+    return abex_render.screen_html(screen, owner=True)
+
+
 async def h_root(request: Any) -> Any:
     """`/hub` is the hub landing — a launcher of section cards — for a signed-in
     user. It used to redirect to the first section (Markets), which made the Hub
@@ -1834,7 +1867,11 @@ async def h_root(request: Any) -> Any:
     if not user:
         return _login_required_page(request)
     snap = money_snapshot(user["user_id"])
-    return _html(page("Abex Tech", "hub", user, snap, _hub_home_body(user)))
+    # The designed Hub — Index / holdings / open orders band, the waiting-on-you
+    # queue, markets by grade — on live rows. `_hub_home_body`'s section-card
+    # launcher stays as the fallback for a deployment without the render modules.
+    body = _canvas_body("hub", user["user_id"]) or _hub_home_body(user)
+    return _html(page("Abex Tech", "hub", user, snap, body))
 
 
 async def h_health(request: Any) -> Any:

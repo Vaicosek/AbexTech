@@ -21,6 +21,11 @@ import abex_shell
 import abex_render
 from abex_canvas import SCREENS
 
+try:
+    import abex_livescreens
+except Exception:                                   # pragma: no cover
+    abex_livescreens = None
+
 PREFIX = "/canvas"
 
 #: canvas screen key -> the nav key it should light up.
@@ -103,8 +108,19 @@ td.countdown{font-variant-numeric:tabular-nums}
 """
 
 
-def _page(key: str) -> str:
-    screen = SCREENS.get(key)
+def _page(key: str, user_id: str = "", live: bool = False) -> str:
+    """One screen. `live=True` builds it from the database instead of the canvas.
+
+    A live page NEVER falls back to the canvas rows. `abex_livescreens` returns an
+    empty-but-correctly-shaped screen when it cannot read, and that is what gets
+    rendered - an obviously empty table is honest, and the design's 21,084c on a
+    page claiming to be your holdings is not.
+    """
+    screen = None
+    if live and abex_livescreens is not None:
+        screen = abex_livescreens.screen(key, user_id)
+    if screen is None and not live:
+        screen = SCREENS.get(key)
     body = abex_render.screen_html(screen, owner=True)
     return abex_shell.render(
         _NAV.get(key, key),
@@ -124,6 +140,14 @@ def _handler(key: str):
                             charset="utf-8")
     handle.__name__ = f"canvas_{key}"
     return handle
+
+
+#: The block vocabulary the canvas introduced (`.block`, `.balance`, `.btn`, the
+#: dock bar) is needed by any page that renders a canvas screen — including the
+#: live ones under `/hub`, which do not go through this module's `_page`. It is
+#: exported so `hub_web` can append it to its own stylesheet rather than each
+#: page carrying a copy.
+CANVAS_CSS = _CSS
 
 
 def register_canvas_routes(app) -> None:
