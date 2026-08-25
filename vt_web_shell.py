@@ -1865,9 +1865,12 @@ _NAV_PATHS = {
     "hub":      "/hub",
     "banking":  "/banking",
     "markets":  "/hub/markets",  # the DESIGNED markets screen, not /exchange
-    "exchange": "/abex/exchange",
-    "stocks":   "/abex/stocks",
-    "work":     "/abex/orders",
+    # Live now, under the hub prefix - `canvas_web.register_live_routes` mounts
+    # these from the database. They pointed at /abex/*, which is the designed set
+    # with the design's sample rows.
+    "exchange": "/hub/exchange",
+    "stocks":   "/hub/stocks",
+    "work":     "/hub/work",
     "auctions": "/auctions",
     "lands":    "/lands",
     "messages": "/messages",

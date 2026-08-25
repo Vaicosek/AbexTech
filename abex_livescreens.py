@@ -259,10 +259,54 @@ def lands(user_id: str = "") -> dict:
                   "on the register.", band, [table])
 
 
+# ── Exchange ────────────────────────────────────────────────────────────────
+def exchange(user_id: str = "") -> dict:
+    """The share side: every LISTED market, free float and price.
+
+    Free float here is shares in someone else's hands - the register minus the
+    owner's own holding. `abex_live.exchange` already makes that distinction, and
+    it matters: counting the owner has GreyHames reading 93% free float while one
+    account holds 92,863 of its 100,000 shares.
+    """
+    if abex_live is None:
+        return _empty("exchange", "The exchange is not reachable from this process.")
+    data = abex_live.exchange()
+    if data is None:
+        return _empty("exchange", "Listings are not readable right now.")
+
+    rows = data.get("rows", [])
+    held = {}
+    live = abex_live.stocks(str(user_id)) if user_id else None
+    for r in (live or {}).get("rows", []):
+        held[r[0]] = r[1]
+
+    out = []
+    for ticker, name, grade, shares_out, holders, price, free in rows:
+        out.append([name, ticker, "G|" + str(grade), price, shares_out,
+                    holders, free, held.get(name, DASH)])
+
+    listed = len(rows)
+    band = [("Listed markets", str(listed), "shares you can trade"),
+            ("Your positions", str(len(held)), "markets you hold"),
+            ("Holders", str(sum(int(str(r[4]).replace(",", "") or 0) for r in rows)),
+             "share accounts on the register"),
+            ("Dividends", "none paid yet", "no market has declared one")]
+    table = {"h2": "Listed markets", "ac": 1,
+             "c": ["Market", "Ticker", "Grade", "Share price#", "Shares out#",
+                   "Holders#", "Free float#", "You hold#"],
+             "r": out,
+             "n": ("Free float counts shares in someone else's hands - the "
+                   "register minus the owner's own holding."
+                   if out else "No market is listed.")}
+    return _shell("exchange", f"{listed} market{'' if listed == 1 else 's'} listed.",
+                  band, [table])
+
+
 #: key -> builder. A screen absent here has no live source yet and keeps its
 #: canvas page under /canvas; it is NOT served with sample rows on a live route.
 BUILDERS = {
-    "hub": hub, "markets": markets, "stocks": stocks, "work": work, "lands": lands,
+    "hub": hub, "markets": markets, "stocks": stocks, "work": work,
+    "lands": lands, "exchange": exchange,
 }
 
 

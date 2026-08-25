@@ -21,11 +21,6 @@ import abex_shell
 import abex_render
 from abex_canvas import SCREENS
 
-try:
-    import abex_livescreens
-except Exception:                                   # pragma: no cover
-    abex_livescreens = None
-
 PREFIX = "/canvas"
 
 #: canvas screen key -> the nav key it should light up.
@@ -108,19 +103,8 @@ td.countdown{font-variant-numeric:tabular-nums}
 """
 
 
-def _page(key: str, user_id: str = "", live: bool = False) -> str:
-    """One screen. `live=True` builds it from the database instead of the canvas.
-
-    A live page NEVER falls back to the canvas rows. `abex_livescreens` returns an
-    empty-but-correctly-shaped screen when it cannot read, and that is what gets
-    rendered - an obviously empty table is honest, and the design's 21,084c on a
-    page claiming to be your holdings is not.
-    """
-    screen = None
-    if live and abex_livescreens is not None:
-        screen = abex_livescreens.screen(key, user_id)
-    if screen is None and not live:
-        screen = SCREENS.get(key)
+def _page(key: str) -> str:
+    screen = SCREENS.get(key)
     body = abex_render.screen_html(screen, owner=True)
     return abex_shell.render(
         _NAV.get(key, key),
@@ -142,12 +126,62 @@ def _handler(key: str):
     return handle
 
 
-#: The block vocabulary the canvas introduced (`.block`, `.balance`, `.btn`, the
-#: dock bar) is needed by any page that renders a canvas screen — including the
-#: live ones under `/hub`, which do not go through this module's `_page`. It is
-#: exported so `hub_web` can append it to its own stylesheet rather than each
-#: page carrying a copy.
-CANVAS_CSS = _CSS
+#: A live screen's route, its nav label, and where it sits in the sidebar order.
+#: Mounted under the hub prefix because that is where a signed-in, money-bearing
+#: page belongs - `hub_web.page()` supplies the wallet strip and the session
+#: check, and duplicating either here would be a second place for them to drift.
+LIVE_SECTIONS = [
+    ("stocks",   "Stocks",   "/hub/stocks",   30),
+    ("exchange", "Exchange", "/hub/exchange", 25),
+    ("work",     "Work",     "/hub/work",     40),
+]
+
+
+def register_live_routes(app) -> None:
+    """Mount the screens that have a live source at /hub/<key>.
+
+    Only screens in `abex_livescreens.BUILDERS` are mounted, and only ever with
+    live rows. A screen with no source keeps its canvas page under /canvas rather
+    than appearing here with the design's sample money on it - which is the whole
+    line this codebase is trying not to cross.
+
+    `lands` and `markets` are absent on purpose: both already have a live page in
+    this shell (`estates_web` and `hub_web`), and two routes for one section is
+    how a nav ends up pointing at the staler of them.
+    """
+    if web is None or abex_livescreens is None:      # pragma: no cover
+        return
+    try:
+        import hub_web
+    except Exception:                                # pragma: no cover
+        return
+
+    mounted = []
+    for key, label, path, order in LIVE_SECTIONS:
+        if key not in abex_livescreens.BUILDERS:
+            continue
+
+        def _make(k):
+            async def handle(request):
+                user = hub_web.current_user(request)
+                if not user:
+                    return hub_web._login_required_page(request)
+                snap = hub_web.money_snapshot(user["user_id"])
+                screen = abex_livescreens.screen(k, str(user["user_id"]))
+                body = abex_render.screen_html(screen, owner=True)
+                title = f'{screen.get("title", k.title())} · Abex Tech'
+                return hub_web._html(hub_web.page(title, k, user, snap, body))
+            handle.__name__ = f"live_{k}"
+            return handle
+
+        app.router.add_get(path, _make(key))
+        try:
+            hub_web.register_section(key, label, path, order=order)
+        except Exception as exc:                     # pragma: no cover
+            print(f"     live {key}: not in the nav ({exc})")
+        mounted.append(key)
+    if mounted:
+        print(f"     Live canvas screens: {', '.join(mounted)}")
 
 
 def register_canvas_routes(app) -> None:
@@ -157,3 +191,4 @@ def register_canvas_routes(app) -> None:
         path = PREFIX if key == "hub" else f"{PREFIX}/{key}"
         app.router.add_get(path, _handler(key))
     print(f"     Canvas screens: {len(SCREENS)} under {PREFIX}")
+    register_live_routes(app)
