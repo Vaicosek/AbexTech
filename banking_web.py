@@ -21,31 +21,42 @@ Transactional: deposit, withdraw, repay, buy a bond, redeem a bond. Every one is
 preview → confirm → receipt, and the preview names the figures it is about to move.
 
 ═══════════════════════════════════════════════════════════════════════════════
-OSENTAR IS A SEPARATE BOT. THIS IS THE CONTRACT.
+OSENTAR IS THE BANK'S BOOK. THIS IS THE CONTRACT.
 ═══════════════════════════════════════════════════════════════════════════════
-Osentar Bank runs its own process and its own `bank.db`. It is the book of record for
-savings, loans, bonds and credit policy. Restocker owns the ONLY coin wallet, and
-Osentar moves coins by calling core's ledger (it holds `wallet.mint`, `wallet.transfer`
-and `wallet.flag` — `ledger_v2.SERVICE_SCOPES`). This module never touches the bank's
-book and never moves a coin: it renders what Osentar reports and forwards instructions.
+Osentar Bank is the book of record for savings, loans, bonds and credit policy. Its
+tables (`bank_*`) live in `restocker.db` beside core's, and its Discord bot is a
+separate process reading the same file. Restocker owns the ONLY coin wallet, and every
+bank movement of coins goes through core's ledger. This module never touches the bank's
+book directly and never moves a coin itself: it renders what the bank reports and
+forwards instructions to the bank's own write path.
 
-Transport
-    Base URL  `OSENTAR_BASE_URL`   e.g. http://127.0.0.1:8090
-    Auth      `X-Osentar-Token: <OSENTAR_API_TOKEN>`   (shared secret, constant-time
-              compared at the bank; this module never puts it in a URL or a log line)
-    Version   `X-Osentar-API: 1`   — the bank refuses a major it does not implement,
-              with 400 `api_version`. Equality checks on version strings are what
-              OSENTAR_MIGRATION.md §1 is about: this is a MAJOR, not a build number.
-    Timeout   `OSENTAR_TIMEOUT` seconds, default 6. A bank that has not answered in six
-              seconds has not answered.
-    Shape     every response is JSON `{"ok": true, ...}` or
+Provider — IN-PROCESS, NOT HTTP
+    `osentar()` calls `bank_local.handle(method, path, params=, body=)`, a plain
+    function call in this process against this database. There is no socket, no base
+    URL, no shared token and no timeout, and there is no fallback to any of them.
+
+    This module was originally written against a bank that answered HTTP on
+    `OSENTAR_BASE_URL`. That server never existed — the Bank bot has no
+    `web.Application` and no routes; its only aiohttp use is outbound calls *to* core.
+    The HTTP client, its `X-Osentar-Token` header, its circuit breaker and
+    `OSENTAR_BASE_URL` / `OSENTAR_API_TOKEN` / `OSENTAR_TIMEOUT` / `OSENTAR_FORCE_HTTP`
+    have all been removed: they could only ever have produced a named connection
+    refusal, so keeping them as a "rollback" would have been keeping a lever that
+    rolls back to nothing. If those keys are still in `.env`, they are inert; delete
+    them.
+
+    The PATHS AND PAYLOADS BELOW ARE STILL THE CONTRACT. `bank_local` implements these
+    exact shapes, and it is the spec both sides are held to — the transport changed,
+    the interface did not.
+
+    Shape     every response is a dict, `{"ok": true, ...}` or
               `{"ok": false, "code": "<machine>", "error": "<human>"}`.
 
 Identity
-    The user id is passed server-to-server in the query string (GET) or body (POST),
-    and it is ALWAYS the session's Discord id read from the cookie by this module. The
-    browser never supplies it. Osentar must treat that field as authoritative and must
-    not accept requests without the shared token.
+    The user id is passed in `params` (GET) or `body` (POST), and it is ALWAYS the
+    session's Discord id read from the cookie by this module. The browser never
+    supplies it; `shell.note_body_identity` rejects a body that tries to. The provider
+    treats that field as authoritative.
 
 Endpoints this module calls
     GET  /api/v1/health
@@ -87,6 +98,11 @@ Endpoints this module calls
          page minted when it rendered — the caller mints it, per the house rule, and it
          is the same key end to end so a retry anywhere in the chain collapses.
 
+         All five are served in-process by `bank_money`, one `_tx()` each with
+         `wallet_move` inside it and the key claimed before and finalised within.
+         `bank_local._LIVE_WRITES` is the authoritative map of path to function — read
+         it rather than trusting a list in a docstring to stay current.
+
     GET  /api/v1/staff/queue        -> {ok, requests:[{id, user_id, name, requested,
                                         terms, purpose, asked, outstanding_debt,
                                         limit, repaid_clean, late, frozen}]}
@@ -95,13 +111,24 @@ Endpoints this module calls
     POST /api/v1/staff/loan/decide  {request_id, decision:"approve"|"decline",
                                      actor_id, note, idempotency_key}
     POST /api/v1/staff/collect      {loan_id, amount, actor_id, idempotency_key}
+         Both staff writes are served in-process too, on the same terms.
 
-WHEN OSENTAR IS DOWN
---------------------
-`OsentarDown` is raised with a NAMED reason — "connection refused to
-http://127.0.0.1:8090", "no answer in 6.0s", "answered HTTP 502", "not configured on
-this server (OSENTAR_BASE_URL unset)". It is never a 500 and never a stack trace on a
-page:
+    A path in the contract that has NO implementation yet gets `{"ok": false, "code":
+    "not_implemented_locally"}` from `bank_local._WRITE_PATHS` — the bank DECLINING,
+    which this module renders as a refusal, not as the bank being down.
+
+WHEN THE BANK IS NOT THERE
+--------------------------
+In-process does not mean always-present. `bank_local.available()` is false when
+`bank_db` / `bank_policy` will not import, or when the database core opened has no
+`bank_accounts` table — a fresh DB, a wrong `BANK_DB_PATH`, a bank that has never had
+`init_db()` run on it. That is a real runtime state and it is the ONLY remaining way
+for the bank to be unreachable.
+
+`OsentarDown` is still raised, still with a NAMED reason, and now it names that state
+honestly: "the bank is not running in this process — its `bank_*` tables are not in the
+database this server opened". Not "connection refused", because nothing was dialled;
+not a 500, and never a stack trace on a page:
 
   * `GET /banking` renders, 200, with an amber panel naming the bank and the reason,
     and no fabricated figures anywhere on it.
@@ -111,36 +138,30 @@ page:
     computing it from terms it does not have.
   * nothing else on the site is affected — Markets and Estates never call this module.
 
-A failure also opens a short circuit breaker (`_COOLDOWN`), so one page render costs
-one timeout rather than one per panel.
+The circuit breaker that used to sit here went with the HTTP client. It existed so one
+page render cost one six-second timeout rather than one per panel; a local call has no
+timeout to pay, and `available()` is probed once per process — the answer cannot change
+while running, since either the `bank_*` tables are in the database core opened at
+startup or they are not.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import os
 import time
 from typing import Optional
 
 try:
     from aiohttp import web
-    import aiohttp
 except Exception:  # pragma: no cover - aiohttp is a hard dep of the web server
     web = None  # type: ignore[assignment]
-    aiohttp = None  # type: ignore[assignment]
 
 import vt_web_shell as shell
 
 log = logging.getLogger("banking_web")
 
 BANKING_VERSION = "1.0"
-OSENTAR_API_MAJOR = "1"
-
-#: How long after a failure we stop dialling and reuse the named reason. Short enough
-#: that the bank coming back is noticed within a page refresh or two.
-_COOLDOWN_SECONDS = 15.0
-_cooldown_until = 0.0
-_cooldown_reason = ""
 
 
 #: The in-process bank. Imported lazily and probed once per process, because the
@@ -148,15 +169,19 @@ _cooldown_reason = ""
 #: core opened at startup, or they are not.
 try:
     import bank_local as _local
-except Exception:  # pragma: no cover - core must still boot without the bank
+    _local_import_error = ""
+except Exception as _e:  # pragma: no cover - core must still boot without the bank
     _local = None  # type: ignore[assignment]
+    _local_import_error = f"{type(_e).__name__}: {_e}"
 
 _local_state: Optional[bool] = None
 
-
-def _force_http() -> bool:
-    """Escape hatch: pin the old HTTP path even when the local bank is present."""
-    return os.getenv("OSENTAR_FORCE_HTTP", "").strip().lower() in ("1", "true", "yes")
+#: What a page says when the bank is not in this process. It names the condition an
+#: operator can act on — the tables, not "unavailable" — because "service unavailable"
+#: on a banking page is indistinguishable from "your money is gone" to the person
+#: reading it, and because the fix is a database path, not a restart.
+_NO_PROVIDER = ("Osentar Bank is not running in this process: its tables are not in "
+                "the database this server opened. No figures can be shown until it is.")
 
 
 def _local_available() -> bool:
@@ -165,107 +190,59 @@ def _local_available() -> bool:
         _local_state = bool(_local) and _local.available()
         log.info("[banking] provider: %s",
                  "in-process (bank_* tables in this database)" if _local_state
-                 else "HTTP" if _base_url() else "NONE — banking will report unavailable")
+                 else "NONE — banking will report unavailable"
+                      + (f" ({_local_import_error})" if _local_import_error else ""))
     return _local_state
 
 
-def _base_url() -> str:
-    return os.getenv("OSENTAR_BASE_URL", "").strip().rstrip("/")
-
-
-def _token() -> str:
-    return os.getenv("OSENTAR_API_TOKEN", "").strip()
-
-
-def _timeout() -> float:
-    try:
-        return float(os.getenv("OSENTAR_TIMEOUT", "6"))
-    except (TypeError, ValueError):
-        return 6.0
-
-
 class OsentarDown(Exception):
-    """The bank could not be reached or would not answer. Carries a human reason.
+    """The bank is not there to answer. Carries a human reason.
 
     Every construction site names the bank and what specifically happened, because
     "service unavailable" on a banking page is indistinguishable from "your money is
     gone" to the person reading it.
+
+    Kept, and still raised, after the HTTP client was retired: `bank_local` can be
+    genuinely unavailable (see `_NO_PROVIDER`), and every caller in this module already
+    turns this into a 503 or an amber panel rather than a stack trace.
     """
 
 
 async def osentar(method: str, path: str, *, params: Optional[dict] = None,
                   body: Optional[dict] = None) -> dict:
-    """One call to Osentar. Returns the parsed body, or raises `OsentarDown`.
+    """One call to the bank. Returns its response dict, or raises `OsentarDown`.
 
-    A 4xx from the bank is NOT `OsentarDown` — the bank answered, and its refusal is
-    the truth we should show the player ("you have no loan to repay"). Only transport
-    failure and 5xx are down.
+    In-process. `bank_local` reads the `bank_*` tables in the database this server
+    opened; the request that never had a server to answer it is a SELECT.
+
+    A REFUSAL from the bank is NOT `OsentarDown` — `{"ok": false, ...}` means the bank
+    answered, and its refusal is the truth to show the player ("you have no loan to
+    repay", "use the Discord command"). Only the bank's ABSENCE is down.
+
+    Runs OFF the event loop, via `asyncio.to_thread`. This docstring used to say the
+    seam was here "if the reads ever grow past a handful of indexed SELECTs" -- but the
+    WRITES came through the same seam and nobody moved them. `bank_money` takes
+    `BEGIN IMMEDIATE` with a 10s `busy_timeout`, so while the bank bot holds the write
+    lock, a synchronous call here stalls the ENTIRE web server -- every page, for every
+    viewer -- for up to ten seconds. `bank_main._bank_money_call` already gets this
+    right for the Discord side; this is the same fix on the web side.
+
+    Reads go through the thread too. They are cheap, but a read still waits on the
+    write lock, and one code path is easier to reason about than a fast path and a
+    slow path that must be kept in step.
     """
-    global _cooldown_until, _cooldown_reason
-
-    # ── In-process first ──────────────────────────────────────────────────
-    # The bank now runs in this container against this database, so there is no
-    # HTTP call to make. This is the whole point of the monorepo move: the request
-    # that never had a server to answer it becomes a SELECT.
-    #
-    # Tried BEFORE the URL check, so a stale OSENTAR_BASE_URL left in .env cannot
-    # send reads back out over a network to a bank that was never listening.
-    # OSENTAR_FORCE_HTTP=1 pins the old path for a side-by-side comparison.
-    if not _force_http() and _local_available():
-        return _local.handle(method, path, params=params, body=body)
-
-    base = _base_url()
-    if not base:
-        raise OsentarDown("Osentar Bank is not reachable: it is not running in this "
-                          "process (its tables are missing from the database) and no "
-                          "OSENTAR_BASE_URL is set to reach it over HTTP.")
-    if aiohttp is None:  # pragma: no cover
-        raise OsentarDown("Osentar Bank is unreachable (no HTTP client available).")
-    now = time.time()
-    if now < _cooldown_until:
-        raise OsentarDown(_cooldown_reason)
-
-    url = base + path
-    headers = {"X-Osentar-API": OSENTAR_API_MAJOR, "Accept": "application/json"}
-    tok = _token()
-    if tok:
-        headers["X-Osentar-Token"] = tok
-    tmo = aiohttp.ClientTimeout(total=_timeout())
+    if not _local_available():
+        raise OsentarDown(_NO_PROVIDER)
     try:
-        async with aiohttp.ClientSession(timeout=tmo) as sess:
-            async with sess.request(method, url, params=params, json=body,
-                                    headers=headers) as resp:
-                if resp.status >= 500:
-                    reason = f"Osentar Bank answered HTTP {resp.status}."
-                    _cooldown_until = time.time() + _COOLDOWN_SECONDS
-                    _cooldown_reason = reason
-                    raise OsentarDown(reason)
-                try:
-                    data = await resp.json(content_type=None)
-                except Exception:
-                    reason = "Osentar Bank answered with something that was not JSON."
-                    _cooldown_until = time.time() + _COOLDOWN_SECONDS
-                    _cooldown_reason = reason
-                    raise OsentarDown(reason)
-    except OsentarDown:
-        raise
+        data = await asyncio.to_thread(
+            _local.handle, method, path, params=params, body=body)
     except Exception as e:
-        # Timeout, DNS, connection refused, TLS — all "the bank is not there", and the
-        # message names which one, because "unavailable" tells an operator nothing.
-        kind = type(e).__name__
-        if "Timeout" in kind:
-            reason = f"Osentar Bank did not answer within {_timeout():.0f}s."
-        elif "Connect" in kind or "Connection" in kind:
-            reason = f"Could not connect to Osentar Bank at {base}."
-        else:
-            reason = f"Osentar Bank is unreachable ({kind})."
-        _cooldown_until = time.time() + _COOLDOWN_SECONDS
-        _cooldown_reason = reason
-        log.warning("[banking] %s (%s)", reason, e)
-        raise OsentarDown(reason)
-
-    _cooldown_until = 0.0
-    _cooldown_reason = ""
+        # `handle` documents that it never raises, and it catches broadly to keep that
+        # promise. This is the belt to that braces: a bug there must not put a
+        # traceback on a page showing somebody their savings.
+        log.exception("[banking] local provider raised on %s %s: %s", method, path, e)
+        raise OsentarDown(f"Osentar Bank could not complete that read "
+                          f"({type(e).__name__}).")
     if not isinstance(data, dict):
         raise OsentarDown("Osentar Bank answered in an unexpected shape.")
     return data
@@ -535,9 +512,43 @@ async def h_staff_queue(request):
     # One key per REQUEST. A single queue-wide key approved whichever request id the
     # browser sent, which is finding 7 with a staff member's hand on it.
     return shell.json_ok(requests=requests,
-                         keys={_key_subject(r.get("id")): shell.mint_form_key(
-                             uid, f"staff_decide:{_key_subject(r.get('id'))}")
-                               for r in requests})
+                         keys=_staff_keys(uid, "staff_decide",
+                                          _MONEY_ENDPOINT.get("staff_decide",
+                                                              "banking:staff_decide"),
+                                          [_key_subject(r.get("id")) for r in requests]))
+
+
+def _staff_keys(uid: str, purpose: str, endpoint: str, subjects) -> dict:
+    """One form key per subject, RE-ISSUING any that are still in flight.
+
+    Both staff views used to call `mint_form_key` unconditionally. `_keys_for` does
+    not, and its docstring says why: the form key IS the bank's idempotency key, so a
+    reload that mints a fresh one hands the bank a key it has never seen and the second
+    submit is not deduped.
+
+    `staff_decide` survived that by luck -- its `WHERE status='pending'` refuses the
+    second attempt. `staff_collect` has no such natural guard, because two seizures of
+    500 on one loan are a perfectly legal pair of operations. Reproduced: a staff member
+    whose response was lost reloads, re-clicks, and takes the money twice.
+
+    Same rule as the member path, so there is one rule: a stuck key comes back filed
+    under its own subject; anything else is minted fresh.
+    """
+    stuck = {}
+    for row in shell.in_flight_keys(uid, endpoint):
+        stuck.setdefault(row["subject"], row)
+    out = {}
+    for sub in subjects:
+        if sub in stuck:
+            out[sub] = stuck[sub]["key"]
+            continue
+        try:
+            out[sub] = shell.mint_form_key(uid, f"{purpose}:{sub}")
+        except shell.UnkeyableSubject as e:
+            # No key beats an ambiguous one: the row renders unkeyed and a submit is
+            # refused as `bad_form_key`, so nothing moves.
+            log.warning("[banking] no staff form key for %s:%r — %s", purpose, sub, e)
+    return out
 
 
 async def h_staff_collections(request):
@@ -557,9 +568,10 @@ async def h_staff_collections(request):
     uid = str(sess["user_id"])
     overdue = data.get("overdue") or []
     return shell.json_ok(overdue=overdue,
-                         keys={_key_subject(r.get("loan_id")): shell.mint_form_key(
-                             uid, f"staff_collect:{_key_subject(r.get('loan_id'))}")
-                               for r in overdue})
+                         keys=_staff_keys(uid, "staff_collect",
+                                          _MONEY_ENDPOINT.get("staff_collect",
+                                                              "banking:staff_collect"),
+                                          [_key_subject(r.get("loan_id")) for r in overdue]))
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1412,5 +1424,10 @@ def register_banking_routes(app) -> None:
     app.router.add_post("/api/banking/bond/redeem", h_bond_redeem)
     app.router.add_post("/api/banking/staff/decide", h_staff_decide)
     app.router.add_post("/api/banking/staff/collect", h_staff_collect)
-    state = "configured" if _base_url() else "NOT CONFIGURED (OSENTAR_BASE_URL unset)"
+    # Report the provider that will actually answer. The old line here read
+    # `OSENTAR_BASE_URL` and said "NOT CONFIGURED" while the in-process bank was up
+    # and serving — the precise misleading signal that gets somebody to "fix" it by
+    # setting a URL for a server that does not exist.
+    state = ("in-process" if _local_available()
+             else "UNAVAILABLE (bank_* tables not in this database)")
     log.info("[banking] v%s registered — Osentar %s", BANKING_VERSION, state)
