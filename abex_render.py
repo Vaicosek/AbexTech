@@ -401,8 +401,53 @@ def block_id(heading) -> str:
     return "".join(out).strip("-")
 
 
+def _ticket(block: dict) -> str:
+    """The buy/sell ticket. The fifth block shape, and the first one that WRITES.
+
+    Why it is a block rather than a page: the figures a trader confirms are the
+    figures already on the screen — the price, what he holds, the grade. Sending
+    him to a separate ticket means re-deriving those somewhere else, and the
+    first time the two disagree the one he confirmed is the wrong one.
+
+    THE FIGURES SHOWN ARE THE FIGURES SENT. `quote_price` and a 5% band go with
+    the order, and the engine refuses on slippage rather than filling at whatever
+    the price became — there was no cap at all before that existed, and a whale
+    moving the mid 100 -> 120 between quote and execute charged 1.22x the
+    displayed figure. This ticket does not re-quote; it hands over what the page
+    already said.
+
+    No markup here decides anything. Every check is the server's: session, CSRF,
+    the bounds, the idempotency key, and whether the shares exist to sell.
+    """
+    t = block.get("ticket") or {}
+    price = float(t.get("price") or 0)
+    held = float(t.get("you_hold") or 0)
+    mid = str(t.get("market_id") or "")
+    return (
+        '<div class="ticket" data-mid="%s" data-price="%s" data-held="%s" '
+        'data-csrf="%s">'
+        '<div class="tkrow">'
+        '<label class="tklab" for="tkq-%s">Shares</label>'
+        '<input class="tkq" id="tkq-%s" type="number" min="1" step="1" value="1" '
+        'inputmode="numeric">'
+        '<button class="btn p tkbuy" type="button">Buy</button>'
+        '<button class="btn s tksell" type="button"%s>Sell</button>'
+        '</div>'
+        '<div class="tkest"></div>'
+        '<div class="tkhint">%s</div>'
+        '</div>'
+    ) % (
+        _e(mid), _e("%.4f" % price), _e("%.4f" % held), _e(str(t.get("csrf") or "")),
+        _e(mid), _e(mid),
+        "" if held > 0 else " disabled",
+        _e(str(t.get("hint") or "")),
+    )
+
+
 def _block(block: dict, mine=None) -> str:
-    if "spark" in block:
+    if "ticket" in block:
+        inner = _ticket(block)
+    elif "spark" in block:
         inner = _spark(block)
     elif "bal" in block:
         inner = _balance(block)

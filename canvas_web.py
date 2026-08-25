@@ -111,6 +111,20 @@ tr.mine td{background:var(--raised)}
 /* Countdown cells tick client-side; this is only their resting shape. */
 td.countdown{font-variant-numeric:tabular-nums}
 
+/* The trade ticket. Plain controls on the page's own type — a ticket that looks
+   like a separate app is a ticket a trader reads separately from the figures
+   above it. */
+.ticket{margin:2px 0 4px}
+.ticket .tkrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.ticket .tklab{color:var(--faint);font-size:14px}
+.ticket .tkq{width:120px;padding:8px 10px;background:none;color:var(--text);
+  border:1px solid var(--line);border-radius:2px;font:inherit;
+  font-variant-numeric:tabular-nums}
+.ticket .tkq:focus{outline:none;border-color:var(--accent)}
+.ticket .tkest{margin-top:9px;font-variant-numeric:tabular-nums;font-size:17px}
+.ticket .tkhint{margin-top:6px;color:var(--faint);font-size:13px}
+.ticket button[disabled]{opacity:.45;cursor:not-allowed}
+
 /* §5: `dense` toggles row padding and NOTHING else - "does not change font
    size". The theme's own rows are 10px; dense is 7px. */
 table.dense td, table.dense th{padding-top:7px;padding-bottom:7px}
@@ -340,6 +354,97 @@ CANVAS_JS = r"""
     }
   }
 
+  /* The trade ticket. Every check that matters is the server's — this only
+     shows the figures being confirmed and carries them over unchanged. */
+  var tk = document.querySelector(".ticket");
+  if(tk){
+    var q = tk.querySelector(".tkq");
+    var est = tk.querySelector(".tkest");
+    var hint = tk.querySelector(".tkhint");
+    var buy = tk.querySelector(".tkbuy");
+    var sell = tk.querySelector(".tksell");
+    var price = parseFloat(tk.getAttribute("data-price")) || 0;
+    var held = parseFloat(tk.getAttribute("data-held")) || 0;
+    var mid = tk.getAttribute("data-mid");
+    var csrf = tk.getAttribute("data-csrf");
+    var keys = {};                    /* intent -> request_id, see below */
+    var money = function(n){
+      return n.toLocaleString(undefined, {minimumFractionDigits:0,
+                                          maximumFractionDigits:0}) + "c";
+    };
+    var shares = function(){
+      var n = parseInt(q.value, 10);
+      return (isNaN(n) || n < 1) ? 0 : n;
+    };
+    var draw = function(){
+      var n = shares();
+      est.textContent = n ? (n.toLocaleString() + " x " + price.toFixed(2) +
+                             "c = " + money(price * n)) : "";
+      if(sell) sell.disabled = !(held > 0 && n > 0 && n <= held);
+      if(buy) buy.disabled = !n;
+    };
+    q.addEventListener("input", draw);
+    draw();
+
+    var rid = function(intent){
+      if(!keys[intent]){
+        /* Stable across retries of ONE order and different for the next: the
+           server replays a completed order under the same key rather than
+           trading twice, which is what makes a double-click safe. */
+        keys[intent] = "web-" + intent + "-" +
+          (Date.now().toString(36)) + Math.random().toString(36).slice(2, 8);
+      }
+      return keys[intent];
+    };
+
+    var send = function(side){
+      var n = shares();
+      if(!n) return;
+      var total = Math.round(price * n);
+      var band = Math.ceil(total * 0.05);
+      /* He confirms FIGURES, not intentions — the numbers are in the question. */
+      if(!window.confirm(
+        (side === "buy" ? "Buy " : "Sell ") + n.toLocaleString() +
+        " share" + (n === 1 ? "" : "s") + " at about " + price.toFixed(2) +
+        "c each — " + money(total) + " total.\n\nThe price may move; the order " +
+        "is refused rather than filled if it moves more than 5%.")) return;
+
+      var intent = side + ":" + mid + ":" + n;
+      var body = {action: side, market_id: mid, shares: n, quote_price: price,
+                  request_id: rid(intent)};
+      if(side === "buy") body.max_total = total + band;
+      else body.min_total = Math.max(0, total - band);
+
+      buy.disabled = true; if(sell) sell.disabled = true;
+      hint.textContent = "Working…";
+      fetch("/api/trade", {method: "POST", credentials: "same-origin",
+        headers: {"Content-Type": "application/json", "X-CSRF-Token": csrf || ""},
+        body: JSON.stringify(body)})
+        .then(function(r){ return r.json(); })
+        .then(function(j){
+          hint.textContent = (j && (j.message || j.error)) || "Done.";
+          /* Keep the key ONLY while the outcome is unknown. Anything decided —
+             filled or refused — retires it, so a corrected order is a new one
+             and a repeat of a settled one is not silently replayed forever. */
+          var undecided = j && (j.code === "outcome_unknown" ||
+                                j.code === "idempotency_in_progress" ||
+                                j.code === "idempotency_unresolved");
+          if(!undecided) delete keys[intent];
+          if(j && j.ok) setTimeout(function(){ location.reload(); }, 900);
+          else draw();
+        })
+        .catch(function(){
+          /* A network error is UNKNOWN, not failed: the trade may have gone
+             through. Telling him to retry here is how somebody ends up holding
+             twice what he bought. */
+          hint.textContent = "Network error — do not re-send. Reload and check " +
+            "your holdings before trying again.";
+        });
+    };
+    if(buy) buy.addEventListener("click", function(){ send("buy"); });
+    if(sell) sell.addEventListener("click", function(){ send("sell"); });
+  }
+
   var head = document.querySelector(".top");
   if(head){
     var apply = function(){
@@ -457,7 +562,10 @@ async def _stock_page(request):
     mid = request.match_info.get("mid") or ""
     user = hub_web.current_user(request)
     uid = str(user["user_id"]) if user else ""
-    screen = abex_livescreens.stock(uid, mid)
+    # The CSRF token is handed to the ticket so it can post. It is only ever
+    # given to a signed-in reader's own page — `stock` builds no ticket without
+    # both a user id and a token, so a public build cannot carry one.
+    screen = abex_livescreens.stock(uid, mid, str(user.get("csrf") or "") if user else "")
     body = abex_render.screen_html(screen, owner=bool(user))
     snap = hub_web.money_snapshot(uid) if user else None
     title = f'{screen.get("title", mid)} · Abex Tech'

@@ -457,7 +457,7 @@ def _item_block(market_id: str, listed: bool, owner: bool) -> dict | None:
 
 
 # ── One stock ───────────────────────────────────────────────────────────────
-def stock(user_id: str = "", market_id: str = "") -> dict:
+def stock(user_id: str = "", market_id: str = "", csrf: str = "") -> dict:
     """One market's page: the price, its shape, its months, its register.
 
     Not a canvas screen — the design has a Stocks screen that lists YOUR
@@ -575,7 +575,18 @@ def stock(user_id: str = "", market_id: str = "") -> dict:
 
     items = _item_block(d["market_id"], d["listed"], owner)
 
-    blocks = [b for b in (chart, months, items, price_block, register)
+    ticket = None
+    if user_id and csrf and price > 0 and shares > 0:
+        held = d["your_shares"]
+        ticket = {"h2": "Trade", "ac": 1,
+                  "ticket": {"market_id": d["market_id"], "price": price,
+                             "you_hold": held, "csrf": csrf,
+                             "hint": ("You hold %s share%s. Selling is capped at "
+                                      "what you hold." % (f"{held:,.0f}",
+                                                          "" if held == 1 else "s"))
+                             if held else "You hold none of this market yet."}}
+
+    blocks = [b for b in (ticket, chart, months, items, price_block, register)
               if b is not None]
     # Both halves, as everywhere else that serves a signed-out reader: the
     # detail call is passed no user id so nothing is looked up against an
