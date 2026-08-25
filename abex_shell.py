@@ -89,7 +89,14 @@ NAV: list[tuple[str, list]] = [
         ]),
         ("orders", "Orders", "/orders", "work", "6", []),
         ("auctions", "Auctions", "/auctions", "auctions", "1", []),
-        ("betting", "Betting", "/betting", "betting", "", []),
+        # No Betting entry. The screen still exists as an unwired mockup
+        # (`abex_screens.betting`, reachable at /abex/betting with sample rows)
+        # and `games` is still a reserved ledger identity with the
+        # gambling_blocked interlock behind it -- all of that is harmless and
+        # stays. What could not stay is a NAV ITEM, because the nav is a
+        # promise: every other entry leads to a working page, and this one led
+        # to sample data for a product decision that has been made the other
+        # way. Abex Tech runs no game of chance and takes no bets.
     ]),
     ("My market", [
         ("mine", "GreyHames", "/my", "mymarket", "", [
