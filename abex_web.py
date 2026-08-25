@@ -178,9 +178,6 @@ SCREENS: list[tuple[str, str, str, object]] = [
     ("/exchange",        "exchange",         "Exchange",         _exchange),
     ("/exchange/reports", "exchange.reports", "Earnings reports", _filings),
     ("/stocks",          "stocks",           "Stocks",           None),
-    ("/banking",         "banking.accounts", "Banking",          _sample(screens.banking_accounts)),
-    ("/banking/loans",   "banking.loans",    "Loans",            _sample(screens.banking_loans)),
-    ("/banking/bonds",   "banking.bonds",    "Bonds",            _sample(screens.banking_bonds)),
     ("/orders",          "orders",           "Orders",           _orders),
     ("/lands",           "lands",            "Lands",            _lands),
     ("/investor",        "investor",         "Investor",         None),
@@ -236,6 +233,27 @@ def _handler(key: str, title: str, fn):
     return handle
 
 
+#: Paths this module used to serve with the design's SAMPLE money, now sent to
+#: the live page instead. `/abex/banking` showed 84,230c available and 156,900c
+#: in savings to whoever signed in — the design's figures, on a route anybody
+#: could reach, on the one subject where a wrong number reads as your money.
+#: Banking went live at /hub/banking, so these were duplicates AND fakes.
+#:
+#: Redirects rather than deletions: they were linked from the nav for weeks.
+RETIRED = {
+    "/banking":       "/hub/banking",
+    "/banking/loans": "/hub/banking",
+    "/banking/bonds": "/hub/banking",
+}
+
+
+def _retired(target: str):
+    async def handle(request):
+        raise web.HTTPFound(target)
+    handle.__name__ = f"abex_retired_{target.strip('/').replace('/', '_')}"
+    return handle
+
+
 def register_abex_routes(app) -> None:
     """Attach the Abex screens. Same shape as every other section module."""
     if web is None:  # pragma: no cover
@@ -244,6 +262,8 @@ def register_abex_routes(app) -> None:
     shell.register_shell_routes(app)
     for path, key, title, fn in SCREENS:
         app.router.add_get(f"{PREFIX}{path}" or PREFIX, _handler(key, title, fn))
+    for path, target in RETIRED.items():
+        app.router.add_get(f"{PREFIX}{path}", _retired(target))
     # The hub link in the sidebar's brand block points at the prefix root.
     log.info("[abex] v%s registered — %d screens under %s",
              ABEX_VERSION, len(SCREENS), PREFIX)
