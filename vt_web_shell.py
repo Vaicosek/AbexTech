@@ -1844,7 +1844,7 @@ _NAV_KEY = {
     # The owner's console. Two sections rather than one because the nav tree has
     # the report as a child of My market, and a child needs its own key to be the
     # thing that lights when you are on it.
-    "market": "mine", "filing": "mine.report",
+    "market": "mine", "filing": "mine.report", "orders": "orders",
 }
 
 #: Which sections this deployment actually mounted. The tree is the structure;
@@ -1867,7 +1867,7 @@ _MOUNTED = {v for v in _NAV_KEY.values() if v}
 #: sidebar full of dead links is a worse first impression than a short one.
 _NAV_PATHS = {
     "hub":      "/hub",
-    "banking":  "/banking",
+    "banking":  "/hub/banking",
     "markets":  "/hub/markets",  # the DESIGNED markets screen, not /exchange
     # Live now, under the hub prefix - `canvas_web.register_live_routes` mounts
     # these from the database. They pointed at /abex/*, which is the designed set
@@ -1877,10 +1877,15 @@ _NAV_PATHS = {
     "work":     "/hub/work",
     "mine":        "/hub/market",
     "mine.report": "/hub/filing",
-    "auctions": "/auctions",
+    "orders":      "/hub/orders",
+    # The designed read view, with a button through to the tool that acts. The
+    # old paths (/auctions, /banking, /messages, /history) still serve and are
+    # where those buttons go; putting one line here back to the old path is how
+    # a section opts out.
+    "auctions": "/hub/auctions",
     "lands":    "/lands",
-    "messages": "/messages",
-    "history":  "/history",
+    "messages": "/hub/messages",
+    "history":  "/hub/history",
     "owner":    "/admin",
 }
 

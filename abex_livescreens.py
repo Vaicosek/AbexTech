@@ -591,12 +591,418 @@ def filing(user_id: str = "") -> dict:
     return screen_d
 
 
+# ── Orders (the owner's side of Work) ───────────────────────────────────────
+def orders(user_id: str = "") -> dict:
+    """Open orders with who claimed them, and what was filled this week.
+
+    `work` is the same table read as a worker: what can I claim. This is the
+    poster's read: what did I commit, who took it, what have I paid. They share a
+    source on purpose — two order lists that disagree about a quantity disagree
+    about somebody's pay.
+    """
+    if abex_live is None:
+        return _empty("orders", "The exchange is not reachable from this process.")
+    try:
+        db = abex_live._db()
+        raw = db.load_orders() or []
+    except Exception as exc:
+        log.warning("[livescreens] orders unreadable: %s", exc)
+        return _empty("orders", "Orders are not readable right now.")
+
+    try:
+        registry = db.get_markets() or {}
+    except Exception:
+        registry = {}
+
+    open_rows, filled = [], []
+    committed = 0.0
+    for o in raw:
+        status = str(o.get("status") or "").lower()
+        item = str(o.get("item") or "")
+        mid = str(o.get("market_id") or o.get("shop") or "")
+        market = str((registry.get(mid) or {}).get("name") or mid) or DASH
+        # `requested` IS IN PIECES AND `amount` IS IN THE STATED UNIT. Printing
+        # `requested` next to `unit_type` reads 6,912 stacks for an order of 108,
+        # which is the same figure out by a factor of 64 - and this column is what
+        # a worker sizes a job by. The quantity shown is the one the order was
+        # written in; pay is per piece, so the total multiplies by pieces.
+        pieces = int(o.get("requested") or 0)
+        shown = int(o.get("amount") or pieces)
+        unit = str(o.get("unit_type") or "pieces")
+        rate = float(o.get("coin_per_piece") or 0)
+        total = rate * pieces
+        claims = o.get("claims") or []
+        who = ", ".join(str(c.get("user_tag") or "") for c in claims if c.get("user_tag"))
+        if status == "open":
+            committed += total
+            open_rows.append([
+                item, market, f"{shown:,} {unit}",
+                (f"{rate:,.2f}c per piece" if rate else DASH),
+                (f"{total:,.0f}c" if total else DASH),
+                (who or "m|unclaimed"),
+                ("w|claimed" if claims else "g|open"),
+            ])
+        elif claims:
+            for c in claims:
+                qty = int(c.get("qty") or 0)
+                filled.append([
+                    str(c.get("claimed_at") or "")[:10] or DASH, item, market,
+                    str(c.get("user_tag") or DASH),
+                    f"{qty:,} piece{'' if qty == 1 else 's'}",
+                    (f"g|{rate * qty:,.0f}c" if rate else DASH),
+                ])
+    filled.sort(key=lambda r: str(r[0]), reverse=True)
+    filled = filled[:12]
+
+    band = [("Open orders", str(len(open_rows)), f"{committed:,.0f}c committed"),
+            ("Claimed", str(sum(1 for r in open_rows if not str(r[5]).startswith("m|"))),
+             "taken, not yet closed"),
+            ("Filled on record", str(len(filled)), "most recent first"),
+            ("Employee priority", "45 minutes", "before an order opens to all")]
+
+    a = {"h2": "Open orders", "ac": 1,
+         "c": _cols("orders", 0) or ["Item", "Market", "Quantity", "Pay#", "Total#",
+                                     "Claimed by", "Status"],
+         "r": open_rows,
+         "n": (f"{len(open_rows)} open, {committed:,.0f}c committed. Pay is per "
+               "piece unless the order says per stack; a stack is 64."
+               if open_rows else "No open orders.")}
+    b = {"h2": "Filled this week",
+         "c": _cols("orders", 1) or ["Filled", "Item", "Market", "Worker",
+                                     "Quantity", "Paid#"],
+         "r": filled,
+         "n": ("Paid is the order's rate against the quantity claimed. What was "
+               "actually transferred is in History."
+               if filled else "Nothing filled on record.")}
+    act = {"h2": "Posting work",
+           "act": ("Orders are posted and approved from Discord. A new order is "
+                   "employee-only for its first 45 minutes, then open to all."),
+           "btns": [],
+           "n": "Claims are approved on the order card, not here."}
+    return _shell("orders", f"{len(open_rows)} open order"
+                  f"{'' if len(open_rows) == 1 else 's'}.", band, [a, b, act])
+
+
+# ── Auctions ────────────────────────────────────────────────────────────────
+def auctions(user_id: str = "") -> dict:
+    """Live lots and your bids.
+
+    A BID IS A HOLD, NOT A DEBIT — the coins stay yours until a lot settles, and
+    that is the one thing every screen showing a bid has to say rather than imply.
+    The balance block says it; so does the note.
+    """
+    if abex_live is None:
+        return _empty("auctions", "The exchange is not reachable from this process.")
+    try:
+        db = abex_live._db()
+        lots = db.get_active_land_listings() or []
+    except Exception as exc:
+        log.warning("[livescreens] lots unreadable: %s", exc)
+        return _empty("auctions", "The auction exchange is not answering.")
+
+    uid = str(user_id or "")
+    rows, mine, held = [], [], 0.0
+    for lot in lots:
+        lid = int(lot.get("id") or 0)
+        title = str(lot.get("title") or f"Lot #{lid}")
+        seller = abex_live._owner_name(db, lot.get("seller_id"))
+        top = float(lot.get("current_bid") or lot.get("reserve") or 0)
+        leader = str(lot.get("current_bidder") or "")
+        try:
+            bids = db.get_land_bids(lid) or []
+        except Exception:
+            bids = []
+        yours = max((float(b.get("amount") or 0) for b in bids
+                     if str(b.get("bidder_id") or "") == uid), default=0.0)
+        if yours:
+            held += yours
+            mine.append([("Leading, " if leader == uid else "Outbid, ") + title,
+                         f"{yours:,.0f}c",
+                         "held until the lot closes"])
+        if leader == uid:
+            position = "g|You lead"
+        elif yours:
+            position = "l|Outbid"
+        else:
+            position = "m|no bid"
+        rows.append([title, seller, f"{top:,.0f}c",
+                     (f"{yours:,.0f}c" if yours else DASH), str(len(bids)),
+                     str(lot.get("ends_at") or "")[:16] or DASH, position])
+
+    band = [("Live lots", str(len(rows)), "open for bidding"),
+            ("Held in bids", f"{held:,.0f}c", "released when a lot closes"),
+            ("Your bids", str(len(mine)), "lots you are in"),
+            ("Sellers", str(len({r[1] for r in rows})), "with a lot open")]
+
+    table = {"h2": "Live lots", "ac": 1,
+             "c": _cols("auctions", 0) or ["Lot", "Seller", "Current bid#",
+                                           "Your bid#", "Bids#", "Closes",
+                                           "Your position"],
+             "r": rows,
+             "n": ("A bid is held from your wallet until the lot closes — the "
+                   "coins stay yours until a lot settles."
+                   if rows else "No lots are open.")}
+    act = {"h2": "Bidding", "ac": 1,
+           "act": ("Bids are placed in the auction room. A bid reserves the coins "
+                   "against your wallet and moves nothing until a lot settles."),
+           "btns": [["Open the auction room", "p", "/auctions"]],
+           "n": "This page is the board. The room is where you act."}
+    blocks = [act, table]
+    if mine:
+        blocks.append({"h2": "Your bids", "bal": mine,
+                       "tot": ["Held in bids", f"{held:,.0f}c"],
+                       "n": "Held, not spent."})
+    return _shell("auctions", f"{len(rows)} lot{'' if len(rows) == 1 else 's'} live.",
+                  band, blocks)
+
+
+# ── Messages ────────────────────────────────────────────────────────────────
+def messages(user_id: str = "") -> dict:
+    """Unread and earlier, sender and subject only.
+
+    The "subject" is the newest message's first line, because these threads have
+    no subject field. That is the honest rendering of a chat thread in a table
+    the design drew for mail — it is a preview, and the note says so.
+    """
+    uid = str(user_id or "")
+    if not uid:
+        return _empty("messages", "Sign in to read your messages.")
+    try:
+        import messages_web as MW
+        threads = MW._threads_for(uid)
+    except Exception as exc:
+        log.warning("[livescreens] messages unreadable: %s", exc)
+        return _empty("messages", "Messages are not readable right now.")
+
+    unread, earlier = [], []
+    for t in threads:
+        body = str(t.get("last_body") or "").strip().replace("\n", " ")
+        preview = (body[:90] + "…") if len(body) > 90 else (body or "no messages yet")
+        try:
+            when = MW._stamp(t.get("last_message_at"))
+        except Exception:
+            when = DASH
+        row = [str(t.get("other_name") or DASH), preview, when or DASH]
+        (unread if int(t.get("unread") or 0) else earlier).append(row)
+
+    total_unread = sum(1 for t in threads if int(t.get("unread") or 0))
+    a = {"h2": "Unread", "ac": 1,
+         "c": _cols("messages", 0) or ["From", "Subject", "Received"], "r": unread,
+         "n": (f"{len(unread)} thread{'' if len(unread) == 1 else 's'} with "
+               "something you have not read, newest first. The subject is the "
+               "newest message — these are threads, not mail, and they carry no "
+               "subject line." if unread else "Nothing unread.")}
+    b = {"h2": "Earlier",
+         "c": _cols("messages", 1) or ["From", "Subject", "Received"], "r": earlier,
+         "n": (f"{len(earlier)} thread{'' if len(earlier) == 1 else 's'}, newest "
+               "first." if earlier else "No earlier threads.")}
+    act = {"h2": "Reading and replying", "ac": 1,
+           "act": ("Threads open in the messenger, which is where replies are "
+                   "written and where a thread is marked read."),
+           "btns": [["Open the messenger", "p", "/messages"]],
+           "n": "This page lists what is waiting. It does not mark anything read."}
+    asof = (f"{total_unread} unread." if total_unread else "Nothing unread.")
+    return _shell("messages", asof, None, [act, a, b])
+
+
+# ── History ─────────────────────────────────────────────────────────────────
+def history(user_id: str = "") -> dict:
+    """Your wallet, as the ledger recorded it.
+
+    `balance_after` IS READ, NEVER RECOMPUTED, and this screen inherits that from
+    `history_web.read_coin_ledger` rather than doing its own arithmetic: on the
+    production copy a fifth of the checkable rows disagree with
+    previous-balance-plus-delta, because movements were written outside the coin
+    ledger. Recomputing would print balances the bot never wrote.
+    """
+    uid = str(user_id or "")
+    if not uid:
+        return _empty("history", "Sign in to see your history.")
+    try:
+        import history_web as HW
+        entries = HW.read_coin_ledger(uid)
+    except Exception as exc:
+        log.warning("[livescreens] history unreadable: %s", exc)
+        return _empty("history", "Your history is not readable right now.")
+
+    import time as _t
+    month_start = _t.time() - 30 * 86400
+    week_start = _t.time() - 7 * 86400
+    money_in = money_out = 0.0
+    month_count = 0
+    rows = []
+    for e in entries:
+        at = e.get("event_at")
+        delta = float(e.get("coin_delta") or 0)
+        if at and at >= month_start:
+            month_count += 1
+            if delta >= 0:
+                money_in += delta
+            else:
+                money_out += -delta
+        if at and at < week_start and len(rows) >= 8:
+            continue
+        if len(rows) >= 25:
+            continue
+        try:
+            when = HW._date(at)
+        except Exception:
+            when = DASH
+        # Counterparty, honestly. `coin_ledger` stores a reason string, not a
+        # party, so the only counterparty it can name is the market a reason
+        # mentions. Everything else is an em dash rather than the entry's own
+        # detail text wearing the Counterparty heading.
+        mid = str(e.get("market_id") or "")
+        try:
+            other = HW.market_name(mid) if mid else ""
+        except Exception:
+            other = mid
+        head = str(e.get("headline") or DASH)
+        detail = str(e.get("detail_text") or "")
+        rows.append([when or DASH, (f"{head} · {detail}" if detail else head),
+                     other or DASH,
+                     ("g|%s c" % f"{delta:,.2f}" if delta > 0 else DASH),
+                     ("l|%s c" % f"{-delta:,.2f}" if delta < 0 else DASH)])
+
+    band = [("Entries, last 30 days", str(month_count),
+             f"{len(entries)} on record"),
+            ("Money in", f"{money_in:,.0f}c", "last 30 days", "g"),
+            ("Money out", f"{money_out:,.0f}c", "last 30 days", "l")]
+    table = {"h2": "Recent", "ac": 1,
+             "c": _cols("history", 0) or ["Date", "Entry", "Counterparty",
+                                          "In#", "Out#"],
+             "r": rows,
+             "n": (f"{len(rows)} of {len(entries)} entries, newest first. Balances "
+                   "are the figures the ledger stored, never recomputed here."
+                   if rows else "No wallet movements on record.")}
+    act = {"h2": "The full record",
+           "act": ("This is the wallet ledger. The full history also carries "
+                   "exchange trades, dividends and settlements from their own "
+                   "sources, each with the reason the bot stored."),
+           "btns": [["Open the full history", "s", "/history"]],
+           "n": "Nothing here is recomputed — every balance is the figure the "
+                "ledger wrote."}
+    return _shell("history", f"{month_count} entries in the last 30 days.",
+                  band, [table, act])
+
+
+# ── Banking ─────────────────────────────────────────────────────────────────
+def banking(user_id: str = "") -> dict:
+    """Wallet, savings, debt and the borrowing limit.
+
+    "Unavailable" ON A BANKING PAGE READS AS "YOUR MONEY IS GONE". So the two
+    halves are separated: the wallet comes from the ledger and is nearly always
+    answerable, and the bank's own products come from the bank provider, which
+    may genuinely not be deployed. A missing bank leaves the wallet standing and
+    says the bank is not deployed — it does not take the page down.
+    """
+    uid = str(user_id or "")
+    if not uid:
+        return _empty("banking", "Sign in to see your accounts.")
+    try:
+        import hub_web
+        snap = hub_web.money_snapshot(uid) or {}
+    except Exception as exc:
+        log.warning("[livescreens] wallet unreadable: %s", exc)
+        return _empty("banking", "Your wallet is not readable right now.")
+    if not snap.get("ledger_ok"):
+        return _empty("banking", "The ledger is not answering, so no balance is "
+                                 "shown. It is not being estimated.")
+
+    available = float(snap.get("available") or 0)
+    held = float(snap.get("held") or 0)
+    balance = float(snap.get("balance") or 0)
+
+    acct = {}
+    try:
+        import bank_local
+        got = bank_local.handle("GET", "/api/v1/account", {"user_id": uid}) or {}
+        acct = got if got.get("ok") else {}
+        bank_note = "" if acct else str(got.get("error") or "The bank is not deployed.")
+    except Exception as exc:
+        log.warning("[livescreens] bank provider unreadable: %s", exc)
+        bank_note = "The bank is not reachable from this process."
+
+    savings = acct.get("savings") or {}
+    principal = float(savings.get("balance") or 0)
+    loan = acct.get("loan") or None
+    limit = acct.get("limit") or {}
+
+    band = [("Available", f"{available:,.0f}c",
+             f"{held:,.0f}c held in orders and bids"),
+            ("Savings", (f"{principal:,.0f}c" if acct else "not deployed"),
+             (f"{float(savings.get('accrued_this_month') or 0):,.0f}c interest this month"
+              if acct else bank_note)),
+            ("Debt", (f"{float(loan['outstanding']):,.0f}c" if loan else
+                      ("nothing drawn" if acct else "not deployed")),
+             ("one open loan" if loan else "no loan outstanding")),
+            ("Available to borrow",
+             (f"{float(limit.get('headroom') or 0):,.0f}c" if limit else DASH),
+             (f"{float(limit.get('amount') or 0):,.0f}c limit" if limit
+              else "the bank sets this"))]
+
+    due = []
+    if loan and loan.get("due"):
+        due.append(["Loan repayment", f"l|{float(loan['outstanding']):,.0f}c",
+                    str(loan.get("due") or "")[:10] or DASH,
+                    "m|collections take savings and bond payouts after three "
+                    "days, never your wallet"])
+    waiting = {"h2": "Waiting on you", "ac": 1,
+               "c": _cols("banking", 0) or ["What is due", "Amount#", "Due", "Note"],
+               "r": due,
+               "n": ("Missed payments take your savings and bond payouts after a "
+                     "three-day grace. Never your wallet, and never your shares "
+                     "or land." if due else "Nothing due.")}
+
+    accounts = {"h2": "Accounts",
+                "bal": [["Wallet available", f"{available:,.0f}c", ""],
+                        ["Held in orders and bids", f"{held:,.0f}c",
+                         "reserved, not spent"],
+                        ["Savings principal",
+                         (f"{principal:,.0f}c" if acct else "not deployed"), ""]],
+                "tot": ["Cash and savings", f"{balance + principal:,.0f}c"],
+                "n": "Held coins are still yours — a hold reserves, it does not "
+                     "debit."}
+
+    blocks = [waiting, accounts]
+    if loan:
+        blocks.append({"h2": "Debt",
+                       "c": _cols("banking", 3) or ["Loan", "Drawn#", "Rate#",
+                                                    "Repayment#", "Next payment",
+                                                    "Payments left#"],
+                       "r": [["Loan from the bank",
+                              f"{float(loan.get('principal') or 0):,.0f}c",
+                              f"{float(loan.get('apr') or 0):,.2f}%",
+                              f"{float(loan.get('payoff_today') or 0):,.0f}c",
+                              str(loan.get("due") or "")[:10] or DASH, DASH]],
+                       "n": "Collections take savings and bond payouts, never the "
+                            "wallet, and there is no seizure of shares or land."})
+    components = limit.get("components") or []
+    if components:
+        blocks.append({"h2": "Credit limit",
+                       "bal": [[str(label), f"{float(value):,.0f}c", ""]
+                               for label, value in components],
+                       "tot": ["Available to borrow",
+                               f"{float(limit.get('headroom') or 0):,.0f}c"]})
+    blocks.append({"h2": "Moving money",
+                   "act": ("Deposits, withdrawals, borrowing and repayment happen "
+                           "in the bank. Nothing on this page moves a coin."),
+                   "btns": [["Open the bank", "p", "/banking"]],
+                   "n": "Read here, act there — so a page that cannot reach the "
+                        "bank can still show you your wallet."})
+    asof = ("Interest is paid weekly." if acct else
+            "Your wallet is live. " + bank_note)
+    return _shell("banking", asof, band, blocks)
+
+
 #: key -> builder. A screen absent here has no live source yet and keeps its
 #: canvas page under /canvas; it is NOT served with sample rows on a live route.
 BUILDERS = {
     "hub": hub, "markets": markets, "stocks": stocks, "work": work,
     "lands": lands, "exchange": exchange,
     "market": market, "filing": filing,
+    "orders": orders, "auctions": auctions, "messages": messages,
+    "history": history, "banking": banking,
 }
 
 

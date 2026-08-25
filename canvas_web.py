@@ -179,6 +179,11 @@ LIVE_SECTIONS = [
     ("work",     "Work",      "/hub/work",     40),
     ("market",   "My market", "/hub/market",   50),
     ("filing",   "Report",    "/hub/filing",   51),
+    ("orders",   "Orders",    "/hub/orders",   41),
+    ("auctions", "Auctions",  "/hub/auctions", 60),
+    ("banking",  "Banking",   "/hub/banking",  20),
+    ("messages", "Messages",  "/hub/messages", 70),
+    ("history",  "History",   "/hub/history",  80),
 ]
 
 
@@ -193,6 +198,16 @@ def register_live_routes(app) -> None:
     `lands` and `markets` are absent on purpose: both already have a live page in
     this shell (`estates_web` and `hub_web`), and two routes for one section is
     how a nav ends up pointing at the staler of them.
+
+    Auctions, Banking, Messages and History are the other way round, and the
+    reasoning is worth writing down because it looks like the same situation and
+    is not. Each of those DOES have an older page, and that page is where you
+    ACT - place a bid, borrow, reply, page through every source. The designed
+    screen is the read view, and it carries an action block linking straight to
+    the tool. So the nav is consistent everywhere, and the old page stops being
+    the thing you land on by surprise and becomes the thing you were sent to.
+    If that trade is wrong for a section, the fix is one line: point its key in
+    `vt_web_shell._NAV_PATHS` back at the old path.
     """
     if web is None or abex_livescreens is None:      # pragma: no cover
         return

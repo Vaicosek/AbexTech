@@ -203,10 +203,27 @@ _BTN = {"p": "btn p", "s": "btn s", "d": "btn d"}
 
 
 def _action(block: dict) -> str:
-    btns = "".join(f'<button class="{_BTN.get(k, "btn s")}" type="button">{_e(l)}</button>'
-                   for l, k in (block.get("btns") or []))
+    """An action block. A button may carry a third element: where it goes.
+
+    The design's buttons are inert, because the design is a picture. A live
+    screen that offers "Open the auction room" and does nothing when clicked is
+    worse than one that offers nothing, so `[label, kind, href]` renders an
+    anchor styled as the same button. Two elements still render a plain button —
+    every screen written against the old shape is unchanged.
+    """
+    out = []
+    for btn in (block.get("btns") or []):
+        label, kind = btn[0], btn[1]
+        href = btn[2] if len(btn) > 2 else ""
+        cls = _BTN.get(kind, "btn s")
+        if href:
+            out.append(f'<a class="{cls}" href="{_e(href)}">{_e(label)}</a>')
+        else:
+            out.append(f'<button class="{cls}" type="button">{_e(label)}</button>')
+    btns = "".join(out)
     act = f'<p class="act">{_e(block.get("act", ""))}</p>' if block.get("act") else ""
-    return f'<div class="actionblock">{act}<div class="btnrow">{btns}</div></div>'
+    note = f'<div class="bnote">{_e(block["n"])}</div>' if block.get("n") else ""
+    return f'<div class="actionblock">{act}<div class="btnrow">{btns}</div>{note}</div>'
 
 
 def _block(block: dict, mine=None) -> str:
