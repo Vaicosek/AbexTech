@@ -618,6 +618,29 @@ def orders(user_id: str = "") -> dict:
     except Exception:
         registry = {}
 
+    # PAY COMES FROM THE BOT'S OWN RATE FUNCTION, not from `coin_per_piece`.
+    # That column is NULL on real orders - the rate is derived from the item
+    # book - so reading it directly printed an em dash on Orders while Work,
+    # which asks `_coin_rates_for_order`, printed 100.00c a piece for the same
+    # order. Two order lists disagreeing about pay is the one thing this screen
+    # must not do; a worker sizes a job by that number.
+    core = items_data = None
+    try:
+        core = abex_live._core()
+        items_data = core._load_items()
+    except Exception as exc:
+        log.warning("[livescreens] order rates unavailable, pay will be blank: %s", exc)
+
+    def _rate_and_total(o):
+        if core is None:
+            return None, None
+        try:
+            piece = core._coin_rates_for_order(o, items_data)[0]
+            total = core._coins_for_pieces(o, int(o.get("requested") or 0), items_data)
+            return float(piece), float(total)
+        except Exception:
+            return None, None
+
     open_rows, filled = [], []
     committed = 0.0
     for o in raw:
@@ -633,15 +656,27 @@ def orders(user_id: str = "") -> dict:
         pieces = int(o.get("requested") or 0)
         shown = int(o.get("amount") or pieces)
         unit = str(o.get("unit_type") or "pieces")
-        rate = float(o.get("coin_per_piece") or 0)
-        total = rate * pieces
+        rate, total = _rate_and_total(o)
+        if rate is None:
+            rate = float(o.get("coin_per_piece") or 0) or None
+            total = rate * pieces if rate else None
         claims = o.get("claims") or []
         who = ", ".join(str(c.get("user_tag") or "") for c in claims if c.get("user_tag"))
+        stack = int(o.get("stack_size") or 64)
+        stackable = bool(o.get("stackable"))
+        # Quoted the way every price in this economy is quoted - per piece, and
+        # per stack of 64 when the item stacks. Never per barrel: that rate is
+        # 3,456 pieces and printing it under "per stack" is a 54x overstatement.
+        if rate and stackable:
+            pay = f"{rate * stack:,.2f}c per stack of {stack} · {rate:,.2f}c a piece"
+        elif rate:
+            pay = f"{rate:,.2f}c per piece"
+        else:
+            pay = DASH
         if status == "open":
-            committed += total
+            committed += float(total or 0)
             open_rows.append([
-                item, market, f"{shown:,} {unit}",
-                (f"{rate:,.2f}c per piece" if rate else DASH),
+                item, market, f"{shown:,} {unit}", pay,
                 (f"{total:,.0f}c" if total else DASH),
                 (who or "m|unclaimed"),
                 ("w|claimed" if claims else "g|open"),
