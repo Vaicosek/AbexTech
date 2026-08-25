@@ -2135,8 +2135,18 @@ async def on_ready():
     log.info("core reads: %s", "in-process (same restocker.db)" if _inproc
              else "HTTP only -- core_read unavailable")
 
+    # The probe RACES THE TUNNEL. Core serves its HTTP API through cloudflared,
+    # which is started in a background thread as core boots and takes a few seconds
+    # to register its connections. The Bank is a sibling process started at the same
+    # instant, so a single probe at on_ready lands while Cloudflare is still
+    # answering 530 for a hostname whose origin has not connected yet -- and reports
+    # an outage that is over before anyone reads the log. Retry a few times before
+    # believing it.
+    _PROBE_TRIES, _PROBE_GAP = 4, 5.0
+
     if client_rs is not None:
-        try:
+        for _attempt in range(1, _PROBE_TRIES + 1):
+          try:
             h = await client_rs.health()
             if not h.get("enabled"):
                 log.warning("Restocker bank API is reachable but DISABLED "
@@ -2146,14 +2156,23 @@ async def on_ready():
                 log.warning("Bank API version mismatch: server=%s, expected=%s. "
                             "Update both bots to the same version.", server_ver, EXPECTED_API_VERSION)
             await client_rs.ping()
-            log.info("Connected to Restocker bank API v%s at %s", server_ver, RESTOCKER_API_URL)
-        except RestockerError as e:
+            log.info("Connected to Restocker bank API v%s at %s%s", server_ver,
+                     RESTOCKER_API_URL,
+                     "" if _attempt == 1 else f" (after {_attempt} tries)")
+            break
+          except RestockerError as e:
+            if _attempt < _PROBE_TRIES:
+                await asyncio.sleep(_PROBE_GAP)
+                continue
+            _why = str(e).split("\n")[0][:120]
             if _inproc:
-                log.warning("Core's HTTP API is unreachable (%s) -- reads are served "
-                            "in-process and are unaffected; /stock buy and /stock sell "
-                            "will refuse until it is back.", str(e).split("\n")[0][:120])
+                log.warning("Core's HTTP API did not answer in %.0fs (%s) -- reads are "
+                            "served in-process and are unaffected; /stock buy and "
+                            "/stock sell will refuse until it is back.",
+                            _PROBE_TRIES * _PROBE_GAP, _why)
             else:
-                log.warning("Could not reach Restocker bank API: %s", e)
+                log.warning("Could not reach Restocker bank API after %d tries: %s",
+                            _PROBE_TRIES, _why)
     else:
         log.warning("Restocker API not configured — wallet/stock commands will be disabled.")
 

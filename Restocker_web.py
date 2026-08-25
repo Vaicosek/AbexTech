@@ -5711,9 +5711,9 @@ async def start_webserver(port: int = 8080):
     if _static_dir.is_dir():
         app.router.add_static("/static/", path=str(_static_dir), name="static",
                               show_index=False, follow_symlinks=False)
-        print(f"     /static served from {_static_dir}")
+        print(f"     /static served from {_static_dir}", flush=True)
     else:
-        print("\u26a0\ufe0f  no static/ directory -- the brand mark falls back to text.")
+        print("\u26a0\ufe0f  no static/ directory -- the brand mark falls back to text.", flush=True)
 
     try:
         import bank_api
