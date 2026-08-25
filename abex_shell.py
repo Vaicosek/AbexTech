@@ -128,7 +128,7 @@ def grade_chip(grade: str) -> str:
     """A grade is a fact in a column: coloured bold text, not a filled pill.
 
     The name is kept because every screen calls it; what it renders changed with
-    the skin. Sub-investment grades take the loss tone, which is the only place
+    Warm Feel, the only skin. Sub-investment grades take the loss tone, the only place
     that colour is allowed to appear outside money.
     """
     # An unknown grade is not a bad grade. Falling back to C's colour painted

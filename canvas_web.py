@@ -111,6 +111,10 @@ tr.mine td{background:var(--raised)}
 /* Countdown cells tick client-side; this is only their resting shape. */
 td.countdown{font-variant-numeric:tabular-nums}
 
+/* §5: `dense` toggles row padding and NOTHING else - "does not change font
+   size". The theme's own rows are 10px; dense is 7px. */
+table.dense td, table.dense th{padding-top:7px;padding-bottom:7px}
+
 /* §2: the measured header height, set by the page script. The fallback matters —
    without a script the jump still needs to clear a sticky header, and 96px is
    nearer right than 0. */
@@ -314,6 +318,26 @@ CANVAS_JS = r"""
         tog.setAttribute("aria-expanded", "false");
       }
     });
+  }
+
+  /* §3: "Only the active item's children/subs render - clicking the active item
+     again collapses it instead of navigating." Following the link you are
+     already on is a page reload that changes nothing, so it reads as a dead
+     click; collapsing is at least an answer. */
+  var active = document.querySelector('.navitem[aria-current="page"]');
+  if(active){
+    var group = active.parentNode;
+    var kids = [];
+    var n = active.nextElementSibling;
+    while(n && n.classList.contains("navsub")){ kids.push(n); n = n.nextElementSibling; }
+    if(kids.length){
+      active.addEventListener("click", function(e){
+        e.preventDefault();
+        for(var i = 0; i < kids.length; i++){
+          kids[i].style.display = kids[i].style.display === "none" ? "" : "none";
+        }
+      });
+    }
   }
 
   var head = document.querySelector(".top");

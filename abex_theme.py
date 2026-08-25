@@ -1,11 +1,16 @@
 """
 abex_theme.py — the Abex Tech design system. Tokens and component classes in one place.
 
-Ported to the **Warm Feel** skin, which is `Abex Tech Screens.dc.html`'s own default and
-the direction John picked: a bank statement for a Minecraft economy. Flat ground, no panel
-fills, serif throughout, one gold accent for anything you can click. The Dark Green skin
-this file used to carry is in git history; the class names did not change, so every screen
-built against it renders unaltered.
+**Warm Feel is the only skin, and that is a decision, not a gap.** The design ships two —
+Warm Feel and Dark Green — and John picked Warm Feel and only Warm Feel (25 Aug 2026). Do
+not port Dark Green and do not build a switcher: two skins is two of every colour decision
+to keep in step, and a token that is right in one and wrong in the other is a wrong figure
+on a money page half the time. The old Dark Green port is in git history if it is ever
+wanted back.
+
+What Warm Feel is: a bank statement for a Minecraft economy. Flat ground, no panel fills,
+serif throughout, one gold accent for anything you can click. The class names never
+changed across the port, so every screen renders unaltered.
 
 What moved, and why it matters when reading a screen:
 
@@ -16,7 +21,7 @@ What moved, and why it matters when reading a screen:
 * **Uppercase is gone.** Field labels, table headers and section headings are sentence
   case. Caps on every label was the loudest tell in the version John rejected.
 * **A grade is text, not a chip.** `grade_chip()` in `abex_shell` renders coloured bold
-  text; the filled pill belongs to the other skin.
+  text. The filled pill is a Dark Green affordance and this product does not have one.
 * `--accent` (#c9b37a) is interactive: links, the active nav mark, primary buttons.
   `--mark` is the section's own hue and appears as a 2px rule on one panel per screen and
   nowhere else.

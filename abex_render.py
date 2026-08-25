@@ -97,6 +97,40 @@ def _backing_colour(text: str) -> str:
     return "var(--loss)"
 
 
+#: §4, Claims: "Chunk-count column is size-scaled: brightness + font-size
+#: log-interpolate from 10 to 1000 chunks." Log, not linear, because the range is
+#: two orders of magnitude — linear would leave everything under 200 chunks
+#: identically dim and make the column decoration rather than information.
+_CHUNK_MIN, _CHUNK_MAX = 10.0, 1000.0
+
+
+def _chunk_style(text: str) -> str:
+    """Inline style for a chunk count, or "" when the cell is not one.
+
+    A claim of 12 chunks and one of 900 are different kinds of thing, and the
+    figure alone reads as two numbers of similar weight. Size and brightness
+    carry the difference at a glance, which is what a register is scanned for.
+    """
+    m = re.search(r"([\d,]+)", text)
+    if not m:
+        return ""
+    try:
+        n = float(m.group(1).replace(",", ""))
+    except ValueError:
+        return ""
+    if n <= 0:
+        return ""
+    import math
+    lo, hi = math.log10(_CHUNK_MIN), math.log10(_CHUNK_MAX)
+    t = (math.log10(max(n, 1.0)) - lo) / (hi - lo)
+    t = min(1.0, max(0.0, t))
+    size = 15.5 + t * 6.5                      # 15.5px -> 22px
+    # Between `faint` and `text`, so the smallest claims still read and the
+    # biggest do not shout brighter than the primary text tone.
+    grey = int(round(0x8A + t * (0xEF - 0x8A)))
+    return "font-size:%.1fpx;color:#%02x%02x%02x" % (size, grey, grey, grey)
+
+
 def _header_rule(head: str, text: str) -> tuple[str, bool]:
     """`(colour, bold)` for a cell, decided by its column heading."""
     h = head.rstrip("#").strip().lower()
@@ -171,6 +205,11 @@ def _cell(head: str, raw, numeric: bool, identity: bool) -> str:
     bold = bold or hb
 
     style = []
+    if head.rstrip("#").strip().lower() in ("chunks", "size", "chunk count"):
+        chunk = _chunk_style(text)
+        if chunk:
+            style.append(chunk)
+            colour = ""                   # the ramp IS the colour for this column
     if colour:
         style.append(f"color:{colour}")
     if bold:
@@ -181,6 +220,12 @@ def _cell(head: str, raw, numeric: bool, identity: bool) -> str:
 
 
 def _table(block: dict, mine=None) -> str:
+    """A table. `dense:1` on the block tightens row padding (§5).
+
+    Padding only — §5 is explicit that `dense` "does not change font size". A
+    column of figures that shrinks when a table gets long is a column that reads
+    as less important than the same figures on a short one.
+    """
     # A block may name its own "your position" rows. `mine=` on `screen_html` is
     # one set applied to every table on the screen, which is right when a screen
     # has one table and wrong the moment it has two — the indices from the
@@ -213,7 +258,9 @@ def _table(block: dict, mine=None) -> str:
     if note or link:
         lk = f' <a href="#">{_e(link)}</a>' if link else ""
         foot = f'<div class="tfoot">{_e(note or "")}{lk}</div>'
-    return ('<div class="tablewrap"><table><thead><tr>' + th + "</tr></thead><tbody>"
+    cls = "dense" if block.get("dense") else ""
+    return ('<div class="tablewrap"><table class="%s"><thead><tr>' % cls + th
+            + "</tr></thead><tbody>"
             + "".join(body) + "</tbody></table></div>" + foot)
 
 

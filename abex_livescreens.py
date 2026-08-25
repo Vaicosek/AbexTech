@@ -650,8 +650,11 @@ def lands(user_id: str = "") -> dict:
             ("Live now", str(live), "open for bidding"),
             ("Sellers", str(len({r[1] for r in rows})), "with land listed"),
             ("Rent", "none", "a claim is bought outright")]
+    # "Chunks", not "Size": §4 size-scales the CHUNK COUNT column, and the
+    # renderer keys that ramp off the heading. A column called something else is
+    # a column that silently loses it.
     table = {"h2": "Land auctions", "ac": 1,
-             "c": ["Claim", "Seller", "Price#", "State", "Size"], "r": out,
+             "c": ["Claim", "Seller", "Price#", "State", "Chunks#"], "r": out,
              "n": ("A claim is bought outright and transfers with whatever is "
                    "built on it — there is no recurring rent. Items are auctioned "
                    "separately, under Auctions."
