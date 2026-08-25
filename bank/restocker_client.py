@@ -9,7 +9,14 @@ import uuid
 import asyncio
 import aiohttp
 
-EXPECTED_API_VERSION = "1.1"
+# Compared by exact string against core's BANK_API_VERSION, so it has to be
+# bumped deliberately. Core has been on 1.2 since before the merge; this stayed
+# at 1.1 and nobody saw the mismatch, because the boot probe could not reach
+# core at all until the tunnel came back. 1.2 is a superset - every endpoint
+# this client calls (health, ping, balance, stocks, portfolio, adjust,
+# transfer, stock/buy, stock/sell) is still registered, with the same request
+# bodies - so the warning was stale, not a real incompatibility.
+EXPECTED_API_VERSION = "1.2"
 
 
 class RestockerError(Exception):
