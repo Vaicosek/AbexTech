@@ -774,3 +774,260 @@ def investor(user_id: str) -> Optional[dict]:
     ]
     return {"tiles": tiles, "rows": rows, "pool_pct": pool_pct,
             "is_investor": bool(mine)}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# The owner's side: My market, and the report it files
+# ══════════════════════════════════════════════════════════════════════════
+
+def owned_markets(user_id: str) -> list:
+    """Markets this account owns, biggest current-month net first.
+
+    Ownership is `markets.owner_id`. `leader_discord_id` is deliberately NOT
+    treated as ownership: a leader runs a market's Discord side, and the payout
+    waterfall on these screens decides where somebody else's money goes.
+    """
+    try:
+        db = _db()
+    except Exception as exc:                        # pragma: no cover
+        log.warning("[abex_live] owned markets unavailable: %s", exc)
+        return []
+    uid = str(user_id or "")
+    if not uid:
+        return []
+    try:
+        registry = db.get_markets() or {}
+    except Exception as exc:
+        log.warning("[abex_live] market registry unreadable: %s", exc)
+        return []
+    mine = [(mid, m) for mid, m in registry.items()
+            if str((m or {}).get("owner_id") or "") == uid]
+    month = _now_month()
+
+    def _net(pair):
+        return -_month_totals(db, pair[0], month)[2]
+
+    mine.sort(key=_net)
+    return [{"market_id": mid, "name": (m or {}).get("name") or mid} for mid, m in mine]
+
+
+def _now_month() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m")
+
+
+def _day_name(day: str) -> str:
+    """`2026-08-07` -> `Fri 7 Aug`. The design writes days, not keys."""
+    from datetime import datetime
+    try:
+        return datetime.strptime(str(day)[:10], "%Y-%m-%d").strftime("%a %-d %b")
+    except ValueError:
+        try:
+            return datetime.strptime(str(day)[:10], "%Y-%m-%d").strftime("%a %d %b")
+        except Exception:
+            return str(day)
+    except Exception:
+        return str(day)
+
+
+def _prev_month(month: str) -> str:
+    y, m = (int(x) for x in str(month).split("-")[:2])
+    return f"{y - 1}-12" if m == 1 else f"{y}-{m - 1:02d}"
+
+
+def _month_totals(db, market_id: str, month: str) -> tuple:
+    """(income, spent, net) for one market-month, or zeroes.
+
+    `csn_month_totals` returns income and spent and NOT net — net is derived, and
+    deriving it here rather than reading a key that isn't there is the difference
+    between this screen showing the month's real result and showing zero. It read
+    a missing `net` key for its first draft and every market looked break-even.
+    """
+    try:
+        t = db.csn_month_totals(market_id, month) or {}
+    except Exception:
+        t = {}
+    if int(t.get("sources") or 0):
+        income = float(t.get("income") or 0)
+        spent = float(t.get("spent") or 0)
+        return (income, spent, income - spent)
+    # No live source for that month. For a CLOSED month that is the normal case
+    # and the filed record is the answer — `csn_month_sources` holds what is
+    # still being assembled, `csn_history` holds what was filed. Reading only the
+    # first makes every month before this one look like it earned nothing.
+    try:
+        row = db._get_conn().execute(
+            "SELECT income, spent, net FROM csn_history WHERE market_id=? AND month=?",
+            (str(market_id), str(month))).fetchone()
+    except Exception:
+        row = None
+    if not row:
+        return (0.0, 0.0, 0.0)
+    return (float(row[0] or 0), float(row[1] or 0), float(row[2] or 0))
+
+
+def my_market(user_id: str, market_id: str = "") -> Optional[dict]:
+    """The owner's console for one market he owns.
+
+    Returns None when the modules are unreachable, and `{"owns": []}` when this
+    account owns no market — which is not an error and must not be rendered as
+    one. Most players own nothing; the page says so in a sentence.
+
+    THE WATERFALL IS READ, NOT RECOMPUTED. Spec §6.3 fixes the order net → vault
+    retention → debt service and coupons → dividends → owner's residual, and the
+    retention half of it is already a live obligation: `_accrue_vault_retention`
+    posts 10% of every positive closed month to `vault_due:<mid>`. This reads that
+    accrued figure. Recomputing 10% here would produce a number that looks like
+    the obligation and disagrees with it the moment a month closes or the rate
+    moves, and the owner would have two answers to "what do I owe the vault".
+    """
+    try:
+        db = _db()
+    except Exception as exc:                        # pragma: no cover
+        log.warning("[abex_live] my market unavailable: %s", exc)
+        return None
+    # Core is OPTIONAL here, and only optional here. It answers the grade and the
+    # retention rate; it does not answer the money. Without it this screen still
+    # shows the owner his own ledger, which is the part he came for, and says the
+    # market is not rated rather than going dark over a rating.
+    try:
+        core = _core()
+    except Exception as exc:
+        log.warning("[abex_live] grade unavailable, money still is: %s", exc)
+        core = None
+    owned = owned_markets(user_id)
+    if not owned:
+        return {"owns": []}
+    chosen = market_id or owned[0]["market_id"]
+    if chosen not in {m["market_id"] for m in owned}:
+        return {"owns": owned, "denied": chosen}
+
+    name = next(m["name"] for m in owned if m["market_id"] == chosen)
+    month = _now_month()
+    income, spent, net = _month_totals(db, chosen, month)
+    prev = _prev_month(month)
+    _pi, _ps, prev_net = _month_totals(db, chosen, prev)
+
+    try:
+        grade, scale, _b, _t = core._backing_rating(chosen)
+    except Exception:
+        grade, scale = "not rated", 0.0
+    try:
+        listing = (db.get_public_markets() or {}).get(chosen) or {}
+    except Exception:
+        listing = {}
+
+    vault_due = 0.0
+    try:
+        vault_due = float(db.get_config(f"vault_due:{chosen}") or 0)
+    except Exception:
+        pass
+    retention_pct = float(getattr(core, "STOCK_RETAINED_EARNINGS_PCT", 10.0) or 10.0)
+
+    # ── the month's ledger, newest first ────────────────────────────────────
+    ledger = []
+    try:
+        rows = db._get_conn().execute(
+            "SELECT sale_day, item, verb, qty, coins FROM csn_transactions "
+            "WHERE market_id=? AND sale_day LIKE ? "
+            "ORDER BY sale_ts DESC LIMIT 60", (chosen, month + "-%")).fetchall()
+        for day, item, verb, qty, coins in rows:
+            amount = abs(float(coins or 0))
+            sold_to_us = str(verb) == "sold"      # the shop bought stock in
+            ledger.append((
+                _day_name(day), f"{item} ×{int(qty or 0)}",
+                "Restock" if sold_to_us else "Sales",
+                "" if sold_to_us else f"{amount:,.0f}c",
+                f"{amount:,.0f}c" if sold_to_us else "",
+            ))
+    except Exception as exc:
+        log.warning("[abex_live] ledger for %s unreadable: %s", chosen, exc)
+
+    # ── staff ───────────────────────────────────────────────────────────────
+    staff = []
+    try:
+        team = db.get_team(str(user_id)) or []
+        perf = {}
+        for row in db._get_conn().execute(
+                "SELECT worker_id, kind, SUM(coins), SUM(qty), COUNT(*) "
+                "FROM team_perf_log WHERE manager_id=? AND created_at >= ? "
+                "GROUP BY worker_id, kind", (str(user_id), month + "-01")):
+            wid, kind, coins, qty, n = row
+            slot = perf.setdefault(str(wid), {"coins": 0.0, "orders": 0})
+            slot["coins"] += float(coins or 0)
+            if str(kind) == "order":
+                slot["orders"] += int(n or 0)
+        for member in team:
+            wid = str(member.get("worker_id") if isinstance(member, dict) else member)
+            slot = perf.get(wid, {"coins": 0.0, "orders": 0})
+            staff.append((_owner_name(db, wid), "Worker", str(slot["orders"]),
+                          f"{slot['coins']:,.0f}c"))
+    except Exception as exc:
+        log.warning("[abex_live] staff for %s unreadable: %s", user_id, exc)
+
+    return {
+        "owns": owned, "market_id": chosen, "name": name,
+        "month": month, "month_name": _month_name(month),
+        "income": income, "spent": spent, "net": net,
+        "prev_net": prev_net, "prev_month_name": _month_name(prev),
+        "grade": str(grade), "backing": float(scale or 0),
+        "share_price": float(listing.get("share_price") or 0) if listing else None,
+        "shares_out": float(listing.get("shares_outstanding") or 0) if listing else None,
+        "treasury": float(listing.get("treasury_coins") or 0) if listing else 0.0,
+        "vault_due": vault_due, "retention_pct": retention_pct,
+        "ledger": ledger, "staff": staff,
+        "filed": bool(_month_totals(db, chosen, month)[0] or net),
+    }
+
+
+def filing(user_id: str, market_id: str = "") -> Optional[dict]:
+    """The report this owner would file for the month, and what filing changes.
+
+    The share-price rows come from `price_formula`, which asks the bot's own
+    pricing function. This module does not price a share: `/stock price` and this
+    page have to agree, and two implementations of one formula do not stay equal.
+    """
+    data = my_market(user_id, market_id)
+    if data is None or not data.get("owns") or "market_id" not in data:
+        return data
+    try:
+        db = _db()
+    except Exception:                               # pragma: no cover
+        return data
+    mid = data["market_id"]
+
+    rows, _name = price_formula(mid)
+    data["price_rows"] = rows
+
+    history = []
+    try:
+        for month, income, spent, net in db._get_conn().execute(
+                "SELECT month, income, spent, net FROM csn_history "
+                "WHERE market_id=? ORDER BY month DESC LIMIT 4", (mid,)):
+            history.append((_month_name(month), f"{float(income or 0):,.0f}c",
+                            f"{float(spent or 0):,.0f}c", f"{float(net or 0):,.0f}c"))
+    except Exception as exc:
+        log.warning("[abex_live] filing history for %s unreadable: %s", mid, exc)
+
+    dividend = None
+    try:
+        row = db._get_conn().execute(
+            "SELECT month, per_share FROM stock_dividend_log WHERE market_id=? "
+            "ORDER BY month DESC LIMIT 1", (mid,)).fetchone()
+        if row:
+            dividend = (_month_name(row[0]), float(row[1] or 0))
+    except Exception:
+        pass
+    filed_this_month = None
+    try:
+        row = db._get_conn().execute(
+            "SELECT net FROM csn_history WHERE market_id=? AND month=?",
+            (mid, data["month"])).fetchone()
+        if row is not None:
+            filed_this_month = float(row[0] or 0)
+    except Exception:
+        pass
+    data["history"] = history
+    data["last_dividend"] = dividend
+    data["filed_net"] = filed_this_month
+    return data

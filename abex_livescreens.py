@@ -365,11 +365,238 @@ def exchange(user_id: str = "") -> dict:
                   band, [table])
 
 
+# ── My market, and the report it files ──────────────────────────────────────
+def _coin(n) -> str:
+    return f"{float(n or 0):,.0f}c"
+
+
+def _no_market(key: str, owns_none: bool) -> dict:
+    """The owner screens for somebody who owns no market.
+
+    Not an error, and not an empty table either. Most players own nothing; the
+    page says so in a sentence rather than showing five headed tables with no
+    rows, which reads as breakage.
+    """
+    why = ("You do not own a market. These pages are the owner's console — the "
+           "ledger, the payout order and the report — and they appear when a "
+           "market is registered to your account."
+           if owns_none else "That market is not yours.")
+    return _empty(key, why)
+
+
+def market(user_id: str = "") -> dict:
+    """The owner's console: his ledger, where the net goes, and what he owes.
+
+    THE WATERFALL'S ORDER IS THE SPEC'S (§6.3) AND ITS FIGURES ARE THE
+    DATABASE'S. Net, then vault retention, then debt service and coupons, then
+    dividends, then the owner's residual — in that order, always, because the
+    order is the rule. What this will not do is fill the middle rows with
+    plausible numbers: no bond has been issued and no dividend has ever been
+    declared in this database, so those two lines read 0c and say why. A payout
+    page that invents a coupon is a page that tells an owner he owes money to
+    nobody.
+    """
+    if abex_live is None:
+        return _empty("market", "The exchange is not reachable from this process.")
+    data = abex_live.my_market(str(user_id))
+    if data is None:
+        return _empty("market", "Your market is not readable right now.")
+    if not data.get("owns"):
+        return _no_market("market", True)
+    if "market_id" not in data:
+        return _no_market("market", False)
+
+    net = float(data["net"])
+    retention = net * float(data["retention_pct"]) / 100.0 if net > 0 else 0.0
+    vault_due = float(data["vault_due"])
+    residual = net - retention
+
+    band = [
+        ("Grade", data["grade"],
+         (f"{data['backing']:,.2f}× backed" if data["backing"] else "not scored")),
+        (f"Net, {data['month_name']}", _coin(net),
+         (f"{_coin(data['prev_net'])} in {data['prev_month_name']}"
+          if data["prev_net"] else "no prior month on record"),
+         "g" if net >= float(data["prev_net"] or 0) else "l"),
+        ("Share price",
+         (f"{data['share_price']:,.2f}c" if data.get("share_price") else "not listed"),
+         (f"{data['shares_out']:,.0f} shares out" if data.get("shares_out")
+          else "no shares issued")),
+        ("Vault owed", _coin(vault_due),
+         f"{data['retention_pct']:,.0f}% of each closed month"),
+    ]
+
+    entries = data["ledger"]
+    ledger = {"h2": f"Ledger, {data['month_name'].split()[0]}", "ac": 1,
+              "c": _cols("market", 1) or ["Date", "Entry", "Category", "In#", "Out#"],
+              "r": [[d, e, c, ("g|" + i if i else DASH), ("l|" + o if o else DASH)]
+                    for d, e, c, i, o in entries],
+              "n": (f"{len(entries)} most recent entries this month, newest first. "
+                    "Categories are the two this ledger records — a sale to a "
+                    "customer, and stock bought in."
+                    if entries else "No entries recorded this month.")}
+
+    month_bal = {"h2": f"{data['month_name'].split()[0]} so far",
+                 "bal": [["Revenue", _coin(data["income"]), ""],
+                         ["Less stock and costs", _coin(data["spent"]), ""]],
+                 "tot": ["Net for the month", _coin(net)],
+                 "n": "Worker pay is not in this ledger — it is paid through the "
+                      "team log and is shown under Staff."}
+
+    waterfall = {"h2": "Where the net goes", "own": 1,
+                 "bal": [
+                     ["Net for the month", _coin(net), ""],
+                     [f"Less vault, {data['retention_pct']:,.0f}% retained",
+                      _coin(retention),
+                      (f"{_coin(vault_due)} already accrued and unpaid"
+                       if vault_due else "no arrears")],
+                     ["Less debt service and bond coupons", "0c",
+                      "no bond issued and no loan drawn against this market"],
+                     ["Less dividends to shareholders", "0c",
+                      "no dividend has been declared"],
+                 ],
+                 "tot": ["To the owner", _coin(residual)],
+                 "n": "The order is fixed: vault first, then debt and coupons, "
+                      "then dividends, then you."}
+
+    liabilities = []
+    if vault_due:
+        liabilities.append(["Vault retention owed", "Abex Tech", _coin(vault_due),
+                            DASH,
+                            "m|accrued from closed months, arrears cap the grade at BBB"])
+    liab = {"h2": "Liabilities", "own": 1,
+            "c": _cols("market", 4) or ["Item", "Held by", "Amount#", "Due", "Note"],
+            "r": liabilities,
+            "n": ("The only liability on record. No bond has been issued against "
+                  "this market and no loan is drawn."
+                  if liabilities else "Nothing owed: no vault arrears, no bond, "
+                  "no loan.")}
+
+    staff_rows = [[w, role, filled, paid, DASH]
+                  for w, role, filled, paid in data["staff"]]
+    staff = {"h2": "Staff", "own": 1,
+             "c": _cols("market", 5) or ["Worker", "Role", "Orders filled#",
+                                         "Paid this month#", "Owed#"],
+             "r": staff_rows,
+             "n": ("Paid is what the team log recorded this month. Owed is blank "
+                   "because nothing in this schema records an unpaid worker "
+                   "balance — a figure here would be a guess about somebody's wages."
+                   if staff_rows else "No workers on your team.")}
+
+    asof = (f"{data['name']} · you are the owner · "
+            + (f"listed at {data['share_price']:,.2f}c a share"
+               if data.get("share_price") else "not listed on the exchange"))
+    screen_d = _shell("market", asof, band,
+                      [ledger, month_bal, waterfall, liab, staff])
+    screen_d["title"] = data["name"]
+    return screen_d
+
+
+def filing(user_id: str = "") -> dict:
+    """The report this owner would file for the month.
+
+    The share-price block comes from `abex_live.price_formula`, which asks the
+    bot's own pricing function rather than restating the formula. When that is
+    unreachable the block says so and shows nothing — an unpriced share is a
+    thing this page can admit to.
+    """
+    if abex_live is None:
+        return _empty("filing", "The exchange is not reachable from this process.")
+    data = abex_live.filing(str(user_id))
+    if data is None:
+        return _empty("filing", "Your report is not readable right now.")
+    if not data.get("owns"):
+        return _no_market("filing", True)
+    if "market_id" not in data:
+        return _no_market("filing", False)
+
+    net = float(data["net"])
+    retention = net * float(data["retention_pct"]) / 100.0 if net > 0 else 0.0
+    residual = net - retention
+    month_word = data["month_name"].split()[0]
+
+    band = [(f"Net for {month_word}", _coin(net),
+             "revenue less stock and costs"),
+            ("Share price",
+             (f"{data['share_price']:,.2f}c" if data.get("share_price")
+              else "not listed"),
+             "the exchange's current price"),
+            ("Grade", data["grade"],
+             (f"{data['backing']:,.2f}× backed" if data["backing"] else "not scored"))]
+
+    # A month can already have a filed figure while the sources have moved on —
+    # a shop keeps trading after its owner files. Saying so is the point of the
+    # screen: the gap between what stands on the record and what the ledger now
+    # holds is exactly what refiling would change.
+    filed = data.get("filed_net")
+    if filed is None:
+        stands = f"Nothing is filed for {month_word} yet."
+    elif abs(filed - net) >= 1:
+        stands = (f"{_coin(filed)} stands filed for {month_word}; the ledger now "
+                  f"holds {_coin(net)}. Refiling replaces the figure on record.")
+    else:
+        stands = f"{_coin(filed)} stands filed for {month_word}, and the ledger agrees."
+    action = {"h2": "File the report", "ac": 1, "own": 1,
+              "act": ("Filing settles the share price, re-scores the grade and "
+                      "closes the month. Reports are filed from Discord — this "
+                      "page shows what would be filed."),
+              "btns": [],
+              "n": stands + " A missed filing keeps the last price, pays no "
+                   "dividend and drops a band."}
+
+    figures = {"h2": "The figures you are filing",
+               "bal": [["Revenue", _coin(data["income"]), ""],
+                       ["Less stock and costs", _coin(data["spent"]), ""]],
+               "tot": ["Net for the month", _coin(net)]}
+
+    price_rows = data.get("price_rows") or []
+    price = {"h2": "How the price is set",
+             "bal": [[label, value, ""] for label, value, _tone in price_rows],
+             "n": ("Straight from the pricing function the bot quotes, so this "
+                   "page and /stock price cannot disagree."
+                   if price_rows else
+                   "The pricing function is not reachable from this process, so "
+                   "no derivation is shown. It is not being estimated here.")}
+
+    pays = {"h2": "What filing pays", "own": 1,
+            "bal": [["Net for the month", _coin(net), ""],
+                    [f"Less vault, {data['retention_pct']:,.0f}% retained",
+                     _coin(retention),
+                     (f"{_coin(data['vault_due'])} already accrued"
+                      if data["vault_due"] else "no arrears")],
+                    ["Less debt service and bond coupons", "0c",
+                     "nothing issued against this market"],
+                    ["Less dividend", "0c",
+                     ("last paid " + data["last_dividend"][0]
+                      if data.get("last_dividend") else "none has ever been declared")]],
+            "tot": ["To the owner", _coin(residual)]}
+
+    hist_rows = [[m, DASH, n, DASH, DASH, DASH]
+                 for m, _inc, _sp, n in (data.get("history") or [])[:3]]
+    history = {"h2": "Last three filings",
+               "c": _cols("filing", 4) or ["Month", "Filed", "Net#",
+                                           "Price after#", "Dividend a share#",
+                                           "Grade"],
+               "r": hist_rows,
+               "n": ("Net is the filed figure. Filing date, the price it set and "
+                     "the grade it scored are not kept per month — the price log "
+                     "records trades, not reports — so those cells are blank "
+                     "rather than reconstructed."
+                     if hist_rows else "Nothing filed yet.")}
+
+    asof = f"{month_word} report · {data['name']}"
+    screen_d = _shell("filing", asof, band,
+                      [action, figures, price, pays, history])
+    screen_d["title"] = f"{month_word} report, {data['name']}"
+    return screen_d
+
+
 #: key -> builder. A screen absent here has no live source yet and keeps its
 #: canvas page under /canvas; it is NOT served with sample rows on a live route.
 BUILDERS = {
     "hub": hub, "markets": markets, "stocks": stocks, "work": work,
     "lands": lands, "exchange": exchange,
+    "market": market, "filing": filing,
 }
 
 

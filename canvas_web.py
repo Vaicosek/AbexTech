@@ -174,9 +174,11 @@ def _handler(key: str):
 #: page belongs - `hub_web.page()` supplies the wallet strip and the session
 #: check, and duplicating either here would be a second place for them to drift.
 LIVE_SECTIONS = [
-    ("stocks",   "Stocks",   "/hub/stocks",   30),
-    ("exchange", "Exchange", "/hub/exchange", 25),
-    ("work",     "Work",     "/hub/work",     40),
+    ("stocks",   "Stocks",    "/hub/stocks",   30),
+    ("exchange", "Exchange",  "/hub/exchange", 25),
+    ("work",     "Work",      "/hub/work",     40),
+    ("market",   "My market", "/hub/market",   50),
+    ("filing",   "Report",    "/hub/filing",   51),
 ]
 
 

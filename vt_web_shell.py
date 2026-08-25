@@ -1841,6 +1841,10 @@ _NAV_KEY = {
     "hub": "hub", "markets": "markets", "banking": "banking", "auctions": "auctions",
     "lands": "lands", "messages": "messages", "history": "history", "admin": "owner",
     "exchange": "exchange", "work": "work", "stocks": "stocks",
+    # The owner's console. Two sections rather than one because the nav tree has
+    # the report as a child of My market, and a child needs its own key to be the
+    # thing that lights when you are on it.
+    "market": "mine", "filing": "mine.report",
 }
 
 #: Which sections this deployment actually mounted. The tree is the structure;
@@ -1871,6 +1875,8 @@ _NAV_PATHS = {
     "exchange": "/hub/exchange",
     "stocks":   "/hub/stocks",
     "work":     "/hub/work",
+    "mine":        "/hub/market",
+    "mine.report": "/hub/filing",
     "auctions": "/auctions",
     "lands":    "/lands",
     "messages": "/messages",
