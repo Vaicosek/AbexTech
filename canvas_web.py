@@ -21,6 +21,16 @@ import abex_shell
 import abex_render
 from abex_canvas import SCREENS
 
+#: The live-data builders. Guarded because this module must still serve the
+#: canvas set in a deployment that has no database - and because a missing
+#: import here should cost the LIVE routes, not the whole registration. It was
+#: referenced without being imported once, and the section died on a NameError
+#: at boot with everything else in it.
+try:
+    import abex_livescreens
+except Exception:                                   # pragma: no cover
+    abex_livescreens = None
+
 PREFIX = "/canvas"
 
 #: canvas screen key -> the nav key it should light up.
