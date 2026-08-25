@@ -1845,12 +1845,14 @@ _NAV_KEY = {
 _MOUNTED = {v for v in _NAV_KEY.values() if v}
 
 #: Where each mounted section is ACTUALLY served. The nav tree in `abex_shell`
-#: carries the design's paths, and on the live site two of them are wrong:
-#: the market list has always been served at `/exchange` (`hub_web` registers the
-#: "markets" section pointing there, and the only `/markets` route in the product
-#: sits behind `HUB_PREFIX`), and `betting` has no live route at all. So Markets
-#: in the sidebar was a 404 for everyone, logged in or not — the section was
-#: mounted, just not where the tree said.
+#: carries the design's paths; the live routes differ, so this maps one to the
+#: other. `betting` is absent because the product does not do it.
+#:
+#: Markets pointed at `/exchange` — the OLD terminal-shell exchange page, which
+#: is a different design entirely. Clicking Markets in the new sidebar therefore
+#: dropped you out of the new shell and into the pre-redesign one, which reads as
+#: "the site is broken". The designed markets screen, on live data, is
+#: `hub_web`'s `/hub/markets`, and that is where the entry belongs.
 #:
 #: Anything absent from this map is dropped from the nav entirely, sub-entries
 #: included. That is deliberate: the design's second level (`/markets/shelves`,
@@ -1858,7 +1860,7 @@ _MOUNTED = {v for v in _NAV_KEY.values() if v}
 #: sidebar full of dead links is a worse first impression than a short one.
 _NAV_PATHS = {
     "banking":  "/banking",
-    "markets":  "/exchange",     # NOT /markets — see above
+    "markets":  "/hub/markets",  # the DESIGNED markets screen, not /exchange
     "auctions": "/auctions",
     "lands":    "/lands",
     "messages": "/messages",
