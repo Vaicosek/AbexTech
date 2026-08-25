@@ -15,6 +15,7 @@ can lie without any number on the page being wrong.
      exactly this reason — drop either and the sentence stops describing the
      picture above it.
 """
+import re
 import sys
 from pathlib import Path
 
@@ -45,6 +46,55 @@ def test_flat_is_dim_not_gain():
     html = _svg([100.0, 100.0, 100.0])
     assert "var(--dim)" in html, html[:200]
     assert "var(--gain)" not in html
+
+
+# ── the y-window floor ─────────────────────────────────────────────────────
+#
+# The index moved 0.40 on 1,227 — three hundredths of one per cent — and the
+# chart rendered it as a cliff off the top of the box, because scaling a series
+# to its own min and max means the axis always fills and every move looks the
+# same size. It invented a crash that did not happen, in red, on a page a holder
+# reads to decide whether to sell.
+
+def _ys(points):
+    html = _svg(points)
+    m = re.search(r'points="([^"]+)"', html)
+    return [float(p.split(",")[1]) for p in m.group(1).split()]
+
+
+def test_a_tiny_move_does_not_fill_the_box():
+    ys = _ys([1227.16] * 100 + [1226.76] * 20)     # the real index, -0.03%
+    assert max(ys) - min(ys) < 8, (min(ys), max(ys))
+
+
+def test_a_real_move_still_fills_the_box():
+    """The floor stops applying the moment the true span is wider than it."""
+    ys = _ys([100.0, 105.0])
+    assert max(ys) - min(ys) > 20, (min(ys), max(ys))
+    ys = _ys([100.0, 92.0])
+    assert max(ys) - min(ys) > 20, (min(ys), max(ys))
+
+
+def test_a_drift_is_toned_unchanged_not_lost():
+    """Colour is a verdict, and 0.03% is not one. §1 says flat is never a gain;
+    the same holds at the other end — flat is not a loss either."""
+    html = _svg([1227.16, 1226.76])
+    assert "var(--dim)" in html
+    assert "var(--loss)" not in html
+    assert "= -0.40" in html, html[:300]
+
+
+def test_the_caption_still_quotes_the_exact_figure():
+    """The floor changes what the SHAPE claims, never what the numbers say."""
+    html = _svg([1227.16, 1226.76])
+    assert "-0.03%" in html
+
+
+def test_the_flat_band_is_the_same_on_both_sides():
+    import canvas_web
+    assert "var FLAT = 0.001" in canvas_web.CANVAS_JS, "client band changed"
+    assert R._FLAT_BAND == 0.001
+    assert "floorSpan" in canvas_web.CANVAS_JS, "client has no y-window floor"
 
 
 def test_direction_follows_last_against_first():

@@ -295,6 +295,12 @@ def _balance(block: dict) -> str:
 _BTN = {"p": "btn p", "s": "btn s", "d": "btn d"}
 
 
+#: A move smaller than this reads as unchanged: the y-window is never tighter
+#: than ±this fraction of the level, and the line is toned `dim` rather than
+#: gain or loss. 0.1% — below that on a share price is drift, not a move.
+_FLAT_BAND = 0.001
+
+
 def _spark(block: dict) -> str:
     """A price line. The fourth block shape, and the only one not in the design.
 
@@ -324,21 +330,43 @@ def _spark(block: dict) -> str:
         return f'<div class="sparkwrap"><div class="bnote">{_e(why)}</div></div>'
 
     lo, hi = min(pts), max(pts)
-    span = (hi - lo) or 1.0
     n = len(pts)
+    # THE Y-WINDOW HAS A FLOOR, AND THIS IS THE WHOLE POINT OF IT. Scaling a
+    # series to its own min and max means the vertical axis always fills, so a
+    # move of any size looks the same size. The index moved 0.40 on 1,227 — three
+    # hundredths of one per cent — and rendered as a cliff off the top of the
+    # box. The chart invented a crash that did not happen.
+    #
+    # So the window covers at least ±_FLAT_BAND of the level. A move smaller than
+    # that draws as the nearly-flat line it is; a real one still fills the box,
+    # because once the true span is wider than the floor the floor stops
+    # applying. The caption keeps quoting the exact figures either way — this
+    # changes what the SHAPE claims, never what the numbers say.
+    level = (hi + lo) / 2.0
+    span = hi - lo
+    floor = abs(level) * _FLAT_BAND * 2.0
+    if span < floor:
+        pad = (floor - span) / 2.0
+        lo, hi = lo - pad, hi + pad
+        span = floor
+    span = span or 1.0
     # y is inverted: SVG grows downward and a price does not.
     coords = " ".join(
         "%.2f,%.2f" % (i * 100.0 / (n - 1), 28.0 - ((v - lo) / span) * 26.0 - 1.0)
         for i, v in enumerate(pts))
     first, last = pts[0], pts[-1]
-    if last > first:
-        tone, arrow = "var(--gain)", "▲"
-    elif last < first:
-        tone, arrow = "var(--loss)", "▼"
-    else:
-        tone, arrow = "var(--dim)", "="
     change = last - first
     pct = (change / first * 100.0) if first else 0.0
+    # Colour is a verdict, and a drift of a few hundredths of a per cent is not
+    # one. Under the flat band it reads unchanged — §1's rule that flat is never
+    # a gain, applied to the other end: flat is not a loss either. A red line
+    # for -0.03% tells a holder something is wrong when nothing is.
+    if abs(pct) < _FLAT_BAND * 100.0:
+        tone, arrow = "var(--dim)", "="
+    elif change > 0:
+        tone, arrow = "var(--gain)", "▲"
+    else:
+        tone, arrow = "var(--loss)", "▼"
     caption = (f"{arrow} {change:+,.2f}{unit} ({pct:+,.2f}%) "
                f"over {_e(str(d.get('window') or f'{n} readings'))}")
     scale = (f'<span class="skhi">{hi:,.2f}{unit}</span>'

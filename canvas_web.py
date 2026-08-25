@@ -490,25 +490,39 @@ CANVAS_JS = r"""
     return n.toLocaleString(undefined, {minimumFractionDigits:2,
                                         maximumFractionDigits:2}) + (unit||"");
   }
+  /* Mirrors `abex_render._FLAT_BAND`. Two implementations of one projection, so
+     they are kept identical on purpose and asserted equal in the tests. */
+  var FLAT = 0.001;
   function draw(svg, d){
     var pts = (d && d.points) || [];
     var line = svg.querySelector("polyline");
     if(pts.length < 2 || !line) return;
     var lo = Math.min.apply(null, pts), hi = Math.max.apply(null, pts);
-    var span = (hi - lo) || 1, n = pts.length, out = [];
+    var n = pts.length, out = [];
+    /* The y-window floor — see the server's comment. Without it a 0.03% move
+       fills the box and reads as a crash. */
+    var level = (hi + lo) / 2, span = hi - lo;
+    var floorSpan = Math.abs(level) * FLAT * 2;
+    if(span < floorSpan){
+      var pad = (floorSpan - span) / 2;
+      lo -= pad; hi += pad; span = floorSpan;
+    }
+    span = span || 1;
     for(var i = 0; i < n; i++){
       out.push((i * 100 / (n - 1)).toFixed(2) + "," +
                (28 - ((pts[i] - lo) / span) * 26 - 1).toFixed(2));
     }
     var unit = svg.getAttribute("data-unit") || "";
     var first = pts[0], last = pts[n-1], ch = last - first;
-    var tone = ch > 0 ? "var(--gain)" : (ch < 0 ? "var(--loss)" : "var(--dim)");
-    var arrow = ch > 0 ? "▲" : (ch < 0 ? "▼" : "=");
+    var pctv = first ? (ch / first * 100) : 0;
+    var flat = Math.abs(pctv) < FLAT * 100;
+    var tone = flat ? "var(--dim)" : (ch > 0 ? "var(--gain)" : "var(--loss)");
+    var arrow = flat ? "=" : (ch > 0 ? "▲" : "▼");
     line.setAttribute("points", out.join(" "));
     line.setAttribute("stroke", tone);
     var wrap = svg.parentNode, meta = wrap.querySelector(".skmeta");
     if(meta){
-      var pct = first ? (ch / first * 100) : 0;
+      var pct = pctv;
       var cap = arrow + " " + (ch >= 0 ? "+" : "") + fmt(ch, unit) + " (" +
                 (pct >= 0 ? "+" : "") + pct.toFixed(2) + "%) over " +
                 (d.window || (n + " readings"));
