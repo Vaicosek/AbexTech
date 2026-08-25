@@ -1897,8 +1897,10 @@ _NAV_PATHS = {
     "mine":        "/hub/market",
     "mine.report": "/hub/filing",
     # Orders is a section of Work, not a page: same table read from the poster's
-    # side. The nav entry is an anchor onto that page.
-    "orders":      "/hub/work",
+    # side. §3 calls a sub-entry an anchor jump to a block by its heading, and
+    # that is now literally what this is - `abex_render.block_id` derives the
+    # fragment from the same heading the block renders.
+    "orders":      "/hub/work#orders-you-posted",
     # The designed read view, with a button through to the tool that acts. The
     # old paths (/auctions, /banking, /messages, /history) still serve and are
     # where those buttons go; putting one line here back to the old path is how

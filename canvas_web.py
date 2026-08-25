@@ -111,6 +111,11 @@ tr.mine td{background:var(--raised)}
 /* Countdown cells tick client-side; this is only their resting shape. */
 td.countdown{font-variant-numeric:tabular-nums}
 
+/* §2: the measured header height, set by the page script. The fallback matters —
+   without a script the jump still needs to clear a sticky header, and 96px is
+   nearer right than 0. */
+.block{scroll-margin-top:var(--headh, 96px)}
+
 /* The price line. No script and no library — an inline SVG polyline stretched to
    the column, so it costs one element and cannot fail to load. The box is a
    fixed height and a free width: `preserveAspectRatio:none` is what lets the
@@ -285,6 +290,72 @@ def register_live_routes(app) -> None:
 #: and the caption under it stop describing the same series.
 CANVAS_JS = r"""
 (function(){
+  /* §2: every block's scroll-margin-top is the MEASURED header height, via a
+     ResizeObserver rather than a guessed constant. The header is sticky and its
+     height changes with the viewport - it wraps its figures on a narrow screen -
+     so a constant is right at one width and wrong at every other, and wrong here
+     means an anchor jump lands the heading UNDERNEATH the header. */
+  /* §2's mobile nav: the toggle expands the tree INLINE, no drawer, no overlay.
+     Wired here rather than with an inline handler so the markup stays free of
+     script, and it is harmless on desktop where the button is display:none and
+     the tree is always shown. */
+  var tog = document.querySelector(".navtoggle");
+  var tree = document.getElementById("navtree");
+  if(tog && tree){
+    tog.addEventListener("click", function(){
+      var open = tree.classList.toggle("open");
+      tog.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+    /* Following a link inside the tree collapses it, so the next page does not
+       open with the nav already covering its first figures. */
+    tree.addEventListener("click", function(e){
+      if(e.target.closest("a")){
+        tree.classList.remove("open");
+        tog.setAttribute("aria-expanded", "false");
+      }
+    });
+  }
+
+  var head = document.querySelector(".top");
+  if(head){
+    var apply = function(){
+      document.documentElement.style.setProperty(
+        "--headh", (head.getBoundingClientRect().height + 12) + "px");
+    };
+    apply();
+    if(window.ResizeObserver){ new ResizeObserver(apply).observe(head); }
+    else { window.addEventListener("resize", apply); }
+  }
+
+  /* §5: a countdown cell ticks. `Xh XXm` -> `Xm XXs` -> `Xs` -> `closed`, and
+     escalates to loss-bold under five minutes and again under one. A closing
+     time rendered once and left to go stale is worse than no clock: a bidder
+     reads "4m" on a lot that shut ten minutes ago. */
+  var clocks = document.querySelectorAll("td.countdown[data-left]");
+  if(clocks.length){
+    var started = Date.now();
+    var pad = function(n){ return (n < 10 ? "0" : "") + n; };
+    var face = function(s){
+      if(s <= 0) return "closed";
+      if(s >= 3600) return Math.floor(s/3600) + "h " + pad(Math.floor((s%3600)/60)) + "m";
+      if(s >= 60)   return Math.floor(s/60) + "m " + pad(s%60) + "s";
+      return s + "s";
+    };
+    var tick = function(){
+      var gone = Math.floor((Date.now() - started) / 1000);
+      for(var i = 0; i < clocks.length; i++){
+        var td = clocks[i];
+        var base = parseInt(td.getAttribute("data-left"), 10);
+        if(isNaN(base)){ td.textContent = "—"; continue; }
+        var left = base - gone;
+        td.textContent = face(left);
+        td.style.color = left <= 300 ? "var(--loss)" : "";
+        td.style.fontWeight = (left <= 60 && left > 0) ? "700" : "";
+      }
+    };
+    tick();
+    setInterval(tick, 1000);
+  }
   var EVERY = 60000;                 /* the index is written every five minutes */
   function fmt(n, unit){
     return n.toLocaleString(undefined, {minimumFractionDigits:2,

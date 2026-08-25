@@ -329,17 +329,37 @@ tr.clickable{cursor:pointer}
 /* Empty is empty: one line, no placeholder rows. */
 .empty{padding:6px 0;color:var(--faint);font-size:18px}
 
+/* The toggle exists only on a narrow viewport - on the desktop sidebar the tree
+   is simply always there, which is what §2 describes. */
+.navtoggle{display:none}
+.navtree{display:block}
+
 @media(max-width:900px){
   body{display:block}
+  /* §2: below the breakpoint the sidebar becomes a single always-visible top bar
+     with a "current screen" toggle that expands the full nav INLINE. Not a
+     drawer and not an overlay - the design is explicit about that, and an
+     overlay on a page of figures hides the figures.
+
+     The wall of tabs this used to become was worse than either: fourteen inline
+     entries wrapped over four rows on a phone, so every page opened with a
+     screenful of nav above the first number. */
+  .navtoggle{display:flex;align-items:center;gap:8px;width:calc(100% - 40px);
+    margin:4px 20px 0;padding:9px 12px;background:none;cursor:pointer;
+    border:1px solid var(--line);border-radius:2px;
+    color:var(--text);font:inherit;font-size:17px;text-align:left}
+  .navtoggle .chev{color:var(--accent);transition:transform .12s ease}
+  .navtoggle[aria-expanded="true"] .chev{transform:rotate(180deg)}
+  .navtree{display:none;padding-top:6px}
+  .navtree.open{display:block}
+  .navtree .navitem{display:flex;width:auto}
   .side{position:static;width:auto;height:auto;flex:none;border-right:none;
     border-bottom:1px solid var(--line);padding:14px 0}
   .brand{align-items:flex-start;text-align:left;padding:0 20px 10px}
   .brand .mark{font-size:17px;padding:5px 11px}
   .navgroup{padding:6px 0 0}
   .navgroup>.glabel{display:none}
-  .navitem{display:inline-flex;width:auto;border-left:none;
-    border-bottom:2px solid transparent;font-size:18px;padding:4px 12px}
-  .navitem[aria-current="page"]{border-bottom-color:var(--accent)}
+  .navitem{font-size:18px;padding:7px 20px}
   .navsub{padding-left:32px;font-size:16px}
   main{padding:22px 20px 60px}
   .top{padding:18px 20px;gap:22px;row-gap:12px}

@@ -1013,6 +1013,28 @@ def _order_blocks(user_id: str = "") -> list:
     return [a, b, act]
 
 
+def _closes(ends_at) -> str:
+    """A `T|<seconds>` countdown cell, or an em dash for a lot with no close.
+
+    A timestamp printed once is a clock that stops. On an auction board that is
+    not a cosmetic problem: a bidder reads "2026-08-25 19:00" and has to work out
+    what it means now, or reads a cached page and bids on a lot that shut. §5
+    has the renderer emit a live cell and the page tick it; this is what feeds
+    it. Seconds, because the cell counts down from whenever it was served.
+    """
+    if not ends_at:
+        return DASH
+    from datetime import datetime, timezone
+    try:
+        when = datetime.fromisoformat(str(ends_at).replace("Z", "+00:00"))
+    except ValueError:
+        return DASH
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    left = int((when - datetime.now(timezone.utc)).total_seconds())
+    return "T|%d" % max(0, left)
+
+
 # ── Auctions ────────────────────────────────────────────────────────────────
 def auctions(user_id: str = "") -> dict:
     """ITEM auctions — live lots and your bids. Land is a different page.
@@ -1062,7 +1084,7 @@ def auctions(user_id: str = "") -> dict:
             position = "m|no bid"
         rows.append([title, seller, f"{top:,.0f}c",
                      (f"{yours:,.0f}c" if yours else DASH), str(len(bids)),
-                     str(lot.get("ends_at") or "")[:16] or DASH, position])
+                     _closes(lot.get("ends_at")), position])
 
     band = [("Item lots", str(len(rows)), "open for bidding"),
             ("Held in bids", f"{held:,.0f}c", "released when a lot closes"),

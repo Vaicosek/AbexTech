@@ -113,6 +113,19 @@ def _header_rule(head: str, text: str) -> tuple[str, bool]:
     return "", False
 
 
+def _countdown_face(secs: int) -> str:
+    """`Xh XXm` -> `Xm XXs` -> `Xs` -> `closed` (§5). Mirrored in the page
+    script, which takes this cell over a second later; the two formats have to
+    agree or the first tick visibly rewrites every clock on the page."""
+    if secs <= 0:
+        return "closed"
+    if secs >= 3600:
+        return "%dh %02dm" % (secs // 3600, (secs % 3600) // 60)
+    if secs >= 60:
+        return "%dm %02ds" % (secs // 60, secs % 60)
+    return "%ds" % secs
+
+
 def _cell(head: str, raw, numeric: bool, identity: bool) -> str:
     text = "" if raw is None else str(raw)
     tag, text = _split_tag(text)
@@ -132,10 +145,23 @@ def _cell(head: str, raw, numeric: bool, identity: bool) -> str:
         # syntax error on 3.11. This file has hit that twice now.
         cls = ' class="num"' if numeric else ""
         return "<td%s%s><a href=\"%s\">%s</a></td>" % (cls, st, _e(href), _e(label))
-    elif tag == "T":                     # countdown; rendered live by the page script
+    elif tag == "T":                     # countdown; ticked by the page script
+        # Server-rendered FIRST, like the price line: the script takes over a
+        # cell that already says the right thing. It used to ship an em dash and
+        # wait, so a reader without the script — or in the moment before it runs
+        # — saw no closing time at all on an auction board.
         secs = text.strip()
-        cls = ' class="num countdown" data-left="%s"' % _e(secs)
-        return f"<td{cls}>—</td>"
+        try:
+            left = int(secs)
+        except ValueError:
+            return '<td class="num">%s</td>' % _e("—")
+        style = ""
+        if left <= 60 and left > 0:
+            style = ' style="color:var(--loss);font-weight:700"'
+        elif left <= 300:
+            style = ' style="color:var(--loss)"'
+        return '<td class="num countdown"%s data-left="%d">%s</td>' % (
+            style, left, _e(_countdown_face(left)))
     elif tag:
         colour = _TAG.get(tag, "")
 
@@ -311,6 +337,23 @@ def _action(block: dict) -> str:
     return f'<div class="actionblock">{act}<div class="btnrow">{btns}</div>{note}</div>'
 
 
+def block_id(heading) -> str:
+    """A stable anchor for a block, from its heading.
+
+    The nav's sub-entries are anchor jumps "to that screen's own blocks, by
+    block heading" (§3), which needs the heading and the anchor to be derivable
+    from each other without a second list to keep in step. Lowercase, spaces to
+    hyphens, everything else dropped.
+    """
+    out = []
+    for ch in str(heading or "").lower():
+        if ch.isalnum():
+            out.append(ch)
+        elif out and out[-1] != "-":
+            out.append("-")
+    return "".join(out).strip("-")
+
+
 def _block(block: dict, mine=None) -> str:
     if "spark" in block:
         inner = _spark(block)
@@ -323,7 +366,13 @@ def _block(block: dict, mine=None) -> str:
     h2 = f'<h2>{_e(block["h2"])}</h2>' if block.get("h2") else ""
     # `ac:1` marks the lead block, which takes the accent top-rule (§4).
     cls = "block lead" if block.get("ac") else "block"
-    return f'<section class="{cls}">{h2}{inner}</section>'
+    # Every block is addressable. `scroll-margin-top` is set from the MEASURED
+    # header height by the page script (§2 asks for the measurement, not a
+    # guessed constant), so a jump lands below the sticky header rather than
+    # under it.
+    bid = block_id(block.get("h2"))
+    idattr = f' id="{_e(bid)}"' if bid else ""
+    return f'<section class="{cls}"{idattr}>{h2}{inner}</section>'
 
 
 def band_html(tiles, three: bool = False) -> str:

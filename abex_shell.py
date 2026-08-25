@@ -279,7 +279,12 @@ def render(active: str, body: str, *, title: str = "", who=None, stats=None,
     <span class="wordmark">Abex Tech</span>
     <span class="tag">One economy</span>
   </a>
-  {_nav_html(active, staff, available, prefix, counts, paths)}
+  <button class="navtoggle" type="button" aria-expanded="false" aria-controls="navtree">
+    <span class="chev">&#9662;</span> {_h.escape(page_title)}
+  </button>
+  <div id="navtree" class="navtree">
+    {_nav_html(active, staff, available, prefix, counts, paths)}
+  </div>
 </nav>
 <div class="col">
   {head_row}
