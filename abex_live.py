@@ -231,10 +231,10 @@ def nav_counts() -> dict:
         out["stocks"] = len(db.get_public_markets() or {})
     except Exception:
         pass
-    # Orders, Lands and Betting still carry the design's numbers. Rather than
+    # Orders and Lands still carry the design's numbers. Rather than
     # leave a figure nobody has checked standing next to live ones, they show
     # nothing until each screen is wired.
-    for key in ("orders", "lands", "betting", "auctions", "investor"):
+    for key in ("orders", "lands", "auctions", "investor"):
         out.setdefault(key, "")
     return out
 

@@ -58,40 +58,43 @@ TIERS = [
         "key": "recruit", "name": "Recruit", "min_points": 0,
         "savings_pct_month": 0.50, "payout_bonus_pct": 0,
         "trade_fee_pct": 1.00,    "market_commission_pct": 5.00,
-        "betting_rake_pct": 5.00, "land_listing_fee_pct": 5.00,
+        "land_listing_fee_pct": 5.00,
     },
     {
         "key": "worker", "name": "Worker", "min_points": 1_000,
         "savings_pct_month": 0.60, "payout_bonus_pct": 2,
         "trade_fee_pct": 0.90,    "market_commission_pct": 4.75,
-        "betting_rake_pct": 4.75, "land_listing_fee_pct": 4.75,
+        "land_listing_fee_pct": 4.75,
     },
     {
         "key": "veteran", "name": "Veteran", "min_points": 5_000,
         "savings_pct_month": 0.80, "payout_bonus_pct": 5,
         "trade_fee_pct": 0.75,    "market_commission_pct": 4.50,
-        "betting_rake_pct": 4.50, "land_listing_fee_pct": 4.50,
+        "land_listing_fee_pct": 4.50,
     },
     {
         "key": "expert", "name": "Expert", "min_points": 15_000,
         "savings_pct_month": 1.10, "payout_bonus_pct": 8,
         "trade_fee_pct": 0.60,    "market_commission_pct": 4.00,
-        "betting_rake_pct": 4.00, "land_listing_fee_pct": 4.00,
+        "land_listing_fee_pct": 4.00,
     },
     {
         "key": "elite", "name": "Elite", "min_points": 40_000,
         "savings_pct_month": 1.50, "payout_bonus_pct": 12,
         "trade_fee_pct": 0.50,    "market_commission_pct": 3.50,
-        "betting_rake_pct": 3.50, "land_listing_fee_pct": 3.50,
+        "land_listing_fee_pct": 3.50,
     },
 ]
 
 #: Which benefit each domain reads, and how to say it to a customer.
+#:
+#: There is no betting rake here because there is no betting. A fee schedule
+#: is a product catalogue: a "% rake on winnings" line advertises a book this
+#: platform does not run and will not run.
 DOMAIN_BENEFIT = {
     "banking":  ("savings_pct_month",     "{v}% a month on savings"),
     "stocks":   ("trade_fee_pct",         "{v}% trading fee"),
     "markets":  ("market_commission_pct", "{v}% commission on a sale"),
-    "betting":  ("betting_rake_pct",      "{v}% rake on winnings"),
     "lands":    ("land_listing_fee_pct",  "{v}% fee to list a parcel"),
     "work":     ("payout_bonus_pct",      "+{v}% on every order you fill"),
 }

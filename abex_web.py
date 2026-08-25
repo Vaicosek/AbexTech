@@ -183,7 +183,6 @@ SCREENS: list[tuple[str, str, str, object]] = [
     ("/banking/bonds",   "banking.bonds",    "Bonds",            _sample(screens.banking_bonds)),
     ("/orders",          "orders",           "Orders",           _orders),
     ("/lands",           "lands",            "Lands",            _lands),
-    ("/betting",         "betting",          "Predictions",      _sample(screens.betting)),
     ("/investor",        "investor",         "Investor",         None),
 ]
 

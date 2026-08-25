@@ -168,22 +168,6 @@ PARCELS = [
     ("Southfen 3",   "Millbrook Holdings", "Ironforge Guild", "250c / week", "Leased",   "Renews in 26 days"),
 ]
 
-# ── Betting ─────────────────────────────────────────────────────────────────
-#: title, closes, your stake, foot, [(outcome, pool, odds, share)]
-BETS = [
-    ("Will GreyHames file above 45,000c net?", "closes on filing",
-     "You staked 400c on No", "Pool 4,820c · odds last moved 6m ago",
-     [("Yes", "2,600", "1.85×", "54%"), ("No", "2,220", "2.17×", "46%")]),
-    ("Which market gets downgraded first?", "closes in 6d",
-     "No stake yet", "Pool 3,140c · odds last moved 41m ago",
-     [("GeneralStore", "1,940", "1.42×", "62%"), ("Freezone", "760", "3.60×", "24%"),
-      ("Invictus-emporium", "440", "6.20×", "14%")]),
-    ("Does Toolshop reach A grade this cycle?", "suspended",
-     "You staked 150c on Yes",
-     "Toolshop's report is landing. Stakes reopen once the figures are in.",
-     [("Yes", "1,120", "2.90×", "34%"), ("No", "2,180", "1.49×", "66%")]),
-]
-
 # ── Investor (GEX.PR preferred) ─────────────────────────────────────────────
 POOL = [
     ("GREY", "GreyHames",         "42,180c", "23.2%"),

@@ -21,10 +21,12 @@ entirely about this codebase:
     any part of this codebase and none is planned.
   * Real-money trading of coins is against the rules here.
   * There is no wagering. No game of chance, no betting on outcomes, no pools.
-    (`abex_screens.betting()` is an unwired mockup with no route and no ledger
-    write; `games` is a reserved ledger identity and `gambling_blocked` a wallet
-    flag that exists so credit can never fund a wager if one is ever added. A
-    guardrail for a thing the product does not do is not evidence it does it.)
+    The prediction-market surface that once existed here has been removed —
+    route, nav entry, API and UI — and the betting mockup with it. What is left
+    is guardrail only: `games` is a reserved ledger identity with no command
+    surface, and `gambling_blocked` is a wallet flag that exists so borrowed
+    coins could never fund a wager. A lock on a door the building does not have
+    is not evidence of the room.
 
 Those three are statements about what this software does, and they stay true
 regardless of anything that happens outside it.

@@ -40,7 +40,6 @@ DOMAINS: dict[str, str] = {
     "stocks":   "#81d2ff",
     "lands":    "#e3dc7d",
     "auctions": "#edaf23",
-    "betting":  "#9b6b93",
     "work":     "#c06117",
     "messages": "#d0c2b8",
     "history":  "#6a6a6a",
@@ -164,7 +163,6 @@ THEME_CSS = r"""
 [data-domain="stocks"]{--mark:#81d2ff}
 [data-domain="lands"]{--mark:#e3dc7d}
 [data-domain="auctions"]{--mark:#edaf23}
-[data-domain="betting"]{--mark:#9b6b93}
 [data-domain="work"]{--mark:#c06117}
 
 *{box-sizing:border-box;margin:0;padding:0}

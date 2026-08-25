@@ -296,25 +296,6 @@ def lands(rows_data=None, note: str = "") -> str:
             "</div>")
 
 
-# ── Betting ─────────────────────────────────────────────────────────────────
-def betting() -> str:
-    out = [_head("Betting", "Stakes pool against each other. Odds move until the market "
-                            "closes.")]
-    for title, closes, stake, foot, outcomes in D.BETS:
-        rows = "".join(
-            f'<tr><td>{_e(label)}</td><td class="num">{_e(pool)}c</td>'
-            f'<td class="num">{_e(odds)}</td><td class="num faint">{_e(share)}</td>'
-            f'<td class="num"><button class="btn ghost">Stake</button></td></tr>'
-            for label, pool, odds, share in outcomes)
-        out.append(
-            f'<div class="panel accented"><div class="h2">{_e(title)}</div>'
-            f'<div class="sub" style="margin-bottom:9px">{_e(stake)} &middot; '
-            f'{_e(closes)}</div>' +
-            _table([("Outcome", ""), ("Pool", "num"), ("Odds", "num"),
-                    ("Share", "num"), ("", "num")], rows, foot) + "</div>")
-    return "".join(out)
-
-
 # ── Investor ────────────────────────────────────────────────────────────────
 def investor(rows_data=None, tiles=None, pool_pct: float = 10.0) -> str:
     """The preferred pool. `rows_data` and `tiles` default to the design's."""

@@ -1,5 +1,5 @@
 """
-estates_web.py — Lands, Auctions and pari-mutuel Prediction Markets.
+estates_web.py — Lands and Auctions.
 
 Mounted like `bank_api`: `register_estates_routes(app)`, called in the `try/except`
 block in `Restocker_web.start_webserver` immediately before `web.AppRunner`.
@@ -15,12 +15,21 @@ Three surfaces, two databases, and the split is not arbitrary:
     "If you want a lot, a bid, a hammer price or a seller payout, the answer is core's
     exchange. Do not add a second one." This module reads core's, and only core's.
 
-  * **Parcels, leases and rent** — `parcels` / `rent_charges` in `estates.db`.
+  * **Parcels, leases and rent** — `land_leases` / `land_rent_charges` in
+    `restocker.db`, via `_parcel_register`. There is no separate parcel table and
+    there should not be one; see that function.
 
-  * **Prediction markets** — `markets` / `outcomes` / `stakes` in `estates.db`,
-    through the frozen `estates_db` interface. Pari-mutuel: players stake against each
-    other and the house takes a rake off the pool, never a side. There is no
-    house-banked game on this site and none may be added — the casino was scrapped.
+  * **Prediction markets — REMOVED, and not to be re-added.** This module used to
+    serve a pari-mutuel market: stake against other players, house takes a rake.
+    The owner's decision is that this platform does no betting of any kind, and
+    the reason is not squeamishness about the mechanic — it is that an operator
+    running a book, even a rake-only one, is in a different legal position from
+    somebody running a shop, and the platform is not going to be in that
+    position. The surface is gone: no route, no nav entry, no API, no UI. What
+    remains elsewhere in the tree is escrow plumbing that was shared with bids
+    (`land_escrow`, `reconcile_loop`'s stake replayers) and reads `estates_db`,
+    which is not in this repository — those are inert. Do not wire them to a new
+    market.
 
   * **Money** — `ledger_v2`, in-process, as the service `estates`. Not over HTTP: the
     land exchange runs inside core (LAND_ESCROW_PLAN §1.1), so `place_hold`,
@@ -35,8 +44,8 @@ required to state rather than imply. `place_hold` reserves against AVAILABLE and
 nothing: `balance` is untouched, `held` rises, `available` falls. The coins stay the
 bidder's until the lot settles and a `capture` moves them. Being outbid is a `release` —
 the same reservation retired, not a refund recomputed from a stored number. Every screen
-that shows a bid or a stake says "held, not spent", and the confirm screen says it again
-with the figures.
+that shows a bid says "held, not spent", and the confirm screen says it again with
+the figures.
 
 The bid path, in the order LAND_ESCROW_PLAN §2.2 requires:
 
@@ -100,11 +109,10 @@ log = logging.getLogger("estates_web")
 
 ESTATES_VERSION = "1.0"
 
-#: LEDGER_API_v2 §5: auction holds expire at lot close + 24h, wagers at resolve + 7d.
-#: The grace is what stops a settlement that is retrying at attempt 3 of 5 from losing
-#: its escrow underneath itself.
+#: LEDGER_API_v2 §5: auction holds expire at lot close + 24h. The grace is what
+#: stops a settlement that is retrying at attempt 3 of 5 from losing its escrow
+#: underneath itself.
 BID_HOLD_GRACE_S = 24 * 3600
-WAGER_HOLD_GRACE_S = 7 * 24 * 3600
 SERVICE = "estates"
 
 
@@ -123,11 +131,10 @@ def _core_db():
 
 
 def _edb():
-    """`estates_db`, or None. Parcels and prediction markets live there.
-
-    Absent means those two panels are not rendered and say why. It does NOT mean they
-    render empty: an empty parcel register and an unreachable one look identical on
-    screen and mean opposite things.
+    """`estates_db`, or None. Not in this repository — kept only so the escrow
+    modules that name it keep importing cleanly. Nothing on a served page reads
+    it any more: parcels come from core (`_parcel_register`) and the market that
+    used to need it has been removed.
     """
     try:
         import estates_db as _e
@@ -412,13 +419,6 @@ def _bid_purpose(body: dict) -> str:
     return f"bid:{_subject(body.get('lot_id'))}"
 
 
-def _stake_purpose(body: dict) -> str:
-    """Market AND outcome. The previewed figures — pool, odds, indicative payout — are
-    per outcome, so the outcome is part of what was confirmed, not a free parameter."""
-    return (f"stake:{_subject(body.get('market_id'))}"
-            f":{_subject(body.get('outcome_id'))}")
-
-
 async def h_lots(request):
     """The auction board. Live lots, their ladders and their hold states.
 
@@ -523,7 +523,7 @@ async def h_bid_preview(request):
     if amount > avail and not blocked:
         blocked = True
         note_extra = (f"You have {avail:,}c available. "
-                      f"{int(bal['held']):,}c is already held by other bids and stakes.")
+                      f"{int(bal['held']):,}c is already held by other bids.")
 
     ends = (listing or {}).get("ends_at")
     return shell.json_ok(
@@ -806,7 +806,7 @@ def _insufficient_msg(L, uid: str, what: str) -> str:
                 f"reload the page to see what is available. Nothing was taken.")
     return (f"You have {int(bal['available']):,}c available. "
             f"{int(bal['held']):,}c of your {int(bal['balance']):,}c is already held by "
-            f"other bids and stakes, and held coins cannot back a new {what}.")
+            f"other bids, and held coins cannot back a new {what}.")
 
 
 def _release_own(lid: int, row_id: int, hold_id: str) -> bool:
@@ -1064,240 +1064,6 @@ async def h_parcels(request):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Prediction markets — pari-mutuel, and labelled as such everywhere
-# ══════════════════════════════════════════════════════════════════════════
-
-def _market_payload(edb, m: dict, uid: str) -> dict:
-    pools = edb.market_pools(int(m["id"]))
-    total = int(pools["total_pool"])
-    mine = {}
-    for s in edb.user_stakes(int(m["id"]), uid):
-        if str(s["status"]) in ("held", "capturing", "captured"):
-            mine[int(s["outcome_id"])] = mine.get(int(s["outcome_id"]), 0) + int(s["amount"])
-    outcomes = []
-    for o in pools["outcomes"]:
-        whole, hundredths = int(o["odds_whole"]), int(o["odds_hundredths"])
-        outcomes.append({
-            "outcome_id": int(o["outcome_id"]), "label": o["label"],
-            "pool": int(o["pool"]), "stakes": int(o["stakes"]),
-            "share_pct": (int(o["pool"]) * 100 // total) if total else 0,
-            # (0,0) from indicative_odds means "no price yet" and must render as a dash,
-            # not as 0.00x — an empty side has no odds, it does not have odds of zero.
-            "odds": (None if (whole == 0 and hundredths == 0)
-                     else f"{whole}.{hundredths:02d}"),
-            "mine": int(mine.get(int(o["outcome_id"]), 0)),
-        })
-    return {
-        "id": int(m["id"]), "title": m["title"], "description": m.get("description"),
-        "category": m.get("category"), "status": m["status"],
-        "closes_at": m.get("closes_at"), "secs_left": _secs_left(m.get("closes_at")),
-        "min_stake": int(m.get("min_stake") or 1),
-        "max_stake": (int(m["max_stake"]) if m.get("max_stake") is not None else None),
-        "rake": edb.format_bps(int(m["rake_bps"])),
-        "total_pool": total,
-        "outcomes": outcomes,
-        "your_total": sum(mine.values()),
-        # Every consumer of these numbers must say so. LEDGER_API_v2 §10: a punter who
-        # believes he locked a price at stake time will correctly call it a bug.
-        "indicative": str(m["status"]) in ("open", "closing"),
-        "unknown_stakes": int(pools.get("unknown_stakes") or 0),
-        "unknown_amount": int(pools.get("unknown_amount") or 0),
-    }
-
-
-async def h_markets(request):
-    """Open pari-mutuel prediction markets with their live pools.
-
-    Pari-mutuel is why this survives the casino being scrapped: punters stake against
-    each other, the house takes a rake off the pool and never takes a side. There is no
-    house-banked game anywhere on this site and none may be added here.
-    """
-    sess, refusal = shell.require_session(request)
-    if refusal is not None:
-        return refusal
-    uid = str(sess["user_id"])
-    edb = _edb()
-    if edb is None:
-        return shell.json_err("estates_db_unavailable",
-                             "Prediction markets are not deployed on this server.", 503)
-    try:
-        markets = [m for m in edb.list_markets(limit=100)
-                   if str(m["status"]) in ("open", "closing", "closed", "resolved", "paid")]
-        payload = [_market_payload(edb, m, uid) for m in markets]
-    except Exception as e:
-        log.exception("[estates] market read failed: %s", e)
-        return shell.json_err("markets_unavailable", "Prediction markets are not answering.", 503)
-    payload.sort(key=lambda m: (m["status"] != "open", m["secs_left"] or 1 << 30))
-    # One key per OUTCOME, minted against the market and outcome it belongs to. The
-    # figures a punter reads — this side's pool, its odds, the indicative payout — are
-    # per outcome, so that is the subject the key has to bind (WEB_ATTACK finding 7).
-    for mk in payload:
-        for out in mk["outcomes"]:
-            out["key"] = shell.mint_form_key(
-                uid, f"stake:{mk['id']}:{out['outcome_id']}")
-    return shell.json_ok(markets=payload)
-
-
-async def h_stake_preview(request):
-    """Figures for a stake. The odds shown here are indicative and say so."""
-    sess, refusal = shell.require_post_session(request)
-    if refusal is not None:
-        return refusal
-    body = await shell.read_json(request)
-    shell.note_body_identity(request, body, sess)
-    uid = str(sess["user_id"])
-    edb = _edb()
-    if edb is None:
-        return shell.json_err("estates_db_unavailable", "Prediction markets are not deployed.", 503)
-    try:
-        mid = int(body.get("market_id"))
-        oid = int(body.get("outcome_id"))
-        amount = shell.coins(body.get("amount", 0))
-    except (TypeError, ValueError) as e:
-        return shell.json_err("bad_amount", str(e) or "Which market, which outcome, how much?", 400)
-
-    m = edb.get_market(mid)
-    if m is None:
-        return shell.json_err("no_market", "That market does not exist.", 404)
-    pools = edb.market_pools(mid)
-    out = next((o for o in pools["outcomes"] if int(o["outcome_id"]) == oid), None)
-    if out is None:
-        return shell.json_err("no_outcome", "That outcome is not on this market.", 404)
-
-    # Same rule as the bid preview: a wallet outage is a named 503 on a read-only
-    # screen, never a 500. Nothing is reserved here.
-    try:
-        bal = _ledger().get_balance(uid)
-    except Exception as e:
-        log.warning("[estates] stake preview wallet read failed for %s: %s", uid, e)
-        return shell.json_err("wallet_unavailable",
-                              "The wallet service is not answering, so we cannot show "
-                              "you what this stake would reserve. Nothing has been "
-                              "reserved. Try again in a moment.", 503)
-    avail = int(bal["available"])
-    total_after = int(pools["total_pool"]) + amount
-    side_after = int(out["pool"]) + amount
-    whole, hundredths = edb.indicative_odds(side_after, total_after, int(m["rake_bps"]))
-    blocked = (amount > avail or amount < int(m.get("min_stake") or 1)
-               or str(m["status"]) != "open"
-               or (m.get("max_stake") is not None and amount > int(m["max_stake"])))
-    payout = (side_after and (amount * (total_after - total_after * int(m["rake_bps"]) // 10000))
-              // side_after) or 0
-    return shell.json_ok(
-        head=f"{m['title']} · pari-mutuel",
-        rows=[
-            ["Your stake", f"{amount:,}c", "num"],
-            ["On", str(out["label"]), ""],
-            ["This side's pool now", f"{int(out['pool']):,}c", "num"],
-            ["Whole pool now", f"{int(pools['total_pool']):,}c", "num"],
-            ["House rake", edb.format_bps(int(m["rake_bps"])), ""],
-            ["Return per 100 staked, if this outcome wins",
-             (f"{whole}.{hundredths:02d}×" if (whole or hundredths) else "no price yet"),
-             "num"],
-        ],
-        total=["Indicative payout if it wins", f"{int(payout):,}c", "color:var(--green)"],
-        effect=[["Available now", f"{avail:,}c", ""],
-                ["Available after", f"{avail - amount:,}c", ""],
-                ["Balance after", f"{int(bal['balance']):,}c", "color:var(--green)"]],
-        blocked=blocked,
-        confirm_label=f"Stake {amount:,}c",
-        note=("<b>Your stake is HELD, not spent.</b> The coins stay in your wallet and "
-              "stay yours until the market closes; only then are they captured into the "
-              "pool. <br><br><b>These odds are indicative.</b> A pari-mutuel pool moves "
-              "with every stake placed after yours, so your final payout is set by the "
-              "pool at close, not by the number on this screen. You are betting against "
-              "the other punters — the house takes "
-              f"{edb.format_bps(int(m['rake_bps']))} of the pool and never takes a side."),
-    )
-
-
-async def _place_stake(sess, body, key) -> tuple:
-    """Stake = hold. `create_stake` -> `claim_stake` -> `place_hold` -> `stake_held`.
-
-    The ledger key is `estates:market:<id>:stake:<seq>`, minted by `create_stake` and
-    written to the row BEFORE the money call, so a retry re-reads the same string and
-    core replays its answer instead of reserving a second time.
-    """
-    uid = str(sess["user_id"])
-    edb = _edb()
-    if edb is None:
-        raise shell.NoEffect("estates_db_unavailable", "Prediction markets are not deployed.", 503)
-    try:
-        mid = int(body.get("market_id"))
-        oid = int(body.get("outcome_id"))
-    except (TypeError, ValueError):
-        raise shell.NoEffect("bad_market", "Which market and outcome?")
-    try:
-        amount = shell.coins(body.get("amount", 0))
-    except ValueError as e:
-        raise shell.NoEffect("bad_amount", str(e))
-
-    m = edb.get_market(mid)
-    if m is None:
-        raise shell.NoEffect("no_market", "That market does not exist.", 404)
-
-    try:
-        stake = edb.create_stake(mid, oid, uid, amount)
-    except Exception as e:
-        # BadAmount / BadState: nothing was written, and "nothing was taken" is true.
-        raise shell.NoEffect(type(e).__name__.lower(), str(e), 409)
-
-    row = edb.claim_stake(int(stake["id"]))
-    if row is None:
-        raise shell.NoEffect("claim_lost", "That stake is already being placed.", 409)
-
-    L = _ledger()
-    ttl = _hold_ttl(m.get("closes_at"), WAGER_HOLD_GRACE_S)
-    try:
-        hold = L.place_hold(SERVICE, uid, amount,
-                            reason=f"estates:market:{mid}:stake",
-                            expires_in=ttl, key=row["idem_key"])
-    except Exception as e:
-        code = getattr(e, "code", "") or type(e).__name__
-        definite = code in ("insufficient", "frozen", "bad_amount", "bad_expiry",
-                            "gambling_blocked", "escrow_shortfall")
-        edb.fail_stake(int(stake["id"]), str(e)[:200], outcome_known=definite)
-        if definite:
-            if code == "insufficient":
-                raise shell.NoEffect("insufficient", _insufficient_msg(L, uid, "stake"), 409)
-            raise shell.NoEffect(code, str(e), 409)
-        log.warning("[estates] stake %s hold outcome unknown: %s", stake["id"], e)
-        return 502, {"ok": False, "code": "hold_unconfirmed",
-                     "big": "Not confirmed", "big_sub": f"market #{mid}",
-                     "rows": [["Your stake", f"{amount:,}c", "num"]],
-                     "note": ("We could not confirm your stake with the wallet service. "
-                              "Your coins may already be held against it. Nothing "
-                              "clears this automatically today — do not stake again, or "
-                              "you may end up with two holds. Contact staff: this stake "
-                              "needs to be checked by hand.")}
-
-    edb.stake_held(int(stake["id"]), str(hold["hold_id"]), hold.get("expires_at"))
-    # Decoration, after the money moved — see `_after_rows`. WEB_ATTACK finding 5.
-    after, after_note = _after_rows(L, uid, "stake")
-    pools = edb.market_pools(mid)
-    out = next((o for o in pools["outcomes"] if int(o["outcome_id"]) == oid), {})
-    return 200, {
-        "ok": True,
-        "big": f"{amount:,}c",
-        "big_sub": f"held on {out.get('label') or 'your outcome'}",
-        "hold_id": str(hold["hold_id"]),
-        "rows": [
-            ["Stake", f"{amount:,}c", "num"],
-            ["State", "held — not spent", "amb"],
-            ["Hold expires", str(hold.get("expires_at") or "—"), ""],
-            ["This side's pool now", f"{int(out.get('pool') or 0):,}c", "num"],
-        ] + after,
-        "note": ("Your coins are reserved, not spent. They are captured into the pool "
-                 "when the market closes, and refunded in full if it is voided. The "
-                 "odds you saw are indicative — the pool moves until close." + after_note),
-    }
-
-
-async def h_stake(request):
-    return await shell.money_post(request, "estates:stake", _stake_purpose, _place_stake)
-
-
-# ══════════════════════════════════════════════════════════════════════════
 # The page
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -1316,12 +1082,6 @@ _SECTIONS_DEF = {
         "h1": "Lands",
         "sub": "The parcel register — ownership, tenants and rent. Nothing here debits a coin.",
         "subtabs": [("parcels", "Parcel register"), ("myparcels", "My parcels")],
-    },
-    "predictions": {
-        "label": "Predictions", "order": 42,
-        "h1": "Prediction markets",
-        "sub": "Pari-mutuel markets. A stake is an escrow hold until the market closes; the house takes a rake, never a side.",
-        "subtabs": [("markets", "Open markets"), ("mystakes", "My stakes")],
     },
 }
 
@@ -1345,7 +1105,7 @@ _JS = r"""
 /* Form keys are NOT held here any more. Each lot carries its own, each outcome
    carries its own, and they are read off the row being acted on — one key for the
    whole board is a key that commits any lot on it. */
-let E = {lots:null, parcels:null, markets:null, period:''};
+let E = {lots:null, parcels:null, period:''};
 let TAB = (window.__ESTTAB__ || 'auctions');
 
 function tab(t){
@@ -1453,61 +1213,6 @@ async function loadMyParcels(){
   return parcelTable(mine, j.period);
 }
 
-/* ---------- prediction markets ---------- */
-function outcomeRow(m, o){
-  const pct = o.share_pct;
-  return `<div class="outcome ${o.mine?'mine':''}">
-    <div><div class="o-name">${esc(o.label)}</div>
-      <div class="o-barwrap"><div class="bar" style="width:${pct}%"></div></div>
-      <div class="hold-s">${cn(o.pool)} · ${n(o.stakes)} stake${o.stakes===1?'':'s'} · ${pct}% of pool${
-        o.mine ? ' · <b style="color:var(--amber)">you hold ' + n(o.mine) + 'c here</b>' : ''}</div></div>
-    <div class="o-right">
-      <span class="o-odds num">${o.odds ? '×' + o.odds : '—'}</span>
-      <div class="hold-s">${m.indicative ? 'indicative' : 'at the closed pool'}</div>
-      ${m.status === 'open' ? `<button class="btn" style="margin-top:6px"
-        onclick="flowStake(${m.id}, ${o.outcome_id})">Stake</button>` : ''}
-    </div></div>`;
-}
-function marketCard(m){
-  return `<div class="tile s6">
-    <div class="eyebrow">Market #${m.id} · pari-mutuel · rake ${esc(m.rake)}</div>
-    <div class="lot-t">${esc(m.title)}</div>
-    ${m.description ? `<div class="hold-s">${esc(m.description)}</div>` : ''}
-    <div class="kgrid" style="margin-top:12px">
-      <div class="kpi"><div class="lab">Pool</div><div class="kfig num">${cn(m.total_pool)}</div></div>
-      <div class="kpi"><div class="lab">${m.status === 'open' ? 'Closes' : 'State'}</div>
-        <div class="kfig num">${m.status === 'open' ? esc(fmtLeft(m.secs_left)) : esc(m.status)}</div></div>
-      <div class="kpi"><div class="lab">Your stake, held</div>
-        <div class="kfig num amb">${m.your_total ? cn(m.your_total) : '—'}</div>
-        <div class="sub">${m.your_total ? 'reserved, not spent' : 'nothing staked'}</div></div>
-    </div>
-    <div class="section-h">Outcomes <span class="muted" style="letter-spacing:0;text-transform:none;font-weight:400">${
-      m.indicative ? 'odds indicative' : 'final'}</span></div>
-    ${m.outcomes.map(o => outcomeRow(m, o)).join('')}
-    ${m.unknown_stakes ? `<div class="holdnote"><b>${n(m.unknown_stakes)}</b> stake(s) worth
-      ${n(m.unknown_amount)}c were never confirmed by the wallet service and are not counted
-      in the pool above. Nothing settles them automatically — staff check them by hand.</div>` : ''}
-    <div class="foot">${m.indicative
-      ? 'Odds are <b>indicative</b> — a pari-mutuel pool moves with every stake placed after yours, so your payout is set by the pool at close. You bet against the other punters; the house takes ' + esc(m.rake) + ' of the pool and never takes a side.'
-      : 'Settled at the closed pool — final, not indicative.'}</div>
-  </div>`;
-}
-async function loadMarkets(){
-  const j = await get('/api/estates/markets');
-  if(!j.ok) return unavailable(j, 'Prediction markets');
-  E.markets = j.markets;
-  if(!j.markets.length) return '<div class="empty">No prediction markets.</div>';
-  return '<div class="bento">' + j.markets.map(marketCard).join('') + '</div>';
-}
-async function loadMyStakes(){
-  const j = await get('/api/estates/markets');
-  if(!j.ok) return unavailable(j, 'Prediction markets');
-  E.markets = j.markets;
-  const mine = (j.markets || []).filter(m => m.your_total);
-  if(!mine.length) return '<div class="empty">You have no stakes. Stakes you place appear here, held until the market closes.</div>';
-  return '<div class="bento">' + mine.map(marketCard).join('') + '</div>';
-}
-
 async function render(){
   const v = document.getElementById('estView');
   v.innerHTML = '<div class="empty">Loading…</div>';
@@ -1515,8 +1220,6 @@ async function render(){
               : TAB === 'mybids'    ? await loadMyBids()
               : TAB === 'parcels'   ? await loadParcels()
               : TAB === 'myparcels' ? await loadMyParcels()
-              : TAB === 'markets'   ? await loadMarkets()
-              : TAB === 'mystakes'  ? await loadMyStakes()
               : await loadLots();
 }
 
@@ -1543,30 +1246,6 @@ function flowBid(lotId, minNext){
       return r;
     }});
 }
-function stakeKey(marketId, outcomeId){
-  const m = (E.markets || []).find(x => x.id === marketId) || {};
-  const o = (m.outcomes || []).find(x => x.outcome_id === outcomeId) || {};
-  return o.key || '';
-}
-function flowStake(marketId, outcomeId){
-  openFlow({
-    title:'Stake on market #' + marketId, sub:'pari-mutuel · odds indicative',
-    doneTitle:'Stake held', amountStep:true, amountLabel:'Your stake', amountCap:0,
-    chips:[['500c',500],['2,000c',2000],['5,000c',5000]],
-    check:v => v <= 0 ? 'Enter an amount above zero.' : '',
-    amountRows:() => `<div class="holdnote">A stake is a <b>hold</b>. Your coins stay in
-      your wallet until the market closes; only then are they captured into the pool.</div>`,
-    preview: async v => await post('/api/estates/stake/preview',
-      {market_id:marketId, outcome_id:outcomeId, amount:v}),
-    commit: async v => {
-      const r = await post('/api/estates/stake',
-        {market_id:marketId, outcome_id:outcomeId, amount:v, idempotency_key:stakeKey(marketId, outcomeId)});
-      if(r.replayed) r.note = 'This was a repeat of a stake already placed — one hold '
-        + 'exists, not two. ' + (r.note || '');
-      return r;
-    }});
-}
-
 loadMe().then(() => { renderStrip(); render(); });
 """
 
@@ -1615,10 +1294,6 @@ async def h_lands(request):
     return await _section_page(request, "lands")
 
 
-async def h_predictions(request):
-    return await _section_page(request, "predictions")
-
-
 async def h_page(request):
     """`/estates` is the old combined route — kept as a redirect to Auctions so any
     stale link or bookmark still lands somewhere real."""
@@ -1633,17 +1308,12 @@ def register_estates_routes(app) -> None:
     shell.register_shell_routes(app)
     _register_with_hub("auctions", "Auctions", "/auctions", order=40)
     _register_with_hub("lands", "Lands", "/lands", order=41)
-    _register_with_hub("predictions", "Predictions", "/predictions", order=42)
     app.router.add_get("/auctions", h_auctions)
     app.router.add_get("/lands", h_lands)
-    app.router.add_get("/predictions", h_predictions)
     app.router.add_get("/estates", h_page)
     app.router.add_get("/api/estates/lots", h_lots)
     app.router.add_get("/api/estates/parcels", h_parcels)
-    app.router.add_get("/api/estates/markets", h_markets)
     app.router.add_post("/api/estates/bid/preview", h_bid_preview)
     app.router.add_post("/api/estates/bid", h_bid)
-    app.router.add_post("/api/estates/stake/preview", h_stake_preview)
-    app.router.add_post("/api/estates/stake", h_stake)
-    log.info("[estates] v%s registered (auctions · parcels · pari-mutuel markets)",
+    log.info("[estates] v%s registered (auctions · parcels)",
              ESTATES_VERSION)

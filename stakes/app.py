@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """
-Abex Stakes — land, auctions and predictions.
+Abex Stakes — land and auctions.
 
-You stake a claim on land, stake a bid at auction, stake a prediction.
+You stake a claim on land and stake a bid at auction. That is the whole of it:
+there are no predictions here and none are coming. The platform does no betting
+of any kind, because running a book — even a rake-only one — puts an operator
+somewhere a shopkeeper is not, and that is not a position this platform will be
+in. `games` remains a reserved ledger identity with no command surface and must
+stay that way.
 
 Named for what it is becoming, not only for what it does today. Today: it relays
 open orders into partner servers and runs auctions. Coming: land moves here out of
 core (unblocked now that ledger_v2's HTTP routes are mounted and LEDGER_TOKEN_ESTATES
-can be scoped to this bot), and predictions are not built at all yet — `games` is a
-reserved ledger identity with no command surface. Where the name and the code
-disagree, the code is what runs.
+can be scoped to this bot). Where the name and the code disagree, the code is what
+runs.
 
 A tiny bot you OWN and "trust" into partner Discord servers. What it does today:
 

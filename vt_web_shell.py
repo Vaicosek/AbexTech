@@ -1043,16 +1043,17 @@ class NoEffect(Exception):
 # Page rendering
 # ══════════════════════════════════════════════════════════════════════════
 
-#: The nav. Betting is NOT here and must not be added: the owner scrapped the casino.
-#: Prediction markets live under Estates because they are pari-mutuel — players stake
-#: against each other and the house takes a rake, never a side.
+#: The nav. NO BETTING OF ANY KIND, and this is not a styling preference — running
+#: a book, even a rake-only pari-mutuel one where players stake against each other,
+#: puts an operator somewhere a shopkeeper is not. The casino was scrapped for that
+#: reason and the prediction markets were removed for the same one. Do not add a
+#: wagering entry here, and do not re-mount the surface `estates_web` used to serve.
 NAV = (
     ("hub", "Hub", "/hub"),
     ("markets", "Markets", "/exchange"),
     ("banking", "Banking", "/banking"),
     ("auctions", "Auctions", "/auctions"),
     ("lands", "Lands", "/lands"),
-    ("predictions", "Predictions", "/predictions"),
     ("messages", "Messages", "/messages"),
     ("history", "History", "/history"),
 )
@@ -1891,8 +1892,8 @@ _NAV_PATHS = {
 
 #: Exchange, Stocks and Work are served from `/abex/*`. That is not a placeholder
 #: - `abex_web` builds those three from the live database (`_exchange`, `_orders`
-#: and the stocks handler read real rows; only the banking sub-screens and the
-#: retired betting screen use sample data). They live under the prefix because the
+#: and the stocks handler read real rows; only the banking sub-screens use sample
+#: data). They live under the prefix because the
 #: designed set was mounted BESIDE the old pages rather than over them, so
 #: promoting one is a screen's worth of work rather than a cutover.
 #:
