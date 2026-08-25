@@ -106,3 +106,47 @@ if __name__ == "__main__":
         if name.startswith("test_"):
             fn()
     print("filing status: ok")
+
+
+# ── the owner's queue ──────────────────────────────────────────────────────
+
+def _with_owned(status, owned):
+    real_status, real_owned = L.filing_status, L.owned_markets
+    L.filing_status = lambda: status
+    L.owned_markets = lambda uid: [{"market_id": m, "name": m} for m in owned]
+    try:
+        return LS._your_filings_due("someone")
+    finally:
+        L.filing_status, L.owned_markets = real_status, real_owned
+
+
+def test_a_late_market_you_own_reaches_your_queue():
+    rows = _with_owned([LATE], ["b"])
+    assert len(rows) == 1
+    assert "File the report for Beta" in rows[0][0]
+    assert "1 month behind" in rows[0][0]
+    assert "34 days since" in rows[0][0]
+
+
+def test_somebody_elses_late_market_does_not():
+    """Being behind is public on Markets. Being TOLD about it is the owner's."""
+    assert _with_owned([LATE], ["other"]) == []
+
+
+def test_a_market_you_own_that_is_current_does_not():
+    assert _with_owned([CURRENT], ["a"]) == []
+
+
+def test_a_signed_out_reader_has_no_queue():
+    assert LS._your_filings_due("") == []
+
+
+def test_two_months_behind_escalates_in_the_queue_too():
+    rows = _with_owned([VERY_LATE], ["c"])
+    assert rows[0][1].startswith("l|"), rows[0]
+    assert _with_owned([LATE], ["b"])[0][1].startswith("w|")
+
+
+def test_the_real_owner_of_amazonia_is_told():
+    rows = LS._your_filings_due("1080404147368628254")
+    assert rows and "Amazonia" in rows[0][0], rows

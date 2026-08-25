@@ -148,6 +148,42 @@ def _empty(key: str, why: str) -> dict:
 
 
 # ── Hub ─────────────────────────────────────────────────────────────────────
+def _your_filings_due(user_id: str) -> list:
+    """Rows for the Hub queue: markets THIS reader owns that have not filed.
+
+    A market being behind is on the Markets screen for everyone. This puts it in
+    front of the one person who can fix it, which is the difference between a
+    register and a queue. Amazonia went two filings behind before a player
+    mentioned it in Discord — its owner was never told by the site.
+    """
+    if abex_live is None or not user_id:
+        return []
+    try:
+        mine = {m["market_id"] for m in abex_live.owned_markets(str(user_id))}
+    except Exception:
+        return []
+    if not mine:
+        return []
+    try:
+        status = abex_live.filing_status() or []
+    except Exception:
+        return []
+    out = []
+    for r in status:
+        if r["market_id"] not in mine or r["months_behind"] < 1:
+            continue
+        behind = r["months_behind"]
+        days = r["days_since"]
+        since = f", {days:,} days since the last one" if days is not None else ""
+        out.append([
+            f"File the report for {r['name']} — "
+            f"{behind} month{'' if behind == 1 else 's'} behind{since}",
+            ("l|" if behind > 1 else "w|") + f"last filed {r['last_month_name']}",
+            "k|Open",
+        ])
+    return out
+
+
 def hub(user_id: str) -> dict:
     if abex_live is None:
         return _empty("hub", "The exchange is not reachable from this process.")
@@ -157,17 +193,27 @@ def hub(user_id: str) -> dict:
 
     band = [(t[0], t[1], t[2]) for t in data["tiles"]]
 
-    # "Today" — the waiting-on-you queue. Live orders are the only thing this
-    # schema can say is waiting; the design also lists a due report and unread
-    # messages, and neither has a source here, so neither is faked.
-    work_rows = []
+    # "Today" — the waiting-on-you queue. The design also lists unread messages,
+    # which has no source here and is not faked. A due REPORT does have one now:
+    # not a date, which nothing stores, but the fact that a market you own has
+    # not filed for the current month. That belongs at the top of this queue
+    # rather than only on Markets — the owner is the one who can act on it, and
+    # he has no reason to be reading the market register to find out.
+    due = _your_filings_due(user_id)
+    work = []
     for item, qty, pay, market, window, _tone in data.get("work", []):
         who = ("m|" + window) if window else "g|Open to all"
-        work_rows.append([f"{item} for {market}, {qty} at {pay}", who, "k|Claim"])
-    today = {"h2": "Today", "ac": 1, "c": _cols("hub", 0),
-             "r": work_rows,
-             "n": (f"{len(work_rows)} open order{'' if len(work_rows) == 1 else 's'}, "
-                   "soonest first." if work_rows else "Nothing is waiting on you.")}
+        work.append([f"{item} for {market}, {qty} at {pay}", who, "k|Claim"])
+    # Reports first: an order can be claimed by anybody, a filing only by him.
+    rows = due + work
+
+    parts = []
+    if due:
+        parts.append(f"{len(due)} report{'' if len(due) == 1 else 's'} you owe")
+    if work:
+        parts.append(f"{len(work)} open order{'' if len(work) == 1 else 's'}")
+    note = (" and ".join(parts) + ".") if parts else "Nothing is waiting on you."
+    today = {"h2": "Today", "ac": 1, "c": _cols("hub", 0), "r": rows, "n": note}
 
     by_grade = {"h2": "Markets by grade", "c": _cols("hub", 1),
                 "r": [[m[1], "G|" + m[3], m[4], m[5], DASH, m[7]]
