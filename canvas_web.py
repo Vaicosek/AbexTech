@@ -64,6 +64,14 @@ _PATHS = {
     "history": "/history",
 }
 
+#: The same stylesheet under a public name. `hub_web` imports `CANVAS_CSS` and
+#: falls back to "" when the import fails — and it has been failing silently
+#: since the day it was written, because the only name here was the private
+#: `_CSS`. Every designed screen served through the hub (Hub, Markets, Stocks,
+#: Work, Exchange, My market, the report) has been rendering WITHOUT the block
+#: vocabulary: balance rows, buttons and the accent lead-rule unstyled. A
+#: `try/except ImportError` that returns a working-looking default is exactly
+#: how a bug like this survives — nothing errors, the page just looks wrong.
 _CSS = """/* The block vocabulary the canvas uses and this theme did not have yet.
    Everything here is built from existing tokens - no new hue, per spec §1. */
 
@@ -131,6 +139,9 @@ svg.spark{display:block;width:100%;height:64px}
 }
 """
 
+CANVAS_CSS = _CSS
+
+
 
 def _page(key: str, public: bool = False) -> str:
     """One canvas screen. `public` strips the reader-facing parts.
@@ -148,6 +159,7 @@ def _page(key: str, public: bool = False) -> str:
         body,
         title=(screen or {}).get("title", "Canvas"),
         extra_css=_CSS,
+        tail=f"<script>{CANVAS_JS}</script>",
         dock=abex_render.dock_html(screen or {}),
         prefix=PREFIX,
         paths=_PATHS,
@@ -264,6 +276,98 @@ def register_live_routes(app) -> None:
         print(f"     Live canvas screens: {', '.join(mounted)}")
 
 
+#: The chart script. No library, no build step, and it redraws the polyline the
+#: server already drew rather than replacing it — so the chart is right before
+#: this runs and stays right if it never does.
+#:
+#: The geometry is deliberately the same arithmetic as `abex_render._spark`.
+#: Two implementations of one projection drift, and here a drift means the line
+#: and the caption under it stop describing the same series.
+CANVAS_JS = r"""
+(function(){
+  var EVERY = 60000;                 /* the index is written every five minutes */
+  function fmt(n, unit){
+    return n.toLocaleString(undefined, {minimumFractionDigits:2,
+                                        maximumFractionDigits:2}) + (unit||"");
+  }
+  function draw(svg, d){
+    var pts = (d && d.points) || [];
+    var line = svg.querySelector("polyline");
+    if(pts.length < 2 || !line) return;
+    var lo = Math.min.apply(null, pts), hi = Math.max.apply(null, pts);
+    var span = (hi - lo) || 1, n = pts.length, out = [];
+    for(var i = 0; i < n; i++){
+      out.push((i * 100 / (n - 1)).toFixed(2) + "," +
+               (28 - ((pts[i] - lo) / span) * 26 - 1).toFixed(2));
+    }
+    var unit = svg.getAttribute("data-unit") || "";
+    var first = pts[0], last = pts[n-1], ch = last - first;
+    var tone = ch > 0 ? "var(--gain)" : (ch < 0 ? "var(--loss)" : "var(--dim)");
+    var arrow = ch > 0 ? "▲" : (ch < 0 ? "▼" : "=");
+    line.setAttribute("points", out.join(" "));
+    line.setAttribute("stroke", tone);
+    var wrap = svg.parentNode, meta = wrap.querySelector(".skmeta");
+    if(meta){
+      var pct = first ? (ch / first * 100) : 0;
+      var cap = arrow + " " + (ch >= 0 ? "+" : "") + fmt(ch, unit) + " (" +
+                (pct >= 0 ? "+" : "") + pct.toFixed(2) + "%) over " +
+                (d.window || (n + " readings"));
+      meta.innerHTML = '<span style="color:' + tone + '"></span>' +
+                       '<span class="skhi"></span><span class="sklo"></span>';
+      meta.children[0].textContent = cap;
+      meta.children[1].textContent = fmt(hi, unit);
+      meta.children[2].textContent = fmt(lo, unit);
+      svg.setAttribute("aria-label", cap);
+    }
+  }
+  function tick(){
+    /* Nothing is polled while the tab is hidden. A chart nobody is looking at
+       does not need to be current, and a background tab quietly hitting the
+       server every minute for hours is somebody else's outage. */
+    if(document.hidden) return;
+    var all = document.querySelectorAll("svg.spark[data-src]");
+    for(var i = 0; i < all.length; i++){
+      (function(svg){
+        fetch(svg.getAttribute("data-src"), {credentials:"same-origin"})
+          .then(function(r){ return r.ok ? r.json() : null; })
+          .then(function(j){ if(j && j.ok) draw(svg, j); })
+          .catch(function(){ /* leave the served line standing */ });
+      })(all[i]);
+    }
+  }
+  if(document.querySelector("svg.spark[data-src]")){
+    setInterval(tick, EVERY);
+    document.addEventListener("visibilitychange", function(){
+      if(!document.hidden) tick();
+    });
+  }
+})();
+"""
+
+
+async def _series(request):
+    """Points for one chart, as JSON. Public: an index and a share price are
+
+    public facts about the economy — the same things the Exchange page shows a
+    signed-out reader — so this asks for no session. It returns readings and
+    nothing about who is asking.
+    """
+    try:
+        import abex_live
+    except Exception:                                # pragma: no cover
+        return web.json_response({"ok": False, "error": "not available"}, status=503)
+    try:
+        days = max(1, min(365, int(request.query.get("days", 30))))
+    except (TypeError, ValueError):
+        days = 30
+    mid = request.match_info.get("mid") or ""
+    series = (abex_live.price_series(mid, days) if mid
+              else abex_live.index_series(days))
+    if series is None:
+        return web.json_response({"ok": False, "error": "no series"}, status=503)
+    return web.json_response({"ok": True, **series})
+
+
 async def _orders_moved(request):
     """`/hub/orders` used to be its own page. Orders is a section of Work now —
     same table, two sides of it — so the old path lands on the page that holds
@@ -275,6 +379,8 @@ def register_canvas_routes(app) -> None:
     if web is None:                                 # pragma: no cover
         return
     app.router.add_get("/hub/orders", _orders_moved)
+    app.router.add_get("/api/series/index", _series)
+    app.router.add_get("/api/series/market/{mid}", _series)
     for key in SCREENS:
         path = PREFIX if key == "hub" else f"{PREFIX}/{key}"
         app.router.add_get(path, _handler(key))

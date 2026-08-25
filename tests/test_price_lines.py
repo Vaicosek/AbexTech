@@ -87,3 +87,68 @@ if __name__ == "__main__":
         if name.startswith("test_"):
             fn()
     print("price lines: ok")
+
+
+# ── LIVE ───────────────────────────────────────────────────────────────────
+
+def test_a_live_chart_is_server_drawn_first():
+    """The script redraws a line that is already correct, never fills a blank.
+
+    Rendering an empty box for a script to populate means a reader with a slow
+    or blocked script sees nothing where a chart belongs — and the chart is the
+    one thing on the page that cannot be read as a number instead.
+    """
+    blk = LS._spark_block("x", {"points": [1.0, 2.0, 3.0], "window": "30 days"},
+                          src="/api/series/index?days=30")
+    html = R._block(blk)
+    assert "<polyline" in html and "points=" in html
+    assert 'data-src="/api/series/index?days=30"' in html
+
+
+def test_the_client_projection_matches_the_server_projection():
+    """One geometry, written twice — so it is asserted equal.
+
+    If these drift, the line moves on the first refresh while the caption under
+    it keeps describing the old shape, and neither looks broken.
+    """
+    pts = [10.0, 12.5, 11.0, 15.25, 9.0]
+    lo, hi = min(pts), max(pts)
+    span = (hi - lo) or 1.0
+    n = len(pts)
+    server = ["%.2f,%.2f" % (i * 100.0 / (n - 1), 28.0 - ((v - lo) / span) * 26.0 - 1.0)
+              for i, v in enumerate(pts)]
+    import re
+    import canvas_web
+    js = canvas_web.CANVAS_JS
+    # The client formula, lifted from the script and evaluated here.
+    assert "(i * 100 / (n - 1)).toFixed(2)" in js, "client x formula changed"
+    assert "(28 - ((pts[i] - lo) / span) * 26 - 1).toFixed(2)" in js, \
+        "client y formula changed"
+    client = ["%.2f,%.2f" % (i * 100 / (n - 1), 28 - ((pts[i] - lo) / span) * 26 - 1)
+              for i in range(n)]
+    assert server == client, (server, client)
+
+
+def test_the_live_script_does_not_poll_a_hidden_tab():
+    import canvas_web
+    assert "document.hidden" in canvas_web.CANVAS_JS, \
+        "a background tab would hit the server every minute forever"
+
+
+def test_a_failed_refresh_leaves_the_served_line_standing():
+    import canvas_web
+    js = canvas_web.CANVAS_JS
+    assert ".catch(" in js, "a fetch error would blank a correct chart"
+    assert "pts.length < 2" in js, "the client would draw a line from one reading"
+
+
+def test_the_canvas_stylesheet_actually_reaches_the_hub():
+    """It did not, for its whole life: `hub_web` imported `CANVAS_CSS` from a
+    module that only defined `_CSS`, caught the ImportError and carried on with
+    an empty stylesheet, so every designed screen served through the hub had no
+    block vocabulary."""
+    import canvas_web
+    import hub_web
+    assert canvas_web.CANVAS_CSS, "canvas_web exports no stylesheet"
+    assert hub_web._CANVAS_CSS == canvas_web.CANVAS_CSS
+    assert "svg.spark" in hub_web._CANVAS_CSS

@@ -279,7 +279,7 @@ def stocks(user_id: str) -> dict:
         except (ValueError, IndexError):
             biggest = None
     if biggest is not None:
-        series = None
+        series, match = None, []
         try:
             registry = abex_live._db().get_markets() or {}
             match = [k for k, m in registry.items()
@@ -289,6 +289,8 @@ def stocks(user_id: str) -> dict:
         except Exception as exc:
             log.warning("[livescreens] price series unreadable: %s", exc)
         blk = _spark_block(f"{biggest[1]} · share price", series,
+                           src=(f"/api/series/market/{match[0]}?days=60"
+                                if match else ""),
                            note="Your largest position. Every point is a price "
                                 "the exchange actually recorded — the series is "
                                 "sampled, never averaged, so no drawn point is "
@@ -408,7 +410,7 @@ def exchange(user_id: str = "") -> dict:
     held_rows = [i for i, r in enumerate(out) if r[7] != DASH]
     index = _spark_block(
         "The index", abex_live.index_series(30),
-        unit="",
+        unit="", src="/api/series/index?days=30",
         note=("The index is written every five minutes whether or not anything "
               "moved, so a flat stretch is a real flat stretch — nothing traded "
               "— and not a gap in the record."))
@@ -650,7 +652,8 @@ def filing(user_id: str = "") -> dict:
     return screen_d
 
 
-def _spark_block(heading: str, series, unit: str = "c", note: str = "") -> dict | None:
+def _spark_block(heading: str, series, unit: str = "c", note: str = "",
+                 src: str = "") -> dict | None:
     """A price-line block, or None when there is nothing truthful to draw.
 
     None on an unreadable log, because a missing chart is quieter than a chart
@@ -663,7 +666,7 @@ def _spark_block(heading: str, series, unit: str = "c", note: str = "") -> dict 
     return {"h2": heading,
             "spark": {"points": series.get("points") or [], "unit": unit,
                       "window": series.get("window") or "",
-                      "note": note}}
+                      "src": src, "note": note}}
 
 
 # ── Orders — the owner's half of Work, on the same page ─────────────────────

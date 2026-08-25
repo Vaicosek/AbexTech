@@ -922,7 +922,7 @@ def page(title: str, active: str, user: Optional[dict], snap: Optional[dict],
         # accent lead-rule come out unstyled.
         extra_css=_LEGACY_CSS + THEME_CSS + _CANVAS_CSS,
         header=strip,
-        tail=f"<script>{_STRIP_JS}</script>",
+        tail=f"<script>{_STRIP_JS}</script><script>{_CANVAS_JS}</script>",
         available=mounted,
         paths=paths,
         counts=counts,
@@ -1846,6 +1846,11 @@ try:
     from canvas_web import CANVAS_CSS as _CANVAS_CSS
 except Exception:                                   # pragma: no cover
     _CANVAS_CSS = ""
+
+try:
+    from canvas_web import CANVAS_JS as _CANVAS_JS
+except Exception:                                   # pragma: no cover
+    _CANVAS_JS = ""
 
 
 def _canvas_body(key: str, user_id: str, public: bool = False):

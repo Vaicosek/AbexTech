@@ -258,8 +258,14 @@ def _spark(block: dict) -> str:
                f"over {_e(str(d.get('window') or f'{n} readings'))}")
     scale = (f'<span class="skhi">{hi:,.2f}{unit}</span>'
              f'<span class="sklo">{lo:,.2f}{unit}</span>')
+    # `src` makes the chart LIVE: the page re-fetches that endpoint and redraws
+    # in place. Server-rendered first, always — the line is correct before any
+    # script runs, so a reader with a blocked or slow script sees a real chart
+    # rather than an empty box that would have been filled in.
+    src = f' data-src="{_e(str(d["src"]))}"' if d.get("src") else ""
+    unit_attr = f' data-unit="{_e(unit)}"' if unit else ""
     svg = (f'<svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none" '
-           f'role="img" aria-label="{_e(caption)}">'
+           f'role="img" aria-label="{_e(caption)}"{src}{unit_attr}>'
            f'<polyline points="{coords}" fill="none" stroke="{tone}" '
            f'stroke-width="1.2" vector-effect="non-scaling-stroke" '
            f'stroke-linejoin="round" stroke-linecap="round"/></svg>')
