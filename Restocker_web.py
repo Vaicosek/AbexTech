@@ -5694,6 +5694,20 @@ async def start_webserver(port: int = 8080):
     app.router.add_get("/exchange",      _handle_exchange_page)
     app.router.add_get("/health",        _handle_health)
 
+    # The static route this app has always referenced and never had. `abex_shell`'s
+    # brand block used to carry <img src="/static/atech-logo-circle.png"> with an
+    # onerror that hid the element -- so the 404 was invisible: no route, no folder,
+    # no file, and a sidebar with a silent gap. The folder exists now and is served
+    # here, and the shell shows a text fallback beside the image rather than hiding
+    # the failure, so a missing asset is visible instead of silent.
+    _static_dir = Path(__file__).resolve().parent / "static"
+    if _static_dir.is_dir():
+        app.router.add_static("/static/", path=str(_static_dir), name="static",
+                              show_index=False, follow_symlinks=False)
+        print(f"     /static served from {_static_dir}")
+    else:
+        print("\u26a0\ufe0f  no static/ directory -- the brand mark falls back to text.")
+
     try:
         import bank_api
         bank_api.register_bank_routes(app)

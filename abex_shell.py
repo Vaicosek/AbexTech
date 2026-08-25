@@ -17,17 +17,22 @@ import html as _h
 
 from abex_theme import THEME_CSS, FONTS_LINK, GRADES
 
-#: The brand mark is DRAWN, not fetched. It used to be
-#: `<img src="/static/atech-logo-circle.png">` — and no `/static` route was ever
-#: registered, no `static/` directory ever existed, and no such file was ever
-#: committed. The tag carried `onerror="this.style.display='none'"`, so the 404
-#: hid itself: no broken-image icon, no console complaint a player would see,
-#: just a sidebar with a silent gap where a logo belonged. A fallback that
-#: erases the evidence of its own failure is worse than no fallback.
+#: The brand badge. There is history here worth keeping in view: this used to be
+#: `<img src="/static/atech-logo-circle.png">` carrying `onerror="this.style
+#: .display='none'"`, and NO /static route was registered, no `static/` directory
+#: existed, and no such file was ever committed. The 404 hid itself -- no broken
+#: image, no console complaint, just a sidebar with a silent gap where a logo
+#: belonged. It was then replaced with drawn text, which at least always rendered.
 #:
-#: So it is markup now, in the same ruled-box style as the per-market ticker
-#: marks (AMAZ, GREY). Nothing to serve, nothing to 404.
-MARK = "ABEX"
+#: The asset is real now (`static/atech-logo.png`, served by `Restocker_web`), so
+#: the image comes back -- but WITHOUT the self-erasing onerror. The wordmark sits
+#: beside it and carries the identity on its own, so if the image ever 404s again
+#: the brand still reads, and the browser shows the broken image rather than
+#: swallowing the evidence. A fallback that hides its own failure is worse than no
+#: fallback; that is the whole lesson of the first version.
+LOGO_SRC = "/static/atech-logo.png"
+FAVICON_SRC = "/static/favicon.png"
+MARK_ALT = "ATech"
 
 #: The site-wide notice. It states what this platform DOES — never converts
 #: coins to money — rather than making a claim about what they are worth, which
@@ -44,6 +49,9 @@ _FOOTER_HTML = ('<footer class="sitefoot"><p>' + _h.escape(_FOOTER_LINE)
                 + ' <a href="/terms">Terms</a>.</p></footer>')
 
 _FOOTER_CSS = """
+.brand .mark{display:block;border:0;padding:0;width:46px;height:46px;
+  border-radius:50%;object-fit:cover;background:transparent}
+@media (max-width:900px){.brand .mark{width:34px;height:34px}}
 .sitefoot{border-top:1px solid var(--line);margin:4rem 0 0;padding:1.1rem 0 2rem;
   color:var(--inert);font-size:.82rem;line-height:1.5;max-width:78ch}
 .sitefoot p{margin:0}
@@ -261,6 +269,7 @@ def render(active: str, body: str, *, title: str = "", who=None, stats=None,
 <html lang="en" data-domain="{dom}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{_h.escape(page_title)} &middot; Abex Tech</title>
+<link rel="icon" type="image/png" href="{FAVICON_SRC}">
 {FONTS_LINK}
 <style>{THEME_CSS}</style>
 <style>{_FOOTER_CSS}</style>
@@ -268,7 +277,7 @@ def render(active: str, body: str, *, title: str = "", who=None, stats=None,
 </head><body data-domain="{dom}">
 <nav class="side" aria-label="Sections">
   <a class="brand" href="{prefix or '/hub'}">
-    <span class="mark" aria-hidden="true">{MARK}</span>
+    <img class="mark" src="{LOGO_SRC}" alt="{MARK_ALT}" width="46" height="46">
     <span class="wordmark">Abex Tech</span>
     <span class="tag">One economy</span>
   </a>
