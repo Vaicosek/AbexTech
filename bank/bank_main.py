@@ -2120,6 +2120,21 @@ async def on_ready():
         log.warning("SECURITY: RESTOCKER_API_URL is not HTTPS — the bank token would "
                     "travel in plaintext. Use an https:// URL in production.")
 
+    # What the HTTP client is still FOR, now that both bots share one database.
+    # Reads (balance, portfolio, stocks) go straight to restocker.db through
+    # `core_read` -- see `_core_read`. Trades do NOT: h_stock_buy/h_stock_sell run
+    # on core's event loop, which is a different OS process, so HTTP is the only
+    # way to reach it. A failed probe therefore means "no stock trading", not
+    # "the bank is down", and the log has to say which -- the old wording sent me
+    # looking for a dead bank while every read was working fine.
+    try:
+        import core_read as _cr
+        _inproc = bool(_cr.available())
+    except Exception:
+        _inproc = False
+    log.info("core reads: %s", "in-process (same restocker.db)" if _inproc
+             else "HTTP only -- core_read unavailable")
+
     if client_rs is not None:
         try:
             h = await client_rs.health()
@@ -2133,7 +2148,12 @@ async def on_ready():
             await client_rs.ping()
             log.info("Connected to Restocker bank API v%s at %s", server_ver, RESTOCKER_API_URL)
         except RestockerError as e:
-            log.warning("Could not reach Restocker bank API: %s", e)
+            if _inproc:
+                log.warning("Core's HTTP API is unreachable (%s) -- reads are served "
+                            "in-process and are unaffected; /stock buy and /stock sell "
+                            "will refuse until it is back.", str(e).split("\n")[0][:120])
+            else:
+                log.warning("Could not reach Restocker bank API: %s", e)
     else:
         log.warning("Restocker API not configured — wallet/stock commands will be disabled.")
 

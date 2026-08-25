@@ -31,7 +31,14 @@ _fundamental_for_market = core._fundamental_for_market
 STOCK_MAX_REANCHOR_MOVE = core.STOCK_MAX_REANCHOR_MOVE
 _load_brew_aliases = core._load_brew_aliases
 _load_csn_for_market = core._load_csn_for_market
-_load_csn_history = core._load_csn_history
+# `_load_csn_history` is deliberately NOT bound here. Restocker_main removed it
+# (see its note near the CSN section): it was a thin alias for
+# _load_csn_for_market("main") — the same store, not a second one — and the
+# double-booking bug came from treating it as separate. This module never used
+# the name; the stale binding alone was enough to raise AttributeError at import
+# and take the whole cog down with it. Same for `_save_csn_history` and
+# `_record_to_history`, the duplicate recorder deleted alongside it — all
+# three were bound here and used nowhere.
 _load_items = core._load_items
 _load_markets = core._load_markets
 _market_autocomplete = core._market_autocomplete
@@ -43,10 +50,8 @@ _parse_export_csv = core._parse_export_csv
 _parse_monthly_csv = core._parse_monthly_csv
 _producer_key = core._producer_key
 _read_tabular = core._read_tabular
-_record_to_history = core._record_to_history
 _record_to_market_history = core._record_to_market_history
 _save_csn_for_market = core._save_csn_for_market
-_save_csn_history = core._save_csn_history
 io = core.io
 is_manager = core.is_manager
 load_orders = core.load_orders
