@@ -1317,3 +1317,71 @@ def market_items(market_id: str, months: int = 3, limit: int = 30) -> Optional[d
                     "net": slot["net"]})
     return {"months": [(k, _month_name(k)) for k in keys], "rows": out,
             "total_items": len(by_item)}
+
+
+def filing_status() -> Optional[list[dict]]:
+    """Which markets are behind on their filing, and by how much.
+
+    THE DESIGN ASKS A QUESTION THIS DATA CANNOT ANSWER. Its Markets screen leads
+    with "Filing next" — a queue of due dates — and nothing in this system stores
+    a per-market due date, because reports arrive when an owner files them. A
+    date computed from nothing looks exactly like a date that means something.
+
+    So the block asks the question the record CAN answer, which turns out to be
+    the more useful one anyway: who has stopped filing. Months behind and days
+    since the last record are both facts, and both come straight from
+    `csn_history`. An owner who is current does not appear at all.
+
+    `months_behind` counts calendar months from the last filed month to the
+    current one, so a market that filed August is 0 and one whose last month is
+    July is 1 — it owes August. `days_since` is against the record's timestamp,
+    which is when the filing actually landed, not the month it covered.
+    """
+    try:
+        db = _db()
+    except Exception:                               # pragma: no cover
+        return None
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    this_month = now.strftime("%Y-%m")
+    try:
+        registry = db.get_markets() or {}
+        rows = db._get_conn().execute(
+            "SELECT market_id, MAX(month) AS m, MAX(recorded_at) AS t "
+            "FROM csn_history WHERE market_id <> 'main' GROUP BY market_id").fetchall()
+    except Exception as exc:
+        log.warning("[abex_live] filing status unreadable: %s", exc)
+        return None
+
+    def _behind(month: str) -> int:
+        try:
+            y, m = (int(x) for x in str(month).split("-")[:2])
+        except (ValueError, TypeError):
+            return 0
+        return max(0, (now.year - y) * 12 + (now.month - m))
+
+    out = []
+    for market_id, month, seen in rows:
+        market = registry.get(market_id) or {}
+        if not market or not market.get("active", 1):
+            continue
+        days = None
+        if seen:
+            try:
+                at = datetime.fromisoformat(str(seen).replace("Z", "+00:00"))
+                if at.tzinfo is None:
+                    at = at.replace(tzinfo=timezone.utc)
+                days = int((now - at).total_seconds() // 86400)
+            except ValueError:
+                days = None
+        out.append({
+            "market_id": market_id,
+            "name": market.get("name") or market_id,
+            "last_month": str(month or ""),
+            "last_month_name": _month_name(month),
+            "months_behind": _behind(month),
+            "days_since": days,
+            "current": str(month or "") == this_month,
+        })
+    out.sort(key=lambda r: (-r["months_behind"], -(r["days_since"] or 0)))
+    return out

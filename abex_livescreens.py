@@ -230,8 +230,55 @@ def markets(user_id: str = "") -> dict:
     table = {"h2": "All markets", "ac": 1, "c": _cols("markets", 1), "r": all_rows,
              "n": ("Shares out and share price exist only for a listed market; "
                    "a private market discloses nothing but its grade.")}
+    blocks = [b for b in (_filing_block(), table) if b is not None]
     return _shell("markets", f"{len(rows)} markets, {len(listings)} of them listed.",
-                  band, [table])
+                  band, blocks)
+
+
+def _filing_block() -> dict | None:
+    """Who has stopped filing — the design's "Filing next", asked answerably.
+
+    §4 leads the Markets screen with a queue of due dates, and nothing in this
+    system stores one: reports arrive when an owner files them. A date computed
+    from nothing looks exactly like a date that means something, so the block
+    asks what the record can answer instead — who is behind, and by how long.
+
+    That turned out to be the more useful question. Two markets stopped filing in
+    mid-July and it took a player complaining in Discord to notice; both would
+    have been at the top of this block from the day they went quiet.
+
+    Nobody behind means NO BLOCK, not an empty table with a reassuring note.
+    Everything current is the normal state and does not need a panel.
+    """
+    if abex_live is None:
+        return None
+    status = abex_live.filing_status()
+    if not status:
+        return None
+    late = [r for r in status if r["months_behind"] > 0]
+    if not late:
+        return None
+
+    out = []
+    for r in late:
+        behind = r["months_behind"]
+        days = r["days_since"]
+        # A month behind is late; two is a market nobody is reading any more.
+        tone = "l|" if behind > 1 else "w|"
+        out.append([
+            f"A|/hub/stocks/{r['market_id']}|{r['name']}",
+            r["last_month_name"],
+            f"{tone}{behind} month{'' if behind == 1 else 's'}",
+            (f"{days:,}" if days is not None else DASH),
+        ])
+    return {"h2": "Waiting on a filing", "ac": 1,
+            "c": ["Market", "Last filed", "Behind", "Days since#"],
+            "r": out,
+            "n": (f"{len(out)} of {len(status)} markets have not filed for the "
+                  "current month. A missed filing keeps the last share price, "
+                  "pays no dividend and drops the market one grade band. Days "
+                  "since counts from when the last report landed, not the month "
+                  "it covered.")}
 
 
 # ── Stocks ──────────────────────────────────────────────────────────────────
