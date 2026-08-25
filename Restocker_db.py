@@ -5299,6 +5299,39 @@ def land_leases_due(now_sql: Optional[str] = None, limit: int = 100) -> list[dic
         return [dict(r) for r in rows]
 
 
+def list_land_leases(limit: int = 400, active_only: bool = True) -> list[dict]:
+    """Every lease on the register, newest parcel first. Read-only.
+
+    The parcel register is DERIVED, not stored: there is no `land_parcels` table and
+    there deliberately isn't one. A parcel becomes known to this product the moment
+    somebody agrees a rent on it or lists it for sale, and both of those are already
+    written down. Inventing a third table to hold the same fact is how the two get to
+    disagree about who owns what.
+    """
+    q = "SELECT * FROM land_leases"
+    if active_only:
+        q += " WHERE status='active'"
+    q += " ORDER BY id DESC LIMIT ?"
+    with db() as conn:
+        return [dict(r) for r in conn.execute(q, (int(limit),)).fetchall()]
+
+
+def rent_charges_for_period(period: str, limit: int = 400) -> list[dict]:
+    """Charges raised for one billing period, whatever state they reached.
+
+    `pending` and `claimed` are shown as owed because they are: the money has not
+    moved. `failed` and `unknown` are shown too — a collection that could not be
+    completed is exactly the thing a landlord needs to see, and hiding it behind
+    "nothing due" is how arrears become invisible.
+    """
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM land_rent_charges WHERE period=? "
+            "AND status IN ('pending','claimed','failed','unknown') "
+            "ORDER BY id ASC LIMIT ?", (str(period), int(limit))).fetchall()
+        return [dict(r) for r in rows]
+
+
 def open_rent_charge(lease: dict, period: str, idem_key: str) -> Optional[int]:
     """Create the charge row for one (parcel, period), or None if it already exists.
 

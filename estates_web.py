@@ -940,6 +940,80 @@ async def h_bid(request):
 # Parcels, leases and rent
 # ══════════════════════════════════════════════════════════════════════════
 
+def _rent_period_now(period_days: int = 30) -> str:
+    """The billing period label the register is currently in.
+
+    Delegates to `land_settle.rent_period` so the label on screen and the label
+    inside the idempotency key are produced by one function. Two functions that
+    agree today are two functions that drift.
+    """
+    try:
+        import land_settle
+        return land_settle.rent_period({"period_days": int(period_days)})
+    except Exception:
+        return datetime.now(timezone.utc).strftime("%Y-%m")
+
+
+def _parcel_register(limit: int = 400):
+    """Every parcel this product knows about, and what is owed on it.
+
+    THE REGISTER IS DERIVED. There is no `land_parcels` table: a parcel enters the
+    register when somebody agrees a rent on it (`land_leases`) or offers it for sale
+    (`land_listings` with kind='land'), and both of those are already written down
+    once. A third table holding the same fact is a third table that can disagree.
+
+    This used to read a second database through `estates_db`, which is not part of
+    this repository and never has been — so the panel could only ever answer "the
+    parcel register is not deployed", which on a page about land reads as an outage
+    rather than as the truth, which is that the register was never wired to core.
+    """
+    db = _core_db()
+    leases = db.list_land_leases(limit=limit, active_only=True)
+    period = _rent_period_now()
+    charges = db.rent_charges_for_period(period, limit=limit)
+
+    by_parcel = {}
+    for lease in leases:
+        pid = str(lease.get("parcel_id") or "")
+        if not pid or pid in by_parcel:
+            continue
+        by_parcel[pid] = {
+            "id": int(lease["id"]), "slug": pid, "name": pid, "region": None,
+            "status": "leased",
+            "owner_id": str(lease.get("owner_id") or ""),
+            "tenant_id": str(lease.get("tenant_id") or ""),
+            "rent": int(lease.get("amount") or 0),
+            "rent_period_days": int(lease.get("period_days") or 30),
+            "lease_ends": lease.get("next_due_at"),
+            "last_rent_period": lease.get("last_period"),
+        }
+
+    # Claims offered for sale are parcels too — a register that lists only the ones
+    # somebody is paying rent on is not a register of the land, it is a register of
+    # the debts. §6.8: land is bought outright, so a for-sale claim carries no rent
+    # and its Rent column is an em dash meaning "none is charged", not "unknown".
+    try:
+        listings = [l for l in db.get_active_land_listings()
+                    if str(l.get("kind") or "") == "land"]
+    except Exception as e:
+        log.warning("[estates] land listings unreadable: %s", e)
+        listings = []
+    for l in listings:
+        pid = str(l.get("land") or l.get("title") or ("listing-%s" % l.get("id")))
+        if pid in by_parcel:
+            by_parcel[pid]["status"] = "leased · for sale"
+            continue
+        by_parcel[pid] = {
+            "id": int(l["id"]), "slug": pid, "name": str(l.get("title") or pid),
+            "region": l.get("coords"), "status": "for sale",
+            "owner_id": str(l.get("seller_id") or ""), "tenant_id": "",
+            "rent": 0, "rent_period_days": 30,
+            "lease_ends": None, "last_rent_period": None,
+        }
+
+    return list(by_parcel.values()), period, charges
+
+
 async def h_parcels(request):
     """The parcel register: ownership, sitting leases and the rent they carry.
 
@@ -950,21 +1024,15 @@ async def h_parcels(request):
     if refusal is not None:
         return refusal
     uid = str(sess["user_id"])
-    edb = _edb()
-    if edb is None:
-        return shell.json_err("estates_db_unavailable",
-                             "The parcel register is not deployed on this server.", 503)
     try:
-        parcels = edb.list_parcels(limit=400)
-        period = edb.rent_period()
-        due = edb.due_rent_charges(period)
+        parcels, period, due = _parcel_register()
     except Exception as e:
         log.exception("[estates] parcel read failed: %s", e)
         return shell.json_err("parcels_unavailable", "The parcel register is not answering.", 503)
 
     due_by_parcel = {}
     for c in due:
-        due_by_parcel.setdefault(int(c["parcel_id"]), []).append({
+        due_by_parcel.setdefault(str(c["parcel_id"]), []).append({
             "period": c["period"], "amount": int(c["amount"]),
             "tenant": _who(c["tenant_id"], uid, "tenant"), "status": c["status"],
             "key": c["idem_key"],
@@ -978,19 +1046,19 @@ async def h_parcels(request):
         # every session, arrears status and ledger key included (WEB_ATTACK finding 9).
         # The key is deterministic and reconstructible so this was never a credential,
         # but "not a credential" is not a reason to publish somebody's debts.
-        mine = (str(p.get("owner_id") or "") == uid or str(p.get("tenant_id") or "") == uid)
+        mine = (p["owner_id"] == uid or p["tenant_id"] == uid)
         rows.append({
-            "id": int(p["id"]), "slug": p["slug"], "name": p["name"],
-            "region": p.get("region"), "status": p["status"],
-            "owner": _who(p.get("owner_id"), uid, "owner") if p.get("owner_id") else "nobody",
-            "yours": str(p.get("owner_id") or "") == uid,
-            "tenant": _who(p.get("tenant_id"), uid, "tenant") if p.get("tenant_id") else None,
-            "you_lease": str(p.get("tenant_id") or "") == uid,
-            "rent": int(p.get("rent_coins") or 0),
-            "rent_period_days": int(p.get("rent_period_days") or 30),
-            "lease_ends": p.get("lease_ends_at"),
-            "last_rent_period": p.get("last_rent_period"),
-            "charges": (due_by_parcel.get(int(p["id"]), []) if mine else []),
+            "id": p["id"], "slug": p["slug"], "name": p["name"],
+            "region": p["region"], "status": p["status"],
+            "owner": _who(p["owner_id"], uid, "owner") if p["owner_id"] else "nobody",
+            "yours": p["owner_id"] == uid,
+            "tenant": _who(p["tenant_id"], uid, "tenant") if p["tenant_id"] else None,
+            "you_lease": p["tenant_id"] == uid,
+            "rent": p["rent"],
+            "rent_period_days": p["rent_period_days"],
+            "lease_ends": p["lease_ends"],
+            "last_rent_period": p["last_rent_period"],
+            "charges": (due_by_parcel.get(p["slug"], []) if mine else []),
         })
     return shell.json_ok(parcels=rows, period=period)
 
@@ -1367,7 +1435,7 @@ function parcelTable(parcels, period){
     <div class="holdnote">Rent due is shown for parcels you own or lease. What another
       player owes on his own lease is between him and his landlord, so this column reads
       <b>private</b> rather than a figure. On your own rows, every rent charge carries the
-      key <code>estates:parcel:&lt;id&gt;:rent:&lt;period&gt;</code>. The period in the key
+      key <code>land:parcel:&lt;id&gt;:rent:&lt;period&gt;</code>. The period in the key
       is what stops a retried collection charging two months.</div></div>`;
 }
 async function loadParcels(){
