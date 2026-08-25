@@ -51,6 +51,19 @@ except Exception:                                   # pragma: no cover
 
 from abex_canvas import SCREENS as _CANVAS
 
+def _num(cell) -> float:
+    """A bare number out of a formatted cell. 0.0 when it is not one."""
+    try:
+        return float(str(cell).replace(",", "").strip() or 0)
+    except ValueError:
+        return 0.0
+
+
+def _coins(cell) -> float:
+    """A coin figure out of a cell like `1,234.50c` or `+92,328c`."""
+    return _num(str(cell).rstrip("c").lstrip("+"))
+
+
 #: What a cell says when the product has the column and no answer for it.
 DASH = "m|—"
 
@@ -137,7 +150,7 @@ def markets(user_id: str = "") -> dict:
     held = {}
     live = abex_live.stocks(str(user_id)) if user_id else None
     for row in (live or {}).get("rows", []):
-        held[row[0]] = row[1]         # market name -> shares
+        held[row[1]] = row[3]         # NAME -> shares; row[0] is the ticker
 
     graded = sum(1 for m in rows if m[3] in ("AAA", "AA", "A", "BBB"))
     band = [("Markets", str(len(rows)),
@@ -176,18 +189,22 @@ def stocks(user_id: str) -> dict:
     value = cost = 0.0
     positions = []
     for r in rows:
-        # (name, shares, avg cost, price, value, profit, up?, dividend, month)
+        # abex_live.stocks row, in order:
+        #   0 ticker  1 name  2 grade  3 shares  4 average cost  5 price
+        #   6 value   7 profit  8 profit >= 0  9 dividend  10 month
+        # Average cost, not total paid - the total is implied by shares x average,
+        # and the column a holder compares against price is the per-share one.
         try:
-            v = float(str(r[4]).rstrip("c").replace(",", ""))
-            c = float(str(r[2]).rstrip("c").replace(",", "")) * float(str(r[1]).replace(",", ""))
+            v = _coins(r[6])
+            c = _coins(r[4]) * _num(r[3])
         except (ValueError, IndexError):
             v = c = 0.0
         value += v
         cost += c
-        up = bool(r[6]) if len(r) > 6 else True
-        positions.append([r[0], r[1], r[3], r[4], r[2],
-                          ("g|" if up else "l|") + str(r[5]),
-                          r[7] if len(r) > 7 else DASH])
+        up = bool(r[8]) if len(r) > 8 else True
+        positions.append([r[1], r[3], r[5], r[6], r[4],
+                          ("g|" if up else "l|") + str(r[7]),
+                          r[9] if len(r) > 9 else DASH])
 
     unrealised = value - cost
     band = [("Holdings", f"{value:,.0f}c", f"{len(rows)} position"
@@ -278,7 +295,7 @@ def exchange(user_id: str = "") -> dict:
     held = {}
     live = abex_live.stocks(str(user_id)) if user_id else None
     for r in (live or {}).get("rows", []):
-        held[r[0]] = r[1]
+        held[r[1]] = r[3]             # NAME -> shares
 
     out = []
     for ticker, name, grade, shares_out, holders, price, free in rows:
