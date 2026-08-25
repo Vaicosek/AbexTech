@@ -115,3 +115,25 @@ bank/bank.db
 
 # leftover from the old Restocker repo; nothing to do in a fresh history
 _untrack.bat
+
+# ── One-off scripts and stale handoff notes ──────────────────────────────────
+# Untracked deliberately, not deleted: they still sit in the working folder as
+# history. They were shipping to the server on every pull, and none of them is
+# imported or executed by anything that runs there.
+#
+# NOT listed here, because they ARE imported and removing them breaks the boot:
+#   seed_items.py       (run_core.py, main.py)
+#   clean_item_names.py, migrate_market_id.py, ledger_migrate.py (Restocker_main.py)
+#   healthcheck.py      (pre-deploy preflight -- useful ON the server)
+apply_market_registry.py
+fix_catalog_stacks.py
+fix_hive_duplicates.py
+fix_share_gifts.py
+mint_code.py
+AMAZONIA_ONBOARDING.md
+AUDIT_*.md
+DEPLOY_TEST.md
+HANDOFF*.md
+ONBOARDING_*.md
+SW_Trade_Network_Integration.md
+_PUSH_README.md
