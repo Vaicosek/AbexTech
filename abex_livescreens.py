@@ -205,11 +205,22 @@ def markets(user_id: str = "") -> dict:
             ("Listed", str(len(listings)), "shares you can trade"),
             ("Your positions", str(len(held)), "markets you hold")]
 
+    # Every market gets a page, listed or not: a private one's page says it is
+    # private and shows its grade, which is exactly what §6.7 says it discloses.
+    # A name that leads nowhere for 17 of 19 rows is a worse rule than a page
+    # that honestly has little on it.
+    try:
+        ids = {(m or {}).get("name"): k
+               for k, m in (abex_live._db().get_markets() or {}).items()}
+    except Exception:
+        ids = {}
     all_rows = []
     for ticker, name, _owner, grade, backing, last_net, _weight, last_report in rows:
         L = listings.get(name)
+        mid = ids.get(name)
         all_rows.append([
-            name, "G|" + grade, backing, last_net,
+            (f"A|/hub/stocks/{mid}|{name}" if mid else name),
+            "G|" + grade, backing, last_net,
             L[3] if L else DASH,                    # shares out
             L[5] if L else DASH,                    # share price
             held.get(name, DASH),                   # you hold
@@ -300,6 +311,124 @@ def stocks(user_id: str) -> dict:
     return _shell("stocks", f"{len(rows)} position"
                   f"{'' if len(rows) == 1 else 's'} in your name.",
                   band, blocks)
+
+
+# ── One stock ───────────────────────────────────────────────────────────────
+def stock(user_id: str = "", market_id: str = "") -> dict:
+    """One market's page: the price, its shape, its months, its register.
+
+    Not a canvas screen — the design has a Stocks screen that lists YOUR
+    positions and a Markets screen that lists everyone's, and neither answers
+    "how has this one done". That question is what a reader asks before buying,
+    and answering it in a tooltip on a table row is answering it badly.
+
+    Spec §6.7 decides what goes on it: a LISTED market discloses; a private one
+    discloses nothing but its grade. An unlisted market therefore gets a real
+    page with almost nothing on it, which is the honest shape — the reader
+    learns that the market exists, what it is rated, and that it has chosen not
+    to disclose. A 404 would teach him nothing.
+    """
+    if abex_live is None:
+        return _empty("stocks", "The exchange is not reachable from this process.")
+    d = abex_live.stock_detail(str(market_id), str(user_id))
+    if d is None:
+        return _empty("stocks", "No such market.")
+
+    grade_sub = (f"{d['backing']:,.2f}× backed" if d["backing"] else "not scored")
+    if not d["listed"]:
+        band = [("Grade", d["grade"], grade_sub),
+                ("Listed", "no", "shares are not traded"),
+                ("Discloses", "grade only", "a private market publishes nothing else")]
+        note = {"h2": "Private market", "ac": 1,
+                "act": (f"{d['name']} is not listed on the exchange. A private "
+                        "market discloses its grade and nothing else — no ledger, "
+                        "no staff, no liabilities — and that is the bargain it "
+                        "took by not listing."),
+                "btns": [["Back to the exchange", "s", "/hub/exchange"]],
+                "n": "Its grade is still scored from the same pillars as everyone "
+                     "else's, which is why it can be shown."}
+        out = _shell("stocks", f"{d['name']} · private", band, [note])
+        out["title"] = d["name"]
+        return out
+
+    price, shares = d["price"], d["shares_out"]
+    mcap = price * shares
+    band = [("Share price", f"{price:,.2f}c",
+             (f"priced from {abex_live._month_name(d['last_priced_month'])}"
+              if d.get("last_priced_month") else "not priced yet")),
+            ("Grade", d["grade"], grade_sub),
+            ("Growth P/E", f"{d['pe']:,.2f}×", "multiple applied to trailing net"),
+            ("Shares listed", f"{shares:,.0f}",
+             f"{d['holders']} holder{'' if d['holders'] == 1 else 's'}")]
+
+    chart = _spark_block(
+        f"{d['name']} · share price", d.get("series"),
+        src=f"/api/series/market/{d['market_id']}?days=90",
+        note=("Every point is a price the exchange recorded. The series is "
+              "sampled, never averaged, so no point drawn is a price nobody saw."))
+
+    # ── the months ──────────────────────────────────────────────────────────
+    rows = []
+    for m in d["months"]:
+        change = m["change"]
+        if change is None:
+            cell, pct = DASH, DASH
+        else:
+            tone = "g|" if change >= 0 else "l|"
+            cell = f"{tone}{change:+,.0f}c"
+            pct = (f"{tone}{m['pct']:+,.1f}%" if m["pct"] is not None
+                   else "m|no prior month")
+        rows.append([m["name"], f"{m['income']:,.0f}c", f"{m['spent']:,.0f}c",
+                     f"{m['net']:,.0f}c", cell, pct])
+    months = {"h2": "Month by month", "ac": 1,
+              "c": ["Month", "Revenue#", "Costs#", "Net#", "Change#", "Change %#"],
+              "r": rows,
+              "n": ("Each month against the one before it. Net is the FILED "
+                    "figure — what stands on the record, which is what the share "
+                    "price is derived from, not what the shop has taken since."
+                    if rows else "Nothing filed yet.")}
+
+    price_block = {"h2": "How the price is set",
+                   "bal": [[label, value, ""] for label, value, _t in d["price_rows"]],
+                   "n": ("From the pricing function the bot itself quotes, so this "
+                         "page and /stock price cannot disagree."
+                         if d["price_rows"] else
+                         "The pricing function is not reachable from this process. "
+                         "It is not being estimated here.")}
+
+    float_pct = (d["free_float"] / shares * 100.0) if shares else 0.0
+    register = {"h2": "The register",
+                "bal": [["Shares outstanding", f"{shares:,.0f}", ""],
+                        ["Held by the owner", f"{d['owner_holds']:,.0f}",
+                         "not free float"],
+                        ["In other hands", f"{d['free_float']:,.0f}",
+                         f"{float_pct:,.1f}% of the register"],
+                        ["Holder accounts", f"{d['holders']:,.0f}", ""],
+                        ["Market capitalisation", f"{mcap:,.0f}c",
+                         "price × shares outstanding"]],
+                "n": ("How many accounts hold this and how much of it is in "
+                      "someone else's hands are facts about the security. Who "
+                      "holds which shares is a fact about a person, and nothing "
+                      "asks him to publish it.")}
+
+    blocks = [b for b in (chart, months, price_block, register) if b is not None]
+    # Both halves, as everywhere else that serves a signed-out reader: the
+    # detail call is passed no user id so nothing is looked up against an
+    # account, AND the block is not built without one. Either alone is a bug
+    # waiting for the other to be edited.
+    if user_id and d["your_shares"]:
+        blocks.append({"h2": "Your position", "own": 1,
+                       "bal": [["Shares you hold", f"{d['your_shares']:,.0f}", ""],
+                               ["At the current price",
+                                f"{d['your_shares'] * price:,.0f}c",
+                                "what the register says it is worth today"]],
+                       "n": "Value at the quoted price. What you paid is on Stocks."})
+
+    asof = (f"{d['name']} · {d['grade']} · {shares:,.0f} shares listed, "
+            f"{d['holders']} holder{'' if d['holders'] == 1 else 's'}.")
+    out = _shell("stocks", asof, band, blocks)
+    out["title"] = d["name"]
+    return out
 
 
 # ── Work ────────────────────────────────────────────────────────────────────
@@ -394,8 +523,18 @@ def exchange(user_id: str = "") -> dict:
         held[r[1]] = r[3]             # NAME -> shares
 
     out = []
+    # The market name is the way into its own page. §1 reserves the accent for
+    # things you can click, and `A|` is what spends it — a listed market's name
+    # is now the one clickable thing in its row.
+    try:
+        ids = {(m or {}).get("name"): k
+               for k, m in (abex_live._db().get_markets() or {}).items()}
+    except Exception:
+        ids = {}
     for ticker, name, grade, shares_out, holders, price, free in rows:
-        out.append([name, ticker, "G|" + str(grade), price, shares_out,
+        mid = ids.get(name)
+        cell = f"A|/hub/stocks/{mid}|{name}" if mid else name
+        out.append([cell, ticker, "G|" + str(grade), price, shares_out,
                     holders, free, held.get(name, DASH)])
 
     listed = len(rows)

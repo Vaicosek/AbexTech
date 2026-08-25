@@ -1155,3 +1155,101 @@ def index_series(days: int = 30) -> Optional[dict]:
         "to": (rows[-1][0] or "")[:10] if rows else "",
         "window": f"{days} days",
     }
+
+
+def stock_detail(market_id: str, user_id: str = "") -> Optional[dict]:
+    """Everything one listed market discloses: price, grade, P/E, register, months.
+
+    Spec §6.7 is the rule this obeys: "a listed market discloses ledger, staff
+    and liabilities to everyone; a private market discloses nothing but its
+    grade." So a listing is required — an unlisted market returns `{"listed":
+    False}` and the page says only what it is allowed to say. That is not
+    politeness; it is the disclosure bargain a market accepts when it lists.
+
+    The register is disclosed as SHAPE, not as names. How many accounts hold it
+    and how much of it is in someone else's hands are facts about the security.
+    Who holds 92,863 shares is a fact about a person, and no rule here asks him
+    to publish it.
+    """
+    try:
+        db = _db()
+    except Exception:                               # pragma: no cover
+        return None
+    mid = str(market_id or "")
+    try:
+        market = (db.get_markets() or {}).get(mid)
+    except Exception as exc:
+        log.warning("[abex_live] market %s unreadable: %s", mid, exc)
+        return None
+    if not market:
+        return None
+    name = market.get("name") or mid
+
+    try:
+        listing = (db.get_public_markets() or {}).get(mid) or {}
+    except Exception:
+        listing = {}
+
+    try:
+        core = _core()
+    except Exception:
+        core = None
+    grade, scale = "not rated", 0.0
+    if core is not None:
+        try:
+            grade, scale, _b, _t = core._backing_rating(mid)
+        except Exception:
+            pass
+
+    # ── the months, newest first, each against the one before ───────────────
+    months = []
+    try:
+        rows = db._get_conn().execute(
+            "SELECT month, income, spent, net FROM csn_history "
+            "WHERE market_id = ? ORDER BY month DESC LIMIT 13", (mid,)).fetchall()
+        ordered = list(reversed([(r[0], float(r[1] or 0), float(r[2] or 0),
+                                  float(r[3] or 0)) for r in rows]))
+        for i, (month, income, spent, net) in enumerate(ordered):
+            prev = ordered[i - 1][3] if i else None
+            change = (net - prev) if prev is not None else None
+            pct = (change / abs(prev) * 100.0) if (prev not in (None, 0)) else None
+            months.append({"month": month, "name": _month_name(month),
+                           "income": income, "spent": spent, "net": net,
+                           "change": change, "pct": pct})
+        months.reverse()
+    except Exception as exc:
+        log.warning("[abex_live] months for %s unreadable: %s", mid, exc)
+
+    # ── the register, as shape ──────────────────────────────────────────────
+    holders, held_by_owner, your_shares = 0, 0.0, 0.0
+    owner_id = str(market.get("owner_id") or "")
+    try:
+        for h in (db.get_holders(mid) or []):
+            shares = float(h.get("shares") or 0)
+            if shares <= 0:
+                continue
+            holders += 1
+            if str(h.get("user_id") or "") == owner_id:
+                held_by_owner += shares
+            if user_id and str(h.get("user_id") or "") == str(user_id):
+                your_shares = shares
+    except Exception:
+        pass
+
+    shares_out = float(listing.get("shares_outstanding") or 0)
+    return {
+        "market_id": mid, "name": name, "listed": bool(listing),
+        "grade": str(grade), "backing": float(scale or 0),
+        "price": float(listing.get("share_price") or 0),
+        "shares_out": shares_out,
+        "pe": float(listing.get("pe_multiplier") or 0),
+        "treasury": float(listing.get("treasury_coins") or 0),
+        "last_priced_month": listing.get("last_priced_month"),
+        "holders": holders,
+        "free_float": max(0.0, shares_out - held_by_owner),
+        "owner_holds": held_by_owner,
+        "your_shares": your_shares,
+        "months": months,
+        "price_rows": (price_formula(mid)[0] if listing else []),
+        "series": price_series(mid, 90),
+    }

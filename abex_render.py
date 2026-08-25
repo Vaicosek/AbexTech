@@ -15,7 +15,8 @@ tone — and in a money UI a wrongly-toned figure reads as a fact, not a bug.
 
     1. base            identity column = bold text, numeric column = plain
     2. inline tag      'g|' gain, 'l|' loss, 'w|' warn, 'm|' faint, 'k|' action,
-                       'G|' grade ramp, 'T|<seconds>' live countdown
+                       'G|' grade ramp, 'T|<seconds>' live countdown,
+                       'A|<href>|<text>' a link
     3. header rule     Grade / Backing / Coupon / Odds / Stake / Chunks, date
                        columns, pay columns — keyed off the column heading
     4. row wash        "your position" rows, only when holdings are the minority
@@ -71,7 +72,7 @@ def _split_tag(cell: str) -> tuple[str, str]:
     contains a pipe — none do today, but copy changes — is left alone rather
     than silently truncated at the first bar.
     """
-    m = re.match(r"^([glwmkGT])\|(.*)$", cell, re.S)
+    m = re.match(r"^([glwmkGTA])\|(.*)$", cell, re.S)
     return (m.group(1), m.group(2)) if m else ("", cell)
 
 
@@ -120,6 +121,17 @@ def _cell(head: str, raw, numeric: bool, identity: bool) -> str:
     if tag == "G":                       # grade ramp asked for explicitly
         colour = _grade_colour(text)
         bold = True
+    elif tag == "A":                     # a link: 'A|<href>|<text>'
+        href, _, label = text.partition("|")
+        # §1 reserves the accent for things you can click, so a link cell takes
+        # it and nothing else does. The identity column stays bold — it is still
+        # the row's name, it is now also its way in.
+        st = ' style="font-weight:700"' if identity else ""
+        # Built with % rather than an f-string: the escaped quotes inside the
+        # class attribute are a backslash in an f-string expression, which is a
+        # syntax error on 3.11. This file has hit that twice now.
+        cls = ' class="num"' if numeric else ""
+        return "<td%s%s><a href=\"%s\">%s</a></td>" % (cls, st, _e(href), _e(label))
     elif tag == "T":                     # countdown; rendered live by the page script
         secs = text.strip()
         cls = ' class="num countdown" data-left="%s"' % _e(secs)

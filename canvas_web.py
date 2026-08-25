@@ -345,6 +345,30 @@ CANVAS_JS = r"""
 """
 
 
+async def _stock_page(request):
+    """`/hub/stocks/{mid}` — one market's page.
+
+    Public. §6.7: a listed market discloses to EVERYONE, and this page is that
+    disclosure — price, months, register shape. It is passed no user id for a
+    signed-out reader, so the "your position" block is not built rather than
+    built and hidden.
+    """
+    try:
+        import abex_livescreens
+        import abex_render
+        import hub_web
+    except Exception:                                # pragma: no cover
+        raise web.HTTPNotFound()
+    mid = request.match_info.get("mid") or ""
+    user = hub_web.current_user(request)
+    uid = str(user["user_id"]) if user else ""
+    screen = abex_livescreens.stock(uid, mid)
+    body = abex_render.screen_html(screen, owner=bool(user))
+    snap = hub_web.money_snapshot(uid) if user else None
+    title = f'{screen.get("title", mid)} · Abex Tech'
+    return hub_web._html(hub_web.page(title, "stocks", user, snap, body))
+
+
 async def _series(request):
     """Points for one chart, as JSON. Public: an index and a share price are
 
@@ -379,6 +403,7 @@ def register_canvas_routes(app) -> None:
     if web is None:                                 # pragma: no cover
         return
     app.router.add_get("/hub/orders", _orders_moved)
+    app.router.add_get("/hub/stocks/{mid}", _stock_page)
     app.router.add_get("/api/series/index", _series)
     app.router.add_get("/api/series/market/{mid}", _series)
     for key in SCREENS:
