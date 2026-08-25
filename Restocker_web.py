@@ -1571,7 +1571,7 @@ async def _handle_health(request):
 # ── shared terminal shell (nav) for the remade pages ─────────────────────────
 _TERMINAL_NAV = r"""
 <header class="tshell">
-  <div class="brand"><span class="m">A</span>Abex Exchange</div>
+  <div class="brand"><img class="m" src="/static/atech-logo.png" alt="" width="44" height="44">Abex Exchange</div>
   <nav>
     <a href="/hub" data-nav="hub">Hub</a>
     <a href="/inventory" data-nav="inventory">Inventory</a>
@@ -1656,9 +1656,8 @@ text-decoration-thickness:1px;text-decoration-color:rgba(201,179,122,.45)}
 header.tshell{display:flex;align-items:center;gap:24px;height:auto;padding:18px 26px;
 border-bottom:1px solid var(--line);background:none}
 .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:25px}
-.brand .m{width:34px;height:34px;border-radius:50%;background:none;
-border:1px solid var(--line);color:var(--accent);display:grid;place-items:center;
-font-weight:700;font-size:19px}
+.brand .m{width:44px;height:44px;border-radius:50%;border:0;background:none;
+object-fit:cover;display:block;flex:0 0 auto}
 header.tshell nav{display:flex;gap:22px;height:100%;margin-left:6px;align-items:center}
 header.tshell nav a{display:flex;align-items:center;padding:6px 0;color:var(--muted);
 font-weight:400;font-size:21px;cursor:pointer;border-bottom:2px solid transparent;
@@ -1683,7 +1682,7 @@ font-weight:400}
    with a broken word in it. */
 header.tshell{gap:26px;padding:18px 26px;flex-wrap:wrap}
 .brand{font-size:25px;font-weight:700;letter-spacing:normal;white-space:nowrap}
-.brand .m{width:34px;height:34px}
+.brand .m{width:38px;height:38px}
 header.tshell nav{gap:20px;flex-wrap:wrap;row-gap:6px}
 header.tshell nav a{white-space:nowrap;font-size:20px}
 .rt{gap:18px;flex-wrap:wrap}
@@ -1693,6 +1692,7 @@ header.tshell nav a{white-space:nowrap;font-size:20px}
 _INVENTORY_HTML = r"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
+<link rel="icon" type="image/png" href="/static/favicon.png"/>
 <title>Inventory · Abexilas</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -1909,6 +1909,7 @@ setTimeout(()=>{chips();catchips();render();},400);
 # ── /investor — portfolio, dividends, company detail, shareholder voting ─────
 _INVESTOR_HTML = r"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<link rel="icon" type="image/png" href="/static/favicon.png"/>
 <title>Investor - Abexilas</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -2126,6 +2127,7 @@ setInterval(boot,60000);
 # ── /liabilities — what the company owes, and what a dividend would cost ─────
 _LIAB_HTML = r"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<link rel="icon" type="image/png" href="/static/favicon.png"/>
 <title>Liabilities · Abexilas</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <style>
@@ -2343,6 +2345,7 @@ async def _handle_inventory_page(request):
 # ── /ledger — terminal Earnings page (Pass 2) ────────────────────────────────
 _LEDGER_HTML = r"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<link rel="icon" type="image/png" href="/static/favicon.png"/>
 <title>Ledger · Abexilas</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -2572,6 +2575,7 @@ async def _handle_ledger_page(request):
 # ── /orders — terminal Orders board (Pass 3) ─────────────────────────────────
 _ORDERS_HTML = r"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<link rel="icon" type="image/png" href="/static/favicon.png"/>
 <title>Orders · Abexilas</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -2757,6 +2761,7 @@ async def _handle_orders_page(request):
 # ── /teams — terminal Teams leaderboard (Pass 4a) ────────────────────────────
 _TEAMS_HTML = r"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<link rel="icon" type="image/png" href="/static/favicon.png"/>
 <title>Teams · Abexilas</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -2883,6 +2888,7 @@ async def _handle_teams_page(request):
 # ── /mymarket — terminal owner panel (Pass 4b) ───────────────────────────────
 _MYMARKET_HTML = r"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<link rel="icon" type="image/png" href="/static/favicon.png"/>
 <title>My Market · Abexilas</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -3328,6 +3334,7 @@ async def _handle_mymarket_page(request):
 _EXCHANGE_HTML = r"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
+<link rel="icon" type="image/png" href="/static/favicon.png"/>
 <title>Abexilas Exchange</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -3354,7 +3361,7 @@ body{margin:0;background:radial-gradient(#2e3136 1px,transparent 1px) 0 0/22px 2
 .up{color:var(--up)}.down{color:var(--down)}.muted{color:var(--muted)}.faint{color:var(--faint)}
 header{display:flex;align-items:center;gap:20px;height:44px;padding:0 16px;border-bottom:1px solid var(--line);background:var(--panel)}
 .brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:14px;letter-spacing:.4px}
-.brand .m{width:22px;height:22px;background:var(--up);color:#04120c;display:grid;place-items:center;font-weight:700;font-size:13px}
+.brand .m{width:30px;height:30px;background:none;border:0;border-radius:50%;object-fit:cover;display:block;flex:0 0 auto}
 nav{display:flex;gap:2px;height:100%;margin-left:6px}
 nav a{display:flex;align-items:center;padding:0 13px;color:var(--muted);font-weight:600;font-size:13px;cursor:pointer;
 border-bottom:2px solid transparent;text-decoration:none}
@@ -3444,8 +3451,8 @@ th{font-size:19px;font-weight:400;color:var(--faint)}
 td{font-size:20px}
 header{height:auto;padding:18px 26px;background:none;gap:26px;flex-wrap:wrap}
 .brand{font-size:25px;letter-spacing:normal}
-.brand .m{width:34px;height:34px;background:none;border:1px solid var(--line);
-  color:var(--accent);border-radius:50%;}
+.brand .m{width:38px;height:38px;background:none;border:0;
+  border-radius:50%;object-fit:cover;display:block;flex:0 0 auto}
 header nav a{font-size:20px}
 /* Buy and sell are two directions of the same action, not a green light and a
    grey one. The accent marks the one you are on; neither is a traffic signal. */
@@ -3474,7 +3481,7 @@ header nav a{font-size:20px}
 </style></head>
 <body>
 <header>
-  <div class="brand"><span class="m">A</span>Abex Exchange</div>
+  <div class="brand"><img class="m" src="/static/atech-logo.png" alt="" width="44" height="44">Abex Exchange</div>
   <nav><a href="/hub">Hub</a><a href="/inventory">Inventory</a><a href="/ledger">Ledger</a><a href="/history">History</a><a class="on">Exchange</a><a href="/orders">Orders</a><a href="/teams">Teams</a><a href="/investor">Investor</a><a href="/liabilities">Liabilities</a><a href="/mymarket">My Market</a></nav>
   <div class="rt"><div class="bp"><b class="mono" id="hWho">—</b><br><span id="hWhoSub">not linked</span></div></div>
 </header>
