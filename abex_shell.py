@@ -49,8 +49,11 @@ _FOOTER_HTML = ('<footer class="sitefoot"><p>' + _h.escape(_FOOTER_LINE)
                 + ' <a href="/terms">Terms</a>.</p></footer>')
 
 _FOOTER_CSS = """
-.brand .mark{display:block;border:0;padding:0;margin:0 auto 10px;
-  width:140px;height:140px;max-width:100%;border-radius:50%;
+/* The sidebar is 326px (spec §2), so 220px leaves a comfortable margin and
+   the badge's five discipline icons and inner wordmark are actually legible.
+   The asset ships at 512px so a 2x screen still gets a clean edge. */
+.brand .mark{display:block;border:0;padding:0;margin:0 auto 12px;
+  width:220px;height:220px;max-width:100%;border-radius:50%;
   object-fit:cover;background:transparent}
 @media (max-width:900px){.brand .mark{width:56px;height:56px;margin:0 8px 0 0}}
 .sitefoot{border-top:1px solid var(--line);margin:4rem 0 0;padding:1.1rem 0 2rem;
@@ -269,7 +272,7 @@ def render(active: str, body: str, *, title: str = "", who=None, stats=None,
 </head><body data-domain="{dom}">
 <nav class="side" aria-label="Sections">
   <a class="brand" href="{prefix or '/hub'}">
-    <img class="mark" src="{LOGO_SRC}" alt="{MARK_ALT}" width="140" height="140">
+    <img class="mark" src="{LOGO_SRC}" alt="{MARK_ALT}" width="220" height="220">
     <span class="wordmark">Abex Tech</span>
     <span class="tag">One economy</span>
   </a>

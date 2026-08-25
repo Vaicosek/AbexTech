@@ -31,6 +31,22 @@ _NAV = {
     "market": "mine", "filing": "mine.report",
 }
 
+#: Where each nav key lives INSIDE the canvas set. Without this the sidebar
+#: carries the design's own hrefs, which the shell prefixes to `/canvas/hub`,
+#: `/canvas/my` and so on - and those are not the routes this module registers.
+#: The entries that did happen to match walked you back out to the live pages,
+#: so browsing the design set meant retyping a URL for every screen.
+#:
+#: These are prefix-relative: `render(prefix=PREFIX)` prepends `/canvas`, so the
+#: Hub entry is the empty string rather than "/canvas".
+_PATHS = {
+    "hub": "", "banking": "/banking", "exchange": "/exchange",
+    "stocks": "/stocks", "markets": "/markets", "work": "/work",
+    "orders": "/orders", "auctions": "/auctions", "lands": "/lands",
+    "mine": "/market", "mine.report": "/filing", "messages": "/messages",
+    "history": "/history",
+}
+
 _CSS = """/* The block vocabulary the canvas uses and this theme did not have yet.
    Everything here is built from existing tokens - no new hue, per spec §1. */
 
@@ -97,6 +113,8 @@ def _page(key: str) -> str:
         extra_css=_CSS,
         dock=abex_render.dock_html(screen or {}),
         prefix=PREFIX,
+        paths=_PATHS,
+        available=set(_PATHS),
     )
 
 
