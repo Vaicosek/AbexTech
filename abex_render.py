@@ -186,7 +186,7 @@ def _balance(block: dict) -> str:
         note = row[2] if len(row) > 2 else ""
         tag, value = _split_tag(str(value))
         st = f' style="color:{_TAG[tag]}"' if tag in _TAG else ""
-        n = f'<span class="bnote">{_e(note)}</span>' if note else ""
+        n = f'<div class="bnote">{_e(note)}</div>' if note else ""
         out.append(f'<tr><td class="blabel">{_e(label)}{n}</td>'
                    f'<td class="num"{st}>{_e(value)}</td></tr>')
     tot = block.get("tot")
