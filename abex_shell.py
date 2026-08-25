@@ -49,9 +49,10 @@ _FOOTER_HTML = ('<footer class="sitefoot"><p>' + _h.escape(_FOOTER_LINE)
                 + ' <a href="/terms">Terms</a>.</p></footer>')
 
 _FOOTER_CSS = """
-.brand .mark{display:block;border:0;padding:0;width:46px;height:46px;
-  border-radius:50%;object-fit:cover;background:transparent}
-@media (max-width:900px){.brand .mark{width:34px;height:34px}}
+.brand .mark{display:block;border:0;padding:0;margin:0 auto 10px;
+  width:140px;height:140px;max-width:100%;border-radius:50%;
+  object-fit:cover;background:transparent}
+@media (max-width:900px){.brand .mark{width:56px;height:56px;margin:0 8px 0 0}}
 .sitefoot{border-top:1px solid var(--line);margin:4rem 0 0;padding:1.1rem 0 2rem;
   color:var(--inert);font-size:.82rem;line-height:1.5;max-width:78ch}
 .sitefoot p{margin:0}
@@ -284,7 +285,7 @@ def render(active: str, body: str, *, title: str = "", who=None, stats=None,
 </head><body data-domain="{dom}">
 <nav class="side" aria-label="Sections">
   <a class="brand" href="{prefix or '/hub'}">
-    <img class="mark" src="{LOGO_SRC}" alt="{MARK_ALT}" width="46" height="46">
+    <img class="mark" src="{LOGO_SRC}" alt="{MARK_ALT}" width="140" height="140">
     <span class="wordmark">Abex Tech</span>
     <span class="tag">One economy</span>
   </a>
