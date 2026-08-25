@@ -60,64 +60,44 @@ _FOOTER_CSS = """
 .sitefoot a:hover{color:var(--dim)}
 """
 
-#: (key, label, href, domain, [(subkey, label, href), ...])
-#: Groups follow the approved information architecture: the shop side lives under
-#: Markets, the share side under Exchange, and the owner's own market under My market.
+#: (key, label, href, domain, meta, [(subkey, label, href, meta), ...])
+#:
+#: This IS the design's tree - `navTree()` in `Abex Tech Screens.dc.html`, in its
+#: order, with its labels and its counts, and the spec's flat shape (§3): one
+#: unnamed group, each item optionally expanding to one or two children while it
+#: is the active section.
+#:
+#: It used to be four named groups - Money / Trade / World / You - carrying
+#: `Lands` where the design says `Claims`, and no Hub, Exchange, Work, Claims or
+#: My market at all. That was a different information architecture, and it is why
+#: the live sidebar did not look like the mockup even though the type, the
+#: palette and the shell all matched.
+#:
+#: Betting is deliberately absent: the design has it, the product will not.
+#:
+#: The hrefs here are the DESIGN's paths. Where a deployment serves a section
+#: somewhere else it passes `paths={key: href}` to `render()`, and an entry with
+#: no real path is dropped rather than linked to a 404. The counts are the
+#: design's too and are overridden by `counts=` wherever the caller knows the
+#: live number.
 NAV: list[tuple[str, list]] = [
-    # Exactly the mockup's navGroups, metas included. Hub is NOT a nav item — it is the
-    # brand block at the top of the sidebar, same as the mockup.
-    ("Money", [
-        ("banking", "Banking", "/banking", "banking", "", [
-            ("banking.accounts", "Accounts", "/banking", ""),
-            ("banking.loans", "Loans", "/banking/loans", "2"),
-            ("banking.bonds", "Bonds", "/banking/bonds", "3"),
+    ("", [
+        ("hub",      "Hub",       "/hub",      "hub",      "",   []),
+        ("banking",  "Banking",   "/banking",  "banking",  "",   []),
+        ("exchange", "Exchange",  "/exchange", "exchange", "", [
+            ("stocks", "Stocks", "/stocks", "8"),
         ]),
-        ("stocks", "Stocks", "/stocks", "stocks", "5", []),
-        ("investor", "Investor", "/investor", "banking", "", []),
-    ]),
-    ("Trade", [
-        ("markets", "Markets", "/markets", "markets", "13", [
-            ("markets.shelves", "On the shelves", "/markets/shelves", ""),
-            ("markets.ledger", "Ledger", "/markets/ledger", ""),
-            ("markets.teams", "Who runs it", "/markets/teams", ""),
-            ("markets.liabilities", "Liabilities", "/markets/liabilities", ""),
+        ("markets",  "Markets",   "/markets",  "markets",  "13", []),
+        ("work",     "Work",      "/work",     "work",     "7", [
+            ("orders", "Orders", "/orders", "6"),
         ]),
-        ("exchange", "Exchange", "/exchange", "stocks", "", [
-            ("exchange.price", "Price and report", "/exchange/price", ""),
-            ("exchange.earnings", "Earnings", "/exchange/earnings", ""),
-            ("exchange.reports", "All earnings reports", "/exchange/reports", ""),
-            ("exchange.register", "Shares register", "/exchange/register", ""),
+        ("auctions", "Auctions",  "/auctions", "auctions", "3",  []),
+        ("lands",    "Claims",    "/lands",    "lands",    "2",  []),
+        ("mine",     "My market", "/my",       "mymarket", "", [
+            ("mine.report", "August report", "/my/report", ""),
         ]),
-        ("orders", "Orders", "/orders", "work", "6", []),
-        ("auctions", "Auctions", "/auctions", "auctions", "1", []),
-        # No Betting entry. The screen still exists as an unwired mockup
-        # (`abex_screens.betting`, reachable at /abex/betting with sample rows)
-        # and `games` is still a reserved ledger identity with the
-        # gambling_blocked interlock behind it -- all of that is harmless and
-        # stays. What could not stay is a NAV ITEM, because the nav is a
-        # promise: every other entry leads to a working page, and this one led
-        # to sample data for a product decision that has been made the other
-        # way. Abex Tech runs no game of chance and takes no bets.
-    ]),
-    ("My market", [
-        ("mine", "GreyHames", "/my", "mymarket", "", [
-            ("mine.overview", "Overview", "/my", ""),
-            ("mine.inventory", "Inventory", "/my/inventory", "42"),
-            ("mine.ledger", "Ledger", "/my/ledger", ""),
-            ("mine.orders", "Orders", "/my/orders", "6"),
-            ("mine.teams", "Teams", "/my/teams", "4"),
-            ("mine.liabilities", "Liabilities", "/my/liabilities", "2"),
-        ]),
-        ("mine.report", "July report", "/my/report", "mymarket", "", []),
-    ]),
-    ("World", [
-        ("work", "Work", "/work", "work", "7", []),
-        ("lands", "Lands", "/lands", "lands", "2", []),
-    ]),
-    ("You", [
-        ("profile", "Profile", "/profile", "hub", "", []),
-        ("messages", "Messages", "/messages", "hub", "3", []),
-        ("history", "History", "/history", "hub", "", []),
+        ("messages", "Messages",  "/messages", "messages", "3",  []),
+        ("history",  "History",   "/history",  "history",  "",   []),
     ]),
 ]
 
@@ -181,8 +161,12 @@ def _nav_html(active: str, staff: bool, available=None, prefix: str = "",
             items = [it for it in items if it[0].split(".")[0] in available]
             if not items:
                 continue
-        out.append('<div class="navgroup">'
-                   f'<div class="glabel">{_h.escape(label)}</div>')
+        # The design's tree is one UNNAMED group (spec §3, "flat top-level
+        # list"). An empty <div class="glabel"> would still take its padding and
+        # push the whole nav down by a phantom heading, so a group with no label
+        # emits no heading at all. Named groups (the staff tree) keep theirs.
+        head = f'<div class="glabel">{_h.escape(label)}</div>' if label else ""
+        out.append(f'<div class="navgroup">{head}')
         for key, text, href, _dom, meta, subs in items:
             cur = ' aria-current="page"' if key == active else ""
             if counts is not None and key in counts:

@@ -1835,9 +1835,12 @@ th.hide-sm, td.hide-sm{display:none}
 #: `vt_web_shell`'s nav keys, mapped onto the shell's tree. A key with no entry
 #: highlights nothing, which is right for a page that is not a section.
 _NAV_KEY = {
-    "hub": "", "markets": "markets", "banking": "banking", "auctions": "auctions",
-    "lands": "lands", "predictions": "betting", "messages": "messages",
-    "history": "history", "admin": "owner",
+    # "hub" used to map to "" — no section — so the Hub entry was filtered out of
+    # every sidebar and the only way back was the brand block. The design has Hub
+    # as the first nav item; it is a section like any other.
+    "hub": "hub", "markets": "markets", "banking": "banking", "auctions": "auctions",
+    "lands": "lands", "messages": "messages", "history": "history", "admin": "owner",
+    "exchange": "exchange", "work": "work", "stocks": "stocks",
 }
 
 #: Which sections this deployment actually mounted. The tree is the structure;
@@ -1859,14 +1862,28 @@ _MOUNTED = {v for v in _NAV_KEY.values() if v}
 #: `/banking/loans`, `/exchange/reports`) exists only under `/abex` so far, and a
 #: sidebar full of dead links is a worse first impression than a short one.
 _NAV_PATHS = {
+    "hub":      "/hub",
     "banking":  "/banking",
     "markets":  "/hub/markets",  # the DESIGNED markets screen, not /exchange
+    "exchange": "/abex/exchange",
+    "stocks":   "/abex/stocks",
+    "work":     "/abex/orders",
     "auctions": "/auctions",
     "lands":    "/lands",
     "messages": "/messages",
     "history":  "/history",
     "owner":    "/admin",
 }
+
+#: Exchange, Stocks and Work are served from `/abex/*`. That is not a placeholder
+#: - `abex_web` builds those three from the live database (`_exchange`, `_orders`
+#: and the stocks handler read real rows; only the banking sub-screens and the
+#: retired betting screen use sample data). They live under the prefix because the
+#: designed set was mounted BESIDE the old pages rather than over them, so
+#: promoting one is a screen's worth of work rather than a cutover.
+#:
+#: "My market" has no home yet on either side, so it is absent here and the nav
+#: drops it. A missing entry is a smaller lie than one that opens the old shell.
 
 #: Mounted AND reachable. A key that has no real path cannot be linked.
 _MOUNTED = {k for k in _MOUNTED if k in _NAV_PATHS}

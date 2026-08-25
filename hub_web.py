@@ -1845,7 +1845,16 @@ async def h_health(request: Any) -> Any:
                   "sections": [s["key"] for s in _SECTIONS], "ts": time.time()})
 
 
-register_section("markets", "Markets", "/exchange", order=20)
+# The Markets section is served HERE, by `h_markets` at `/hub/markets` - the
+# designed screen on live data. It was registered against `/exchange`, the old
+# terminal-shell page, so the sidebar's Markets entry walked out of the new shell
+# and into the pre-redesign site on every click. The registered path is what the
+# nav links to, so this line is the whole bug.
+register_section("markets", "Markets", HUB_PREFIX + "/markets", order=20)
+
+# Hub is a section, not just the brand block. The design's tree opens with it
+# (spec §3) and without a registration it is filtered out of the sidebar.
+register_section("hub", "Hub", HUB_PREFIX, order=10)
 
 
 def register_hub_routes(app: Any) -> None:
