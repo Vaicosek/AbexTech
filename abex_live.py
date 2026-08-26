@@ -1253,7 +1253,7 @@ def stock_detail(market_id: str, user_id: str = "") -> Optional[dict]:
     try:
         rows = db._get_conn().execute(
             "SELECT month, income, spent, net FROM csn_history "
-            "WHERE market_id = ? ORDER BY month DESC LIMIT 13", (mid,)).fetchall()
+            "WHERE market_id = ? ORDER BY month DESC LIMIT 24", (mid,)).fetchall()
         ordered = list(reversed([(r[0], float(r[1] or 0), float(r[2] or 0),
                                   float(r[3] or 0)) for r in rows]))
         for i, (month, income, spent, net) in enumerate(ordered):
@@ -1299,6 +1299,7 @@ def stock_detail(market_id: str, user_id: str = "") -> Optional[dict]:
         "months": months,
         "price_rows": (price_formula(mid)[0] if listing else []),
         "series": price_series(mid, 90),
+        "nets": net_series(mid, 36),
     }
 
 
@@ -1512,3 +1513,42 @@ def grade_detail(market_id: str) -> Optional[dict]:
             "history_months": int(q.get("history_months") or 0),
             "order_value_30d": float(q.get("order_value_30d") or 0),
             "visitors_month": float(q.get("visitors_month") or 0)}
+
+
+def net_series(market_id: str, months: int = 36) -> Optional[dict]:
+    """Filed net, month by month, oldest first.
+
+    THE PRICE LOG IS NOT THE HISTORY. `stock_price_log` for GreyHames starts on
+    16 July 2026 — three weeks — because that is when the exchange started
+    logging prices. Its EARNINGS go back to April 2024: twenty-nine filed months.
+    A page that draws only the price line says a market with two years of
+    accounts has no history.
+
+    So this is the other line: what the market actually earned, per filed month.
+    Not a price and not live — a month closes once.
+    """
+    try:
+        db = _db()
+    except Exception:                               # pragma: no cover
+        return None
+    try:
+        rows = db._get_conn().execute(
+            "SELECT month, net FROM csn_history WHERE market_id = ? "
+            "ORDER BY month DESC LIMIT ?", (str(market_id), int(months))).fetchall()
+    except Exception as exc:
+        log.warning("[abex_live] net history for %s unreadable: %s", market_id, exc)
+        return None
+    rows = list(reversed([(r[0], float(r[1] or 0)) for r in rows]))
+    if not rows:
+        return {"points": [], "at": [], "why": [], "marks": [], "trades": 0}
+    return {
+        "points": [n for _m, n in rows],
+        "at": [_month_name(m) for m, _n in rows],
+        "why": ["as filed" for _r in rows],
+        "marks": [],
+        "trades": 0,
+        "months": len(rows),
+        "from": rows[0][0],
+        "to": rows[-1][0],
+        "window": f"{len(rows)} filed months",
+    }

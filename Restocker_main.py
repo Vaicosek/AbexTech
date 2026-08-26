@@ -12183,14 +12183,27 @@ def _backing_rating(market_id):
             ratio, backed_pct, target_pct = 0.0, 0.0, 0.0
     grade = ("AAA" if ratio >= 1.5 else "AA" if ratio >= 1.0 else "A" if ratio >= 0.75
              else "BBB" if ratio >= 0.5 else "BB" if ratio >= 0.25 else "C")
-    # BACKING GATE (owner's rule, 2026-07): composite quality alone can't carry a
-    # listing into the high grades — real collateral must. Whatever the composite
-    # says, the grade is CAPPED by backed % of cap relative to the target (25%):
-    #   A needs the full target backed · AA 1.2× · AAA 1.6× · BBB 0.6× · BB 0.3×.
-    # 23% backed therefore reads BBB, not A — the label follows the chests.
+    # BACKING GATE (owner's rule, 2026-07; narrowed 2026-08-26): composite quality
+    # alone can't carry a listing into the HIGH grades — real collateral must.
+    #
+    # It used to cap at every band: 0.79x backed meant BBB whatever else the
+    # market did. That made the cap decide every grade in practice and the four
+    # pillars decorative — GreyHames scored A on composite and read BBB, Amazonia
+    # scored AA and read A, and the cap bound both times. A rating whose other
+    # inputs can only ever LOWER it is a backing ratio wearing a letter.
+    #
+    # So collateral now gates only AA and AAA:
+    #   1.6x backed or better -> no constraint
+    #   1.2x                  -> at most AA
+    #   below that            -> at most A
+    # A well-run market with ordinary collateral can earn A on traffic, order
+    # flow and report history. It cannot buy AA without the chests.
+    #
+    # Backing is still 35% of the composite, so a market with none is dragged
+    # hard on the way up: perfect on the other three pillars and zero on this one
+    # scores 0.65, a ratio of 1.08, which is an AA capped straight back to A.
     _brat = (backed_pct / target_pct) if target_pct else 0.0
-    _cap = ("AAA" if _brat >= 1.6 else "AA" if _brat >= 1.2 else "A" if _brat >= 1.0
-            else "BBB" if _brat >= 0.6 else "BB" if _brat >= 0.3 else "C")
+    _cap = "AAA" if _brat >= 1.6 else "AA" if _brat >= 1.2 else "A"
     _rank = {"C": 0, "BB": 1, "BBB": 2, "A": 3, "AA": 4, "AAA": 5}
     if _rank.get(_cap, 0) < _rank.get(grade, 0):
         grade = _cap

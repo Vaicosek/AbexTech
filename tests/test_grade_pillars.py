@@ -146,3 +146,72 @@ if __name__ == "__main__":
         if name.startswith("test_"):
             fn()
     print("grade pillars: ok")
+
+
+# ── the backing cap, narrowed (owner's call, 26 Aug 2026) ──────────────────
+#
+# The cap used to apply at EVERY band: 0.79x backed meant BBB whatever else a
+# market did. So the cap decided every grade and the four pillars were
+# decorative — GreyHames scored A on composite and read BBB, Amazonia scored AA
+# and read A, and the cap bound both times. A rating whose other inputs can only
+# ever lower it is a backing ratio wearing a letter.
+#
+# Collateral now gates AA and AAA only. Everything at A and below is the
+# composite's to decide.
+
+RANK = {"C": 0, "BB": 1, "BBB": 2, "A": 3, "AA": 4, "AAA": 5}
+
+
+def _band(ratio):
+    return ("AAA" if ratio >= 1.5 else "AA" if ratio >= 1.0 else "A" if ratio >= 0.75
+            else "BBB" if ratio >= 0.5 else "BB" if ratio >= 0.25 else "C")
+
+
+def _cap(brat):
+    """The shipped rule: AAA at 1.6x, AA at 1.2x, otherwise at most A."""
+    return "AAA" if brat >= 1.6 else "AA" if brat >= 1.2 else "A"
+
+
+def _graded(score, brat):
+    g = _band(score / 0.60)
+    c = _cap(brat)
+    return c if RANK[c] < RANK[g] else g
+
+
+def test_the_shipped_cap_matches_this_rule():
+    """Read out of the source, so the test fails if the ladder is edited."""
+    src = (Path(__file__).resolve().parent.parent / "Restocker_main.py").read_text(
+        encoding="utf-8")
+    assert '_cap = "AAA" if _brat >= 1.6 else "AA" if _brat >= 1.2 else "A"' in src
+
+
+def test_collateral_still_gates_the_top_two_bands():
+    perfect = 1.0                       # composite 1.0 -> ratio 1.67 -> AAA
+    assert _graded(perfect, 1.7) == "AAA"
+    assert _graded(perfect, 1.3) == "AA"
+    assert _graded(perfect, 1.19) == "A", "a market bought its way past the gate"
+    assert _graded(perfect, 0.0) == "A"
+
+
+def test_an_ordinary_market_can_now_earn_a():
+    """GreyHames: 0.79x backed, composite around 0.70."""
+    assert _graded(0.705, 0.79) == "A"
+
+
+def test_collateral_alone_still_buys_nothing():
+    """1.7x backed and nothing else working is a BBB, not an AAA."""
+    assert _graded(0.35, 1.7) == "BBB"
+
+
+def test_the_cap_can_only_lower_a_grade_never_raise_one():
+    for score in (0.1, 0.3, 0.5, 0.7, 0.9, 1.0):
+        for brat in (0.0, 0.5, 1.0, 1.3, 2.0):
+            assert RANK[_graded(score, brat)] <= RANK[_band(score / 0.60)]
+
+
+def test_a_market_with_no_chests_at_all_can_reach_a_and_no_further():
+    """The consequence of the owner's choice, asserted so it is not a surprise:
+    perfect traffic, orders and history with zero collateral rates A."""
+    zero_backed = (0.25 + 0.25 + 0.15) / 1.0        # backing scores 0
+    assert _graded(zero_backed, 0.0) == "A"
+    assert _graded(zero_backed, 1.3) == "AA"

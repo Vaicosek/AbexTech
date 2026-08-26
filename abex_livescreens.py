@@ -595,6 +595,7 @@ def stock(user_id: str = "", market_id: str = "", csrf: str = "") -> dict:
               "sampled, never averaged, so no point drawn is a price nobody saw."))
 
     # ── the months ──────────────────────────────────────────────────────────
+    nets = d.get("nets") or {}
     rows = []
     for m in d["months"]:
         change = m["change"]
@@ -610,7 +611,8 @@ def stock(user_id: str = "", market_id: str = "", csrf: str = "") -> dict:
     months = {"h2": "Month by month", "ac": 1,
               "c": ["Month", "Revenue#", "Costs#", "Net#", "Change#", "Change %#"],
               "r": rows,
-              "n": ("Each month against the one before it. Net is the FILED "
+              "n": (f"{len(rows)} of {nets.get('months', len(rows))} filed months, "
+                    "each against the one before it. Net is the FILED "
                     "figure — what stands on the record, which is what the share "
                     "price is derived from, not what the shop has taken since."
                     if rows else "Nothing filed yet.")}
@@ -644,6 +646,17 @@ def stock(user_id: str = "", market_id: str = "", csrf: str = "") -> dict:
         chart["spark"]["live"] = 1
         chart["spark"]["mid"] = d["market_id"]
 
+    # THE SECOND LINE, AND THE LONGER ONE. The price log starts when the exchange
+    # started logging prices — three weeks for GreyHames. Its earnings go back to
+    # April 2024. Drawing only the price says a market with two years of accounts
+    # has no history.
+    net_chart = None
+    if nets.get("points"):
+        net_chart = _spark_block(
+            "Net, every filed month", nets,
+            note=("What the market earned, per month, as filed. A month closes "
+                  "once, so this line does not move between filings."))
+
     items = _item_block(d["market_id"], d["listed"], owner)
 
     ticket = None
@@ -658,8 +671,8 @@ def stock(user_id: str = "", market_id: str = "", csrf: str = "") -> dict:
                              if held else "You hold none of this market yet."}}
 
     grade_block = _grade_block(d["market_id"], d["grade"])
-    blocks = [b for b in (chart, months, items, grade_block, price_block,
-                          ticket, register) if b is not None]
+    blocks = [b for b in (chart, net_chart, months, items, grade_block,
+                          price_block, ticket, register) if b is not None]
     # Both halves, as everywhere else that serves a signed-out reader: the
     # detail call is passed no user id so nothing is looked up against an
     # account, AND the block is not built without one. Either alone is a bug
