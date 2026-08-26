@@ -565,6 +565,76 @@ def _grade_block(market_id: str, grade: str) -> dict | None:
             "r": rows, "n": note}
 
 
+def _shop_blocks(market_id: str, name: str, listed: bool, owner: bool) -> list:
+    """The shop side: shelves, ledger, who runs it, what it owes.
+
+    §6.7 decides who sees it — a LISTED market discloses ledger, staff and
+    liabilities to everyone; a private one to its owner only. All four have
+    existed in the database the whole time and none were on a market's page, so
+    the site could tell you a market was rated on its inventory and never show
+    you the inventory.
+    """
+    if abex_live is None or not (listed or owner):
+        return []
+    out = []
+
+    sh = abex_live.shelves(market_id)
+    if sh and sh["rows"]:
+        rows = []
+        for r in sh["rows"]:
+            # A LEGACY ROW'S PRICE IS PER STACK, NOT PER PIECE. Nothing
+            # downstream trusts it — `_market_asset_value` skips the row — so it
+            # is not rendered as a per-piece figure here either. Saying "per
+            # stack" is the whole difference between a price and a 64x error.
+            unit = "a piece" if r["per_unit"] else "a stack"
+            rows.append([
+                r["item"], f"{r['stock']:,.0f}",
+                (f"{r['capacity']:,.0f}" if r["capacity"] else DASH),
+                (f"{r['sell']:,.0f}c {unit}" if r["sell"] else DASH),
+                (f"{r['buy']:,.0f}c {unit}" if r["buy"] else DASH),
+                ("m|counted" if r["per_unit"] else "w|not counted"),
+            ])
+        note = (f"{len(rows)} of {sh['lines']} stocked lines, most valuable first. "
+                f"Last scanned {sh['scanned'].replace('T', ' ')}.")
+        if sh["legacy_lines"]:
+            note += (f" {sh['legacy_lines']:,} line"
+                     f"{'' if sh['legacy_lines'] == 1 else 's'} carry a per-STACK "
+                     "price from an older scan. They back the shares by nothing "
+                     f"— {sh['uncounted']:,.0f}c of stock the rating cannot see — "
+                     "because valuing a per-stack price per piece reads up to 64x "
+                     "high. A fresh stock scan rewrites them.")
+        out.append({"h2": "On the shelves",
+                    "c": ["Item", "In stock#", "Capacity#", "Sells at#",
+                          "Buys at#", "Backing"],
+                    "r": rows, "n": note})
+
+    side = abex_live.shop_side(market_id)
+    if not side:
+        return out
+
+    if side["ledger"]:
+        out.append({"h2": f"Ledger, {side['month_name'].split()[0]}",
+                    "c": ["Date", "Entry", "Category", "In#", "Out#"],
+                    "r": [[d, e, c, ("g|" + i if i else DASH),
+                           ("l|" + o if o else DASH)]
+                          for d, e, c, i, o in side["ledger"]],
+                    "n": "Sales are what customers bought; restock is what the "
+                         "shop bought in."})
+
+    if side["staff"]:
+        out.append({"h2": "Who runs it",
+                    "c": ["Worker", "Role", "Jobs this month#", "Paid#"],
+                    "r": [list(r) for r in side["staff"]],
+                    "n": "Paid is what the team log recorded this month."})
+
+    if side["liabilities"]:
+        out.append({"h2": "Liabilities",
+                    "c": ["Item", "Held by", "Amount#", "Note"],
+                    "r": [[a, b, c, "m|" + d] for a, b, c, d in side["liabilities"]],
+                    "n": "Serviced out of net before dividends."})
+    return out
+
+
 # ── One stock ───────────────────────────────────────────────────────────────
 def stock(user_id: str = "", market_id: str = "", csrf: str = "") -> dict:
     """One market's page: the price, its shape, its months, its register.
@@ -618,6 +688,7 @@ def stock(user_id: str = "", market_id: str = "", csrf: str = "") -> dict:
         mine = _item_block(d["market_id"], False, owner)
         if mine is not None:
             blocks.append(mine)
+        blocks += _shop_blocks(d["market_id"], d["name"], False, owner)
         out = _shell("stocks", f"{d['name']} · private", band, blocks)
         out["title"] = d["name"]
         return out
@@ -715,8 +786,11 @@ def stock(user_id: str = "", market_id: str = "", csrf: str = "") -> dict:
                              if held else "You hold none of this market yet."}}
 
     grade_block = _grade_block(d["market_id"], d["grade"])
-    blocks = [b for b in (chart, net_chart, months, items, grade_block,
-                          price_block, ticket, register) if b is not None]
+    shop = _shop_blocks(d["market_id"], d["name"], d["listed"], owner)
+    blocks = ([b for b in (chart, net_chart, months) if b is not None]
+              + shop
+              + [b for b in (items, grade_block, price_block, ticket, register)
+                 if b is not None])
     # Both halves, as everywhere else that serves a signed-out reader: the
     # detail call is passed no user id so nothing is looked up against an
     # account, AND the block is not built without one. Either alone is a bug

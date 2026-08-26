@@ -1627,3 +1627,114 @@ def net_series(market_id: str, months: int = 36) -> Optional[dict]:
         "to": rows[-1][0],
         "window": f"{len(rows)} filed months",
     }
+
+
+def shelves(market_id: str, limit: int = 60) -> Optional[dict]:
+    """What is on a market's shelves right now: stock, capacity and prices.
+
+    `market_stock` is a live snapshot of the shop, and it has never been on this
+    site. That is why 25,000,000c of Amazonia's stock reads as nothing in its
+    backing with no way to see the reason from any page.
+
+    THE PRICE UNIT IS THE POINT. `buy_price`/`sell_price` are stored PER UNIT and
+    `buy_qty`/`sell_qty` are the shop's listed bulk quantity. A row with NO qty
+    is a LEGACY per-bulk price stored raw — the number is per stack, not per
+    piece, and nothing downstream trusts it: `_market_asset_value` skips those
+    rows, so they back the shares by zero. This returns that flag per row rather
+    than quietly rendering a figure that is 64x out.
+    """
+    try:
+        db = _db()
+    except Exception:                               # pragma: no cover
+        return None
+    try:
+        stock = db.get_market_stock(str(market_id)) or {}
+    except Exception as exc:
+        log.warning("[abex_live] shelves for %s unreadable: %s", market_id, exc)
+        return None
+
+    rows, counted, uncounted, seen = [], 0.0, 0.0, ""
+    for item, x in stock.items():
+        have = float(x.get("stock") or 0)
+        if have <= 0:
+            continue
+        per_unit = (x.get("sell_qty") is not None or x.get("buy_qty") is not None)
+        sell = float(x.get("sell_price") or 0)
+        buy = float(x.get("buy_price") or 0)
+        worth = have * (sell or buy)
+        if per_unit:
+            counted += worth
+        else:
+            uncounted += worth
+        at = str(x.get("updated_at") or "")
+        if at > seen:
+            seen = at
+        rows.append({"item": str(item), "stock": have,
+                     "capacity": float(x.get("capacity") or 0),
+                     "sell": sell, "buy": buy, "per_unit": per_unit,
+                     "worth": worth})
+    rows.sort(key=lambda r: -r["worth"])
+    return {"rows": rows[:limit], "lines": len(rows),
+            "counted": counted, "uncounted": uncounted,
+            "legacy_lines": sum(1 for r in rows if not r["per_unit"]),
+            "scanned": seen[:16]}
+
+
+def shop_side(market_id: str) -> Optional[dict]:
+    """The shop half of a market: its ledger, who runs it, what it owes.
+
+    §6.7: a LISTED market discloses ledger, staff and liabilities to everyone; a
+    private one discloses nothing but its grade. The owner console has had all
+    three since it was built, keyed to the person who owns the market — so a
+    listed market's own investors could not see the things the rule says they
+    are entitled to. The caller decides who may look; this just reads.
+    """
+    try:
+        db = _db()
+    except Exception:                               # pragma: no cover
+        return None
+    mid = str(market_id or "")
+    month = _now_month()
+    out = {"ledger": [], "staff": [], "liabilities": [], "month": month,
+           "month_name": _month_name(month)}
+
+    try:
+        for day, item, verb, qty, coins in db._get_conn().execute(
+                "SELECT sale_day, item, verb, qty, coins FROM csn_transactions "
+                "WHERE market_id = ? ORDER BY sale_ts DESC LIMIT 40", (mid,)):
+            amount = abs(float(coins or 0))
+            bought_in = str(verb) == "sold"          # the shop bought stock in
+            out["ledger"].append((
+                _day_name(day), f"{item} ×{int(qty or 0)}",
+                "Restock" if bought_in else "Sales",
+                "" if bought_in else f"{amount:,.0f}c",
+                f"{amount:,.0f}c" if bought_in else ""))
+    except Exception as exc:
+        log.warning("[abex_live] ledger for %s unreadable: %s", mid, exc)
+
+    try:
+        owner = str((db.get_markets() or {}).get(mid, {}).get("owner_id") or "")
+        perf = {}
+        for wid, coins, n in db._get_conn().execute(
+                "SELECT worker_id, SUM(coins), COUNT(*) FROM team_perf_log "
+                "WHERE manager_id = ? AND created_at >= ? GROUP BY worker_id",
+                (owner, month + "-01")):
+            perf[str(wid)] = (float(coins or 0), int(n or 0))
+        for member in (db.get_team(owner) or []):
+            wid = str(member.get("worker_id") if isinstance(member, dict) else member)
+            paid, jobs = perf.get(wid, (0.0, 0))
+            out["staff"].append((_owner_name(db, wid), "Worker", str(jobs),
+                                 f"{paid:,.0f}c"))
+    except Exception as exc:
+        log.warning("[abex_live] staff for %s unreadable: %s", mid, exc)
+
+    try:
+        due = float(db.get_config(f"vault_due:{mid}") or 0)
+        bal = float(db.get_config(f"vault_bal:{mid}") or 0)
+        if due - bal > 1:
+            out["liabilities"].append(
+                ("Vault retention owed", "Abex Tech", f"{due - bal:,.0f}c",
+                 "accrued from closed months"))
+    except Exception:
+        pass
+    return out
