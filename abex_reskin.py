@@ -144,6 +144,49 @@ def _shell_css() -> str:
     return "".join(parts)
 
 
+
+def _root_tokens(css: str, scope: str = SCOPE) -> str:
+    """Legacy custom properties the SHELL does not define, restored to `:root`.
+
+    Scoping `:root` to `.legacypage` is right for the cascade and wrong for
+    JavaScript. These pages read their own tokens back through
+    `getComputedStyle(document.documentElement).getPropertyValue('--up')`, and a
+    property that now lives on a div returns `''` there. On /orders that made a
+    100%-filled progress bar render with `background:''` — an empty track, on
+    the row that means the work is done.
+
+    Only the names the shell does NOT already define are re-emitted. `--accent`
+    and `--line` stay scoped, because those are exactly the ones that would
+    overwrite the shell's own. `--up` is restored, because the shell has no such
+    name — it calls that colour `--gain` — so nothing of the shell's is touched.
+
+    Not caught by looking at the page: the three tokens the JS reads most
+    (`--amber`, `--accent`, `--muted`) happen to exist in the shell too, so they
+    resolved anyway and only `--up` was empty. A screenshot of a row that was
+    not at 100% looks perfect.
+    """
+    import re as _re
+    mine, theirs = {}, set()
+    for head, body, _w in _rules(css):
+        if head.startswith("@") or body is None:
+            continue
+        if head.strip() in (":root", "html", "body"):
+            for name, value in _re.findall(r"(--[\w-]+)\s*:\s*([^;]+)", body):
+                mine[name] = value.strip()
+    for head, body, _w in _rules(_shell_css()):
+        if body is None:
+            continue
+        for name, _v in _re.findall(r"(--[\w-]+)\s*:\s*([^;]+)", body):
+            theirs.add(name)
+    only_mine = {k: v for k, v in mine.items() if k not in theirs}
+    if not only_mine:
+        return ""
+    decls = ";".join(f"{k}:{v}" for k, v in sorted(only_mine.items()))
+    return (f"/* legacy tokens the shell does not define, kept on :root because "
+            f"the page's own script reads them from documentElement */\n"
+            f":root{{{decls}}}\n")
+
+
 def _neutralise(page_css: str, scope: str = SCOPE) -> str:
     """Undo the shell's rules for class names the legacy page also uses.
 
@@ -245,6 +288,7 @@ def render(template: str, *, active: str, title: str, user=None, snap=None,
         html = html.replace(key, value)
     body, page_css, scripts = _split(html)
     css = (_neutralise(page_css)
+           + _root_tokens(RW._TERMINAL_CSS + "\n" + page_css)
            + _scope_css(RW._TERMINAL_CSS) + "\n" + _scope_css(page_css))
     # The body goes inside the scope it was just confined to.
     body = f'<div class="{SCOPE}">{body}</div>' 

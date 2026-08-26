@@ -306,3 +306,40 @@ def test_the_toggle_defaults_to_hidden_when_unknown():
     src = (HERE.parent / "hub_web.py").read_text(encoding="utf-8")
     i = src.index("anonymity preference unreadable")
     assert "anon = True" in src[max(0, i - 700):i]
+
+
+def test_legacy_tokens_the_shell_lacks_stay_readable_from_javascript():
+    """Scoping `:root` is right for the cascade and wrong for JavaScript.
+
+    These pages read their own tokens back through
+    `getComputedStyle(document.documentElement).getPropertyValue('--up')`. Once
+    `:root` became `.legacypage`, that returned '' — and on /orders a
+    100%-filled progress bar rendered with `background:''`, an empty track, on
+    the row that means the work is finished.
+
+    Nearly invisible: the three tokens the JS reads most (`--amber`,
+    `--accent`, `--muted`) exist in the shell too, so they resolved anyway.
+    Only `--up` was empty, and only on rows at 100%.
+    """
+    import abex_reskin
+    import Restocker_web as RW
+    page_css = re.search(r"<style[^>]*>(.*?)</style>", RW._ORDERS_HTML,
+                         re.S).group(1)
+    root = abex_reskin._root_tokens(RW._TERMINAL_CSS + page_css)
+    assert "--up:" in root, "the page's JS cannot see --up without this"
+    # And the ones that WOULD overwrite the shell stay scoped.
+    for shared in ("--accent:", "--line:"):
+        assert shared not in root, (
+            f"{shared} is the shell's too; putting it back on :root overwrites it")
+
+
+def test_the_orders_progress_bar_has_a_colour_to_read():
+    """The concrete failure, end to end: status 'ready' and a 100% bar both ask
+    for `--up` by name from documentElement."""
+    import abex_reskin
+    import Restocker_web as RW
+    assert "css('--up')" in RW._ORDERS_HTML, (
+        "if this moves, this test is checking the wrong thing")
+    assert "getComputedStyle(document.documentElement)" in RW._ORDERS_HTML
+    root = abex_reskin._root_tokens(RW._TERMINAL_CSS)
+    assert "#8fbf6a" in root
