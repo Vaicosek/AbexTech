@@ -475,6 +475,10 @@ def _item_block(market_id: str, listed: bool, owner: bool) -> dict | None:
     return {"h2": "What moves here", "c": cols, "r": rows, "n": note}
 
 
+#: Mirrors the engine's ladder so the page can say which constraint bound.
+_GRADE_RANK = {"C": 0, "BB": 1, "BBB": 2, "A": 3, "AA": 4, "AAA": 5}
+
+
 def _grade_block(market_id: str, grade: str) -> dict | None:
     """Why this market has this grade — the pillars, and the cap that binds.
 
@@ -532,12 +536,29 @@ def _grade_block(market_id: str, grade: str) -> dict | None:
                  (" has no data feeding it, so it is" if one
                   else " have no data feeding them, so they are") +
                  " left out of the average rather than counted as zero.")
+    # The backing pillar is one number made of six. When it is the thing holding
+    # a grade down, "79%" is not an answer a market owner can act on.
+    for label, pct, coins in (d.get("backing_parts") or []):
+        if pct <= 0:
+            continue
+        rows.append(["  " + label, f"m|{pct:,.1f}%", "m|of market cap",
+                     f"m|{coins:,.0f}c"])
+
+    if d.get("uncounted_lines"):
+        n = int(d["uncounted_lines"])
+        rows.append(["  Inventory not counted", f"w|{n:,} line{'' if n == 1 else 's'}",
+                     "m|priced per stack",
+                     "m|a per-stack price valued per unit reads up to 64x high, so "
+                     "these are skipped until the next stock scan rewrites them"])
+
     if d.get("vault_arrears", 0) > 1:
+        binds = d.get("vault_binds")
         rows.append(["Vault arrears",
-                     ("l|" if d.get("vault_binds") else "w|")
-                     + f"{d['vault_arrears']:,.0f}c",
-                     "m|caps at BBB",
-                     "m|10% of each closed month, retained; unpaid here"])
+                     ("l|" if binds else "m|") + f"{d['vault_arrears']:,.0f}c",
+                     "m|caps at BBB" if binds else "m|does not bind",
+                     ("m|10% of each closed month, retained; unpaid here" if binds
+                      else "m|nobody outside the owner holds this market, so the "
+                           "retention protects nobody")])
 
     return {"h2": f"Why this market is {grade}",
             "c": ["Pillar", "Score#", "Weight#", "What it measures"],

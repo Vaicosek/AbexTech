@@ -310,3 +310,107 @@ def test_arrears_appear_as_a_row_not_only_a_sentence():
 def test_no_arrears_row_when_the_vault_is_square():
     blk = _note(CACHED, "A", due=0.0)
     assert not [r for r in blk["r"] if r[0] == "Vault arrears"]
+
+
+# ── arrears that protect nobody, and stock the rating cannot see ───────────
+
+def _detail2(blob, mid="amazonia", due=0.0, bal=0.0, holders=None, owner="OWNER",
+             stock=None):
+    import json as _json
+    real = L._db
+
+    class _Db:
+        @staticmethod
+        def get_config(key):
+            if key == f"quality:{mid}":
+                return _json.dumps(blob)
+            if key == f"vault_due:{mid}":
+                return str(due)
+            if key == f"vault_bal:{mid}":
+                return str(bal)
+            return None
+
+        @staticmethod
+        def get_markets():
+            return {mid: {"owner_id": owner}}
+
+        @staticmethod
+        def get_holders(_m):
+            return holders if holders is not None else []
+
+        @staticmethod
+        def get_market_stock(_m):
+            return stock or {}
+
+    L._db = lambda: _Db
+    try:
+        return L.grade_detail(mid)
+    finally:
+        L._db = real
+
+
+def test_arrears_do_not_bind_when_nobody_else_holds_the_market():
+    """The retention protects outside shareholders and bondholders. A market
+    whose whole register is the owner's has neither, so arrears there are a
+    penalty for failing to protect nobody."""
+    d = _detail2(ARREARS, due=140541.962,
+                 holders=[{"user_id": "OWNER", "shares": 1000}])
+    assert d["free_float"] == 0
+    assert d["vault_binds"] is False
+
+
+def test_arrears_bind_the_moment_somebody_else_holds_it():
+    d = _detail2(ARREARS, due=140541.962,
+                 holders=[{"user_id": "OWNER", "shares": 900},
+                          {"user_id": "SOMEBODY", "shares": 100}])
+    assert d["free_float"] == 100
+    assert d["vault_binds"] is True
+
+
+def test_an_unreadable_register_keeps_the_obligation():
+    """Unknown is not zero — a failed query must not waive a debt."""
+    real = L._db
+
+    class _Boom:
+        @staticmethod
+        def get_config(key):
+            import json as _json
+            return _json.dumps(ARREARS) if key.startswith("quality:") else "140541.962"
+
+        @staticmethod
+        def get_markets():
+            raise RuntimeError("register unavailable")
+
+    L._db = lambda: _Boom
+    try:
+        d = L.grade_detail("amazonia")
+    finally:
+        L._db = real
+    assert d["free_float"] > 0, "arrears were waived because a query failed"
+
+
+def test_legacy_stock_lines_are_counted_and_named():
+    """174 stocked lines priced per stack back Amazonia's shares by zero, and
+    the page has to say so — the guard is right (valuing them per unit reads
+    99,321,236c against a 30,000,000c cap) but silence looks like a bug."""
+    stock = {f"item{i}": {"stock": 10, "sell_price": 100,
+                          "sell_qty": None, "buy_qty": None} for i in range(174)}
+    d = _detail2(CACHED, stock=stock)
+    assert d["uncounted_lines"] == 174
+
+    detail = d
+    real = L.grade_detail
+    L.grade_detail = lambda m: detail
+    try:
+        blk = LS._grade_block("amazonia", "A")
+    finally:
+        L.grade_detail = real
+    row = [r for r in blk["r"] if "not counted" in r[0]]
+    assert row, [r[0] for r in blk["r"]]
+    assert "174 lines" in row[0][1]
+    assert "per stack" in row[0][2]
+
+
+def test_per_unit_lines_are_not_flagged():
+    stock = {"a": {"stock": 10, "sell_price": 100, "sell_qty": 1, "buy_qty": None}}
+    assert _detail2(CACHED, stock=stock)["uncounted_lines"] == 0

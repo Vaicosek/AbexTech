@@ -1533,14 +1533,57 @@ def grade_detail(market_id: str) -> Optional[dict]:
         pass
     arrears = max(0.0, due - bal)
 
+    # Free float decides whether those arrears bind, exactly as the engine has
+    # it: the retention protects outside shareholders and bondholders, and a
+    # market whose whole register is the owner's has neither.
+    outside = 0.0
+    try:
+        owner_id = str((db.get_markets() or {}).get(mid, {}).get("owner_id") or "")
+        outside = sum(float(h.get("shares") or 0)
+                      for h in (db.get_holders(mid) or [])
+                      if str(h.get("user_id") or "") != owner_id)
+    except Exception:
+        outside = 1.0
+
+    # WHAT THE BACKING IS MADE OF, and what is not counted. Asked for by name
+    # after 25,000,000c of items showed up as nothing: Amazonia has 174 stocked
+    # lines and every one is a LEGACY per-stack row, so `_market_asset_value`
+    # skips them all and its inventory backs the shares by zero. The guard is
+    # right — valuing a per-stack price per-unit reads 99,321,236c against a
+    # 30,000,000c cap, which is the "383% backed" bug — but a market whose stock
+    # is invisible to its own rating should be told, not left to wonder.
+    parts, uncounted = [], 0
+    try:
+        core = _core()
+        b = core._market_backing(mid)
+        parts = [("Treasury", b.get("cash_pct", 0.0), b.get("cash", 0.0)),
+                 ("Inventory", b.get("asset_pct", 0.0), b.get("assets", 0.0)),
+                 ("For sale", b.get("sellable_pct", 0.0), b.get("sellable", 0.0)),
+                 ("Exchange fund", b.get("fund_pct", 0.0), b.get("fund_share", 0.0)),
+                 ("Vault", b.get("vault_pct", 0.0), b.get("vault_bal", 0.0)),
+                 ("Pledged, after haircut", b.get("pledge_pct", 0.0),
+                  b.get("pledged", 0.0))]
+    except Exception as exc:
+        log.warning("[abex_live] backing parts for %s unreadable: %s", mid, exc)
+    try:
+        for _item, x in (db.get_market_stock(mid) or {}).items():
+            if float(x.get("stock") or 0) > 0 and x.get("sell_qty") is None \
+                    and x.get("buy_qty") is None:
+                uncounted += 1
+    except Exception:
+        uncounted = 0
+
     band = _band_for(score / 0.60 if score else 0.0)
     cap = "AAA" if backing_ratio >= 1.6 else "AA" if backing_ratio >= 1.2 else "A"
     return {"rows": rows, "score": score, "ratio": score / 0.60 if score else 0.0,
             "backed_pct": backed, "target_pct": target,
             "backing_ratio": backing_ratio,
             "band": band, "cap": cap,
+            "backing_parts": parts, "uncounted_lines": uncounted,
             "vault_due": due, "vault_bal": bal, "vault_arrears": arrears,
-            "vault_binds": bool(arrears > 1 and _RANK.get(band, 0) > 2
+            "free_float": outside,
+            "vault_binds": bool(arrears > 1 and outside > 0
+                                and _RANK.get(band, 0) > 2
                                 and _RANK.get(cap, 0) > 2),
             "history_months": int(q.get("history_months") or 0),
             "order_value_30d": float(q.get("order_value_30d") or 0),

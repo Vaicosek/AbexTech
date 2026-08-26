@@ -12161,6 +12161,31 @@ _LAST_INDEX_SNAP = 0.0
 INDEX_BACKING_BASE = _env_float("INDEX_BACKING_BASE", 0.5)
 
 
+def _outside_equity(market_id) -> float:
+    """Shares held by ANYBODY BUT THE OWNER. The free float, in shares.
+
+    The retained-earnings vault exists to protect people who are not the owner:
+    outside shareholders waiting on a dividend, and bondholders waiting on a
+    coupon, both of whom are paid out of net AFTER the 10% is retained. A market
+    whose whole register sits with its owner has none of them. There is nobody
+    the retention is protecting and nobody a shortfall could hurt.
+
+    Amazonia is that market: 1,000 shares, all of them the owner's, no dividend
+    ever declared, 0.0% free float. It accrued a vault obligation anyway and was
+    clamped to BBB for owing it — a penalty for failing to protect nobody.
+    """
+    import Restocker_db as _db
+    try:
+        owner = str((_db.get_markets() or {}).get(str(market_id), {}).get("owner_id") or "")
+        return sum(float(h.get("shares") or 0)
+                   for h in (_db.get_holders(str(market_id)) or [])
+                   if str(h.get("user_id") or "") != owner)
+    except Exception:
+        # Unknown is not zero: if the register cannot be read, keep the
+        # obligation rather than waiving it on a failed query.
+        return 1.0
+
+
 def _backing_rating(market_id):
     """(grade, weight, backed_pct, target_pct). House rule of this exchange: backing
     RATES a listing. The grade (AAA…C) shows on /stock price, and `weight` scales the
@@ -12209,11 +12234,19 @@ def _backing_rating(market_id):
         grade = _cap
     # VAULT ARREARS: a company behind on its 10% retained-earnings deposits can't
     # rate above BBB, whatever else it has — pay the vault first.
+    #
+    # UNLESS NOBODY ELSE HOLDS IT (owner's call, 26 Aug 2026). The retention is
+    # there to protect outside shareholders and bondholders, who are paid out of
+    # net after it. A market whose whole register is the owner's has neither, so
+    # the arrears protect nobody and clamping for them is a penalty for failing
+    # to protect nobody. Amazonia: 1,000 shares, all the owner's, no dividend
+    # ever declared, clamped to BBB over 140,542c owed to itself.
     try:
         import Restocker_db as _dbv
         _due = float(_dbv.get_config(f"vault_due:{market_id}") or 0)
         _bal = float(_dbv.get_config(f"vault_bal:{market_id}") or 0)
-        if _due - _bal > 1 and _rank.get(grade, 0) > 2:
+        if (_due - _bal > 1 and _rank.get(grade, 0) > 2
+                and _outside_equity(market_id) > 0):
             grade = "BBB"
     except Exception:
         pass
@@ -12721,6 +12754,11 @@ def _accrue_vault_retention() -> None:
                 _db.set_config(f"vault_ret_done:{mid}:{mk}", "1")
                 net = float(months[mk] or 0)
                 if net <= 0:
+                    continue
+                # Same rule as the clamp: no outside shareholders, no retention
+                # obligation. Accruing it anyway grows a debt a market owes to
+                # itself, which then shows on its own console as an arrears.
+                if _outside_equity(mid) <= 0:
                     continue
                 due = net * STOCK_RETAINED_EARNINGS_PCT / 100.0
                 old = float(_db.get_config(f"vault_due:{mid}") or 0)
