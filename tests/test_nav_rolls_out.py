@@ -108,13 +108,18 @@ def test_markets_really_does_open_now():
     assert _keys(html, "navsub"), "the children were built and then dropped"
 
 
-def test_the_owners_console_opens_on_its_shelves():
-    """`market` is the section that prompted this: the console's children should
-    name what is on it, inventory first."""
-    screen = {"blocks": [{"h2": "What moves here"}, {"h2": "On the shelves"},
-                         {"h2": "Ledger, August"}]}
+def test_a_section_with_declared_children_does_not_use_block_headings():
+    """This test used to check that Market opened on its own block headings.
+    That was the wrong model: Market's sub-categories are PAGES, so they are
+    declared rather than derived, and deriving them from blocks is what capped
+    them at four and dropped two. See `tests/test_section_children.py`.
+
+    Everything here still applies to a section WITHOUT declared children —
+    Markets, Banking, the Hub — which is what the rest of this file covers.
+    """
+    screen = {"blocks": [{"h2": "Ledger, August"}, {"h2": "Liabilities"}]}
     subs = hub_web.nav_subs("market", screen)
-    # `market` is keyed `mine` in the nav tree — the children hang off that key
-    # or they hang off nothing.
-    assert "mine" in subs
-    assert [s[1] for s in subs["mine"]][:2] == ["What moves here", "On the shelves"]
+    labels = [s[1] for s in subs["mine"]]
+    assert "Inventory" in labels, labels
+    assert "Ledger, August" not in labels, (
+        "a declared child list must win over whatever blocks the page has")

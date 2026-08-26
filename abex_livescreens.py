@@ -1082,20 +1082,16 @@ def market(user_id: str = "") -> dict:
     asof = (f"{data['name']} · you are the owner · "
             + (f"listed at {data['share_price']:,.2f}c a share"
                if data.get("share_price") else "not listed on the exchange"))
-    # HIS OWN STOCK, ON HIS OWN CONSOLE. Inventory was built for a market's
-    # public page and never put here, so the one person who most needs to see
-    # what is on the shelves — the owner — had a console with a ledger, a
-    # waterfall and no goods on it. Same block, same "counted / not counted"
-    # flag, because the rating reads the same rows.
-    mid = str(data["market_id"])
-    listed = bool(data.get("share_price"))
-    shelves = [b for b in (_item_block(mid, listed, True),) if b is not None]
-    shelves += [b for b in _shop_blocks(mid, data["name"], listed, True)
-                # The ledger, the team and the liabilities are already on this
-                # console, in the owner's own form. Only the shelves are new.
-                if str(b.get("h2") or "").startswith("On the shelves")]
+    # THE CONSOLE IS A LANDING, NOT A PILE. Inventory and the shelves were
+    # stacked on here for one commit and it was the wrong call: seven blocks in
+    # one scroll is not an information architecture, and the nav could only show
+    # four of them, so Liabilities and Staff vanished from it entirely.
+    #
+    # Market's children are real pages now (`hub_web.SECTION_CHILDREN`), so the
+    # shelves live at /inventory where they always did. What stays here is the
+    # owner's own summary — his month, his waterfall, what is waiting on him.
     screen_d = _shell("market", asof, band,
-                      shelves + [ledger, month_bal, waterfall, liab, staff])
+                      [ledger, month_bal, waterfall, liab, staff])
     screen_d["title"] = data["name"]
     return screen_d
 

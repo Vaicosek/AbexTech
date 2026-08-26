@@ -2311,13 +2311,41 @@ document.getElementById('divsub').textContent='% of treasury';
 </script></body></html>"""
 
 
+def _legacy_page(request, template, active, title, replacements=None):
+    """A legacy terminal page, served inside the hub shell — ONE nav, one skin.
+
+    These pages each carried their own `header.tshell` with their own set of
+    links, which is why the site read as two products: from `/inventory` there
+    was no way to the rest of it, and from the hub no way here. The body, the
+    stylesheet and the page script are untouched; only the chrome changes.
+
+    Falls back to the ORIGINAL page if anything in the re-hang fails. A page
+    with the wrong header still shows a market's stock; a traceback does not,
+    and these are the pages people actually use.
+    """
+    rep = dict(replacements or {})
+    rep["__TERMINAL_CSS__"] = _TERMINAL_CSS
+    try:
+        import abex_reskin, hub_web
+        user = hub_web.current_user(request)
+        snap = hub_web.money_snapshot(user["user_id"]) if user else None
+        html = abex_reskin.render(template, active=active, title=title,
+                                  user=user, snap=snap, replacements=rep)
+    except Exception as exc:
+        print(f"[reskin] {active} fell back to the legacy shell: {exc!r}")
+        html = template
+        for k, v in rep.items():
+            html = html.replace(k, v)
+        html = html.replace("__NAV__", _TERMINAL_NAV)
+    return web.Response(text=html, content_type="text/html")
+
+
+
 async def _handle_liabilities_page(request):
     data = _cached("liabilities", _load_liabilities_data)
-    html = (_LIAB_HTML
-            .replace("__TERMINAL_CSS__", _TERMINAL_CSS)
-            .replace("__NAV__", _TERMINAL_NAV)
-            .replace("__LIAB_JSON__", _jscript(data)))
-    return web.Response(text=html, content_type="text/html")
+    return _legacy_page(request, _LIAB_HTML, "mine.liabilities",
+                        "Liabilities · Abex Tech",
+                        {"__LIAB_JSON__": _jscript(data)})
 
 
 async def _handle_api_liabilities(request):
@@ -2327,19 +2355,15 @@ async def _handle_api_liabilities(request):
 
 
 async def _handle_investor_page(request):
-    html = (_INVESTOR_HTML
-            .replace("__TERMINAL_CSS__", _TERMINAL_CSS)
-            .replace("__NAV__", _TERMINAL_NAV))
-    return web.Response(text=html, content_type="text/html")
+    return _legacy_page(request, _INVESTOR_HTML, "mine.investor",
+                        "Investor · Abex Tech")
 
 
 async def _handle_inventory_page(request):
     inventory = _cached("inventory", _load_inventory_data)
-    html = (_INVENTORY_HTML
-            .replace("__TERMINAL_CSS__", _TERMINAL_CSS)
-            .replace("__NAV__", _TERMINAL_NAV)
-            .replace("__INVENTORY_JSON__", _jscript(inventory)))
-    return web.Response(text=html, content_type="text/html")
+    return _legacy_page(request, _INVENTORY_HTML, "mine.inventory",
+                        "Inventory · Abex Tech",
+                        {"__INVENTORY_JSON__": _jscript(inventory)})
 
 
 # ── /ledger — terminal Earnings page (Pass 2) ────────────────────────────────
@@ -2567,9 +2591,9 @@ chips();render();addEventListener('resize',render);
 
 async def _handle_ledger_page(request):
     ef = _cached("earnings_full", _load_earnings_full)
-    html = (_LEDGER_HTML.replace("__TERMINAL_CSS__", _TERMINAL_CSS)
-            .replace("__NAV__", _TERMINAL_NAV).replace("__EARNFULL_JSON__", _jscript(ef)))
-    return web.Response(text=html, content_type="text/html")
+    return _legacy_page(request, _LEDGER_HTML, "mine.ledger",
+                        "Ledger · Abex Tech",
+                        {"__EARNFULL_JSON__": _jscript(ef)})
 
 
 # ── /orders — terminal Orders board (Pass 3) ─────────────────────────────────
@@ -2751,11 +2775,10 @@ chips();render();
 async def _handle_orders_page(request):
     orders = _cached("orders_board", _load_orders_data)
     items = _cached("items", _load_items)
-    html = (_ORDERS_HTML.replace("__TERMINAL_CSS__", _TERMINAL_CSS)
-            .replace("__NAV__", _TERMINAL_NAV)
-            .replace("__ORDERS_JSON__", _jscript(orders))
-            .replace("__ITEMS_JSON__", _jscript(items)))
-    return web.Response(text=html, content_type="text/html")
+    return _legacy_page(request, _ORDERS_HTML, "mine.orders",
+                        "Orders · Abex Tech",
+                        {"__ORDERS_JSON__": _jscript(orders),
+                         "__ITEMS_JSON__": _jscript(items)})
 
 
 # ── /teams — terminal Teams leaderboard (Pass 4a) ────────────────────────────
@@ -2880,9 +2903,9 @@ async def _handle_teams_page(request):
     # Cache key MUST include the window: a single "teams_data" key would serve the
     # all-time numbers under the 30-day heading and vice versa.
     teams = _cached(f"teams_data:{days}", lambda: _load_teams_data(days))
-    html = (_TEAMS_HTML.replace("__TERMINAL_CSS__", _TERMINAL_CSS)
-            .replace("__NAV__", _TERMINAL_NAV).replace("__TEAMS_JSON__", _jscript(teams)))
-    return web.Response(text=html, content_type="text/html")
+    return _legacy_page(request, _TEAMS_HTML, "mine.teams",
+                        "Teams · Abex Tech",
+                        {"__TEAMS_JSON__": _jscript(teams)})
 
 
 # ── /mymarket — terminal owner panel (Pass 4b) ───────────────────────────────

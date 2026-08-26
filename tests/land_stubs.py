@@ -303,6 +303,13 @@ def fresh_db(tmpdir: str):
     install()
     path = os.path.join(tmpdir, "restocker.db")
     import Restocker_db as db
+    # THE OLD PATH IS PUT BACK. This used to point `DB_PATH` at a temp file and
+    # leave it there, so every test that ran afterwards in the same process read
+    # a database that had just been deleted — `test_shop_side`,
+    # `test_stock_page`, `test_trade_ticket` and `test_price_lines` all failed
+    # in a whole-suite run and passed on their own, which reads as flakiness and
+    # is not: it is this line.
+    _was_path, _was_local = db.DB_PATH, getattr(db, "_local", None)
     db.DB_PATH = Path(path)
     db._local = types.SimpleNamespace(conn=None)
     db.init_db()
@@ -318,3 +325,6 @@ def fresh_db(tmpdir: str):
             if conn is not None:
                 conn.close()
             mod._local = types.SimpleNamespace(conn=None)
+        db.DB_PATH = _was_path
+        if _was_local is not None:
+            db._local = _was_local

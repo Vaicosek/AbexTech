@@ -149,17 +149,24 @@ def test_the_owner_of_an_empty_shop_is_told_why():
     assert "stock scan" in shelf[0]["n"], "with the reason, not just a dash"
 
 
-def test_the_owners_console_carries_his_own_stock():
-    """Inventory was built for a market's public page and never put on the
-    console, so the one person who most needs to see the shelves — the owner —
-    had a page with a ledger, a waterfall and no goods on it."""
+def test_the_shelves_are_a_child_page_not_a_block_on_the_console():
+    """This test used to assert the opposite, and the opposite was wrong.
+
+    Inventory was bolted onto the owner's console for one commit. That made the
+    console seven blocks deep, duplicated `/inventory` — which has the barrel
+    capacity derivation, the alias resolution and the bundle prices this table
+    does not — and pushed two of its own blocks out of the nav, which capped
+    derived children at four.
+
+    Market has real child pages now. The shelves are at `/inventory`, where they
+    always were. See `tests/test_section_children.py`.
+    """
     src = Path(__file__).resolve().parent.parent / "abex_livescreens.py"
     body = src.read_text(encoding="utf-8")
     body = body[body.index("def market(user_id"):]
-    body = body[:body.index("screen_d[\"title\"]")]
-    assert "_item_block(" in body, "the console must build the items block"
-    assert "_shop_blocks(" in body, "and the shelves"
-    assert "On the shelves" in body
+    body = body[:body.index('screen_d["title"]')]
+    assert "_shop_blocks(" not in body
+    assert "_item_block(" not in body
 
 
 def test_every_shelf_line_carries_its_own_bar():

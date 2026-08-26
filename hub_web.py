@@ -871,6 +871,32 @@ def _nav_html(active: str, user: Optional[dict] = None) -> str:
     return "<nav>" + "".join(tabs) + "</nav>"
 
 
+#: The sections that have real CHILD PAGES, and where each one lives.
+#:
+#: `Market` is the case that forced this. Its console had grown to seven blocks
+#: — items, shelves, ledger, month, waterfall, liabilities, staff — because the
+#: things that used to be separate pages got stacked onto one screen. Seven
+#: things in one scroll is not an information architecture, and the nav made it
+#: worse: children were derived from block headings and capped at four, so
+#: Liabilities and Staff were silently not in the nav at all.
+#:
+#: These are the LEGACY pages, at their own routes, re-hung in this shell by
+#: `abex_reskin`. The data and the behaviour are theirs; only the chrome is new.
+#: Declared here rather than derived, because a child page is a routing fact and
+#: cannot be read off the parent's blocks.
+SECTION_CHILDREN = {
+    "mine": [
+        ("mine.inventory",   "Inventory",   "/inventory"),
+        ("mine.ledger",      "Ledger",      "/ledger"),
+        ("mine.orders",      "Orders",      "/orders"),
+        ("mine.teams",       "Teams",       "/teams"),
+        ("mine.liabilities", "Liabilities", "/liabilities"),
+        ("mine.investor",    "Investor",    "/investor"),
+        ("mine.report",      "Report",      "/hub/filing"),
+    ],
+}
+
+
 #: How many blocks a section's nav entry may expand to. §3 draws "one or two
 #: children"; a screen with nine blocks would turn the sidebar into a table of
 #: contents and push everything below it off the fold. The first four are the
@@ -890,14 +916,25 @@ def nav_subs(active: str, screen: Optional[dict]) -> Optional[dict]:
     Anchors, not routes. `abex_render.block_id` derives the id from the heading
     and this derives the href from the same heading, so the two cannot drift.
     """
+    key = _NAV_KEY_FOR(active)
+    if not key:
+        return None
+    root = key.split(".")[0]
+    declared = SECTION_CHILDREN.get(root)
+    # Checked BEFORE the screen. A declared child does not come from the parent's
+    # blocks, so it must not need one — a legacy page re-hung by `abex_reskin`
+    # passes no screen at all, and asking for one first is how those pages
+    # rendered with the design's hardcoded child instead of their real siblings.
+    if declared:
+        # A declared child is a PAGE. It is never capped and never derived: the
+        # cap exists to stop a long screen becoming a table of contents, and a
+        # section's real sub-pages are not a table of contents.
+        return {root: [(k, label, href, "") for k, label, href in declared]}
     if not screen:
         return None
     try:
         import abex_render
     except Exception:                                  # pragma: no cover
-        return None
-    key = _NAV_KEY_FOR(active)
-    if not key:
         return None
     out = []
     for b in (screen.get("blocks") or []):
@@ -919,7 +956,8 @@ def _NAV_KEY_FOR(active: str) -> str:
 
 
 def page(title: str, active: str, user: Optional[dict], snap: Optional[dict],
-         body: str, subtitle: str = "", screen: Optional[dict] = None) -> str:
+         body: str, subtitle: str = "", screen: Optional[dict] = None,
+         extra_css: str = "", tail: str = "") -> str:
     """The shell. Every section renders through this so the nav, the theme, the
     strip and the drawer exist exactly once.
 
@@ -951,6 +989,13 @@ def page(title: str, active: str, user: Optional[dict], snap: Optional[dict],
     # a route behind it.
     paths = {_NAV_KEY.get(s["key"], s["key"]): s["path"] for s in sections()
              if staff or not s.get("staff_only")}
+    # A child page's route is not a registered SECTION, so it is not in the map
+    # above — and `_nav_html` drops any non-anchor sub whose key it cannot find
+    # a path for. Without this the declared children render nowhere, which is
+    # the same silent disappearance the anchor children suffered.
+    for _kids in SECTION_CHILDREN.values():
+        for _k, _label, _href in _kids:
+            paths.setdefault(_k, _href)
     # Spec §3: the nav's counts are live data, not decoration. Without this the
     # sidebar kept the design's 8/13/7/6/3/2/3 beside live pages, which told a
     # reader he had three unread messages when he had none.
@@ -967,9 +1012,10 @@ def page(title: str, active: str, user: Optional[dict], snap: Optional[dict],
         # The canvas block styles ride along: /hub and /hub/markets now render
         # canvas screens, and without these the balance blocks, buttons and the
         # accent lead-rule come out unstyled.
-        extra_css=_LEGACY_CSS + THEME_CSS + _CANVAS_CSS,
+        extra_css=_LEGACY_CSS + THEME_CSS + _CANVAS_CSS + (extra_css or ""),
         header=strip,
-        tail=f"<script>{_STRIP_JS}</script><script>{_CANVAS_JS}</script>",
+        tail=(f"<script>{_STRIP_JS}</script><script>{_CANVAS_JS}</script>"
+              + (tail or "")),
         available=mounted,
         paths=paths,
         counts=counts,
