@@ -458,3 +458,25 @@ def test_a_page_already_on_warm_feel_gets_no_bridge():
     import abex_reskin
     import Restocker_web as RW
     assert abex_reskin._bridge_palette(RW._TERMINAL_CSS) == ""
+
+
+def test_a_standalone_pages_cards_are_flattened_to_the_house_pattern():
+    """The last two tells on the monthly report: filled cards with a 10px radius,
+    and UPPERCASE tracked labels. Both are on his own audit list, and the site
+    already has an accepted spelling for a stat row — `.stat` / `.statrow` in
+    Restocker_web: no fill, no radius, separated by a rule, sentence case. Copied
+    rather than invented, so this is not a third look."""
+    import abex_reskin
+    surf = abex_reskin._bridge_surfaces()
+    assert "border-radius:0" in surf and "background:none" in surf
+    assert "border-right:1px solid var(--line)" in surf, "separated by a rule"
+    assert "text-transform:none" in surf and "letter-spacing:normal" in surf
+
+
+def test_the_flattening_only_reaches_a_bridged_page():
+    """A page already on Warm Feel gets no palette bridge and therefore no
+    surface rules — its own stat rows are already right."""
+    import abex_reskin
+    import Restocker_web as RW
+    assert abex_reskin._bridge_palette(RW._TERMINAL_CSS) == ""
+    assert ".card{" not in abex_reskin._bridge_palette(RW._TERMINAL_CSS)

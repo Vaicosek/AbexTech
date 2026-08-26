@@ -219,6 +219,31 @@ _PALETTE_BRIDGE = {
 }
 
 
+
+#: Surfaces the shell's own vocabulary has an accepted spelling for, applied to
+#: a legacy page hung inside it. Emitted with the palette bridge and only for the
+#: pages that need it, for the same reason: this page was drawn to stand alone.
+#:
+#: Copied from `.stat` / `.statrow` in `Restocker_web` (about :1780 and :2002) —
+#: the shape every other stat row on this site already uses — rather than a third
+#: look invented here. §1 of the design brief: no filled panels, no nested
+#: surfaces; a block is separated by a rule and by space. And the audit list bans
+#: an UPPERCASE tracked label outright.
+_SURFACES = """
+.%(s)s .card{background:none;border:0;border-radius:0;padding:0 26px;
+  min-width:0;flex:1 1 200px;border-right:1px solid var(--line)}
+.%(s)s .card:first-child{padding-left:0}
+.%(s)s .card:last-child{border-right:0}
+.%(s)s .cards{gap:0;row-gap:20px}
+.%(s)s .card .k{text-transform:none;letter-spacing:normal}
+"""
+
+
+def _bridge_surfaces(scope: str = SCOPE) -> str:
+    """Flatten the filled, rounded, UPPERCASE-labelled cards of a standalone page."""
+    return _SURFACES % {"s": scope}
+
+
 def _bridge_palette(css: str, scope: str = SCOPE) -> str:
     """Re-point a legacy page's own palette at the shell's, if it has one.
 
@@ -243,7 +268,8 @@ def _bridge_palette(css: str, scope: str = SCOPE) -> str:
     return (f"/* legacy palette bridged to the shell's: {' '.join(sorted(hit))} */\n"
             f".{scope}{{{decls}}}\n"
             + (f".{scope},.{scope} body,.{scope} table,.{scope} th,.{scope} td"
-               f"{{{fonts}}}\n" if fonts else ""))
+               f"{{{fonts}}}\n" if fonts else "")
+            + _bridge_surfaces(scope))
 
 
 def _rescale_type(css: str) -> str:
@@ -404,7 +430,6 @@ def render(template: str, *, active: str, title: str, user=None, snap=None,
     this locks ordering and unsigns two writes. It is inlined FIRST, before the
     page's own script, so nothing has to wait for it.
     """
-    import abex_shell
     import hub_web
     import Restocker_web as RW
 
