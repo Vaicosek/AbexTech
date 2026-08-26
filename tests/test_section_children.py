@@ -390,3 +390,71 @@ def test_fine_print_is_not_scaled_into_illegibility():
         assert abex_reskin._rescale_type(small) == small
     # and nothing is ever pushed below the floor
     assert "font-size:11px" in abex_reskin._rescale_type("font-size:13px")
+
+
+def test_the_brand_is_type_not_an_asset():
+    """The medallion is gone: a ring badge with five labelled feature icons
+    around a bevelled gradient A, which his own players called "ai shit" and
+    which `atech-brief.md` bans in as many words ("no logo medallion").
+
+    Type cannot look generated, and needs no asset, so it cannot 404 the way the
+    first version silently did."""
+    src = (HERE.parent / "abex_shell.py").read_text(encoding="utf-8")
+    assert "LOGO_SRC" not in src, "the badge constant is gone"
+    assert '<img class="mark"' not in src, "and so is the element"
+    assert '<span class="wordmark">' in src
+    assert '<span class="rule">' in src, "the masthead rule he picked (option A)"
+
+
+def test_every_legacy_page_is_off_the_old_nav():
+    """/mymarket and /report were missed by the first pass and kept drawing
+    `_TERMINAL_NAV`, so the site still had two navs for anyone who reached them.
+    The only surviving reference is the fallback inside `_legacy_page`."""
+    src = (HERE.parent / "Restocker_web.py").read_text(encoding="utf-8")
+    # Prose inside a docstring mentions it too; this looks for CODE.
+    live = [ln for ln in src.splitlines()
+            if "_TERMINAL_NAV" in ln and not ln.strip().startswith("#")
+            and "_TERMINAL_NAV = " not in ln
+            and "`_TERMINAL_NAV`" not in ln]
+    assert len(live) == 1, live
+    assert 'html.replace("__NAV__", _TERMINAL_NAV)' in live[0], live[0]
+
+
+def test_the_front_door_is_the_hub():
+    """`/` served the Inventory page — a legacy tab picked when it was the only
+    page there was."""
+    src = (HERE.parent / "Restocker_web.py").read_text(encoding="utf-8")
+    assert 'add_get("/",              _handle_root_redirect)' in src
+    assert "HTTPFound(\"/hub\")" in src
+
+
+def test_a_legacy_palette_is_bridged_not_left_arguing():
+    """The monthly report is GitHub-dark — #0d1117, blue links, monospace —
+    because it was built as a standalone attachment. Hung in the shell untouched
+    it puts a blue monospace document inside warm serif chrome."""
+    import abex_reskin
+    gh = (":root{--bg:#0d1117;--card:#161b22;--line:#21262d;--fg:#e6edf3;"
+          "--muted:#8b949e;--green:#3fb950;--red:#f85149;--blue:#58a6ff;"
+          "--gold:#d29922}")
+    bridge = abex_reskin._bridge_palette(gh)
+    assert "--blue:var(--accent)" in bridge, "one interactive colour, not two"
+    assert "--green:var(--gain)" in bridge
+
+
+def test_a_same_named_token_is_never_bridged_to_itself():
+    """`.legacypage{--line:var(--line)}` is a custom property referencing
+    itself. CSS calls that cyclic and makes it guaranteed-invalid, so every
+    border drawn with var(--line) would vanish. A shared name needs no bridge —
+    dropping the page's own declaration lets the shell's inherit."""
+    import abex_reskin
+    gh = (":root{--bg:#0d1117;--card:#161b22;--line:#21262d;--fg:#e6edf3;"
+          "--muted:#8b949e;--green:#3fb950;--red:#f85149;--blue:#58a6ff}")
+    assert "--line:var(--line)" not in abex_reskin._bridge_palette(gh)
+    # and the page's own value must not shadow the shell's either
+    assert "--line:#21262d" not in abex_reskin._scope_css(gh)
+
+
+def test_a_page_already_on_warm_feel_gets_no_bridge():
+    import abex_reskin
+    import Restocker_web as RW
+    assert abex_reskin._bridge_palette(RW._TERMINAL_CSS) == ""

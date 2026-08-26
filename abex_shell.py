@@ -17,22 +17,30 @@ import html as _h
 
 from abex_theme import THEME_CSS, FONTS_LINK, GRADES
 
-#: The brand badge. There is history here worth keeping in view: this used to be
-#: `<img src="/static/atech-logo-circle.png">` carrying `onerror="this.style
-#: .display='none'"`, and NO /static route was registered, no `static/` directory
-#: existed, and no such file was ever committed. The 404 hid itself -- no broken
-#: image, no console complaint, just a sidebar with a silent gap where a logo
-#: belonged. It was then replaced with drawn text, which at least always rendered.
+#: THE BADGE IS GONE, and its history is worth keeping in view because the same
+#: mistake has now been made twice in opposite directions.
 #:
-#: The asset is real now (`static/atech-logo.png`, served by `Restocker_web`), so
-#: the image comes back -- but WITHOUT the self-erasing onerror. The wordmark sits
-#: beside it and carries the identity on its own, so if the image ever 404s again
-#: the brand still reads, and the browser shows the broken image rather than
-#: swallowing the evidence. A fallback that hides its own failure is worse than no
-#: fallback; that is the whole lesson of the first version.
-LOGO_SRC = "/static/atech-logo.png"
+#: First it was `<img src="/static/atech-logo-circle.png">` carrying
+#: `onerror="this.style.display='none'"`, with no /static route, no `static/`
+#: directory and no such file ever committed. The 404 hid itself — no broken
+#: image, no console complaint, just a silent gap. A fallback that conceals its
+#: own failure is worse than no fallback.
+#:
+#: Then a real asset was drawn and shipped: a gold-on-black ring badge with five
+#: labelled feature medallions (BANKING / MARKETS / STOCKS / LANDS / AUCTIONS)
+#: orbiting a bevelled gradient "A", over a dot-matrix world map. His own players
+#: called it — "ai shit", "and it looks weird still" — and the design brief he
+#: had already accepted says, in as many words, NO LOGO MEDALLION. Nobody puts a
+#: feature list around the rim of a mark.
+#:
+#: What replaces it is type, which cannot look generated because it is not art:
+#: the wordmark over a hairline rule with the tagline beneath, the way a broker's
+#: letterhead is set. It needs no asset, so it cannot 404, and it inherits the
+#: page's own serif, so it cannot drift from the rest of the site.
+#:
+#: `FAVICON_SRC` still points at a raster: a favicon has nowhere to put type at
+#: 16px. That one is untouched and unreviewed.
 FAVICON_SRC = "/static/favicon.png"
-MARK_ALT = "ATech"
 
 #: The site-wide notice. It states what this platform DOES — never converts
 #: coins to money — rather than making a claim about what they are worth, which
@@ -49,13 +57,12 @@ _FOOTER_HTML = ('<footer class="sitefoot"><p>' + _h.escape(_FOOTER_LINE)
                 + ' <a href="/terms">Terms</a>.</p></footer>')
 
 _FOOTER_CSS = """
-/* The sidebar is 326px (spec §2), so 220px leaves a comfortable margin and
-   the badge's five discipline icons and inner wordmark are actually legible.
-   The asset ships at 512px so a 2x screen still gets a clean edge. */
-.brand .mark{display:block;border:0;padding:0;margin:0 auto 12px;
-  width:220px;height:220px;max-width:100%;border-radius:50%;
-  object-fit:cover;background:transparent}
-@media (max-width:900px){.brand .mark{width:56px;height:56px;margin:0 8px 0 0}}
+/* A masthead, not a badge: wordmark, hairline, tagline. The rule is the only
+   ornament and it is the same 1px the tables use, so the brand is set in the
+   product's own vocabulary rather than a second visual language bolted on top. */
+.brand .rule{display:block;height:1px;background:var(--line);
+  margin:9px auto 7px;width:100%;max-width:150px}
+@media (max-width:900px){.brand .rule{display:none}}
 .sitefoot{border-top:1px solid var(--line);margin:4rem 0 0;padding:1.1rem 0 2rem;
   color:var(--inert);font-size:.82rem;line-height:1.5;max-width:78ch}
 .sitefoot p{margin:0}
@@ -298,8 +305,8 @@ def render(active: str, body: str, *, title: str = "", who=None, stats=None,
 </head><body data-domain="{dom}">
 <nav class="side" aria-label="Sections">
   <a class="brand" href="{prefix or '/hub'}">
-    <img class="mark" src="{LOGO_SRC}" alt="{MARK_ALT}" width="220" height="220">
     <span class="wordmark">Abex Tech</span>
+    <span class="rule"></span>
     <span class="tag">One economy</span>
   </a>
   <button class="navtoggle" type="button" aria-expanded="false" aria-controls="navtree">

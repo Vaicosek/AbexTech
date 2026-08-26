@@ -52,6 +52,21 @@ _DROP = ("body", "header.tshell", ".brand", ".rt", "*")
 SCOPE = "legacypage"
 
 
+#: Custom properties the SHELL declares. A legacy sheet that declares the same
+#: name must not carry its own value onto the scope — it would shadow the
+#: shell's for everything inside, and it cannot be bridged either (see the note
+#: in `_PALETTE_BRIDGE`). Dropped, so the value inherits.
+def _shell_props() -> set:
+    import re as _re
+    out = set()
+    for head, body, _w in _rules(_shell_css()):
+        if body is None:
+            continue
+        if head.strip() in (":root", "html", "body"):
+            out |= {m for m, _v in _re.findall(r"(--[\w-]+)\s*:\s*([^;]+)", body)}
+    return out
+
+
 def _scope_css(css: str, scope: str = SCOPE) -> str:
     """Confine a legacy stylesheet to `.legacypage`, and drop the page chrome.
 
@@ -99,7 +114,16 @@ def _scope_css(css: str, scope: str = SCOPE) -> str:
             else:
                 heads.append(f".{scope} {h}")
         if heads:
-            out.append(",".join(heads) + "{" + (body or "") + "}")
+            decls = body or ""
+            if heads == ["." + scope]:
+                # This was the page's `:root`. Strip any property the shell also
+                # declares so the shell's value inherits through untouched.
+                shared = _shell_props()
+                if shared:
+                    kept = [d for d in decls.split(";")
+                            if d.split(":")[0].strip() not in shared]
+                    decls = ";".join(kept)
+            out.append(",".join(heads) + "{" + decls + "}")
     return "".join(out)
 
 
@@ -161,6 +185,65 @@ _TYPE_SCALE = 15.0 / 19.0
 #: Below this, a size is already a fine-print label and scaling it further makes
 #: it unreadable rather than smaller.
 _TYPE_FLOOR = 11.0
+
+
+
+#: Legacy token name -> the shell token that means the same thing.
+#:
+#: The monthly report is the one legacy page that never wore Warm Feel: it is
+#: GitHub-dark (#0d1117 ground, #58a6ff links, a monospace stack), because it was
+#: built to be a standalone downloadable attachment and nothing else. Hung in the
+#: hub shell untouched it puts a blue, monospace, dark-grey document inside a
+#: warm serif chrome — two visual languages arguing on one page, which reads
+#: worse than either alone.
+#:
+#: Bridged rather than rewritten: the page states its palette as nine named
+#: variables, so re-pointing the names moves every rule that uses them without
+#: touching a single rule. `--blue` maps to the accent because this palette has
+#: no blue — §1 gives interactive exactly one colour.
+_PALETTE_BRIDGE = {
+    "--bg": "transparent",          # the shell paints the ground
+    "--card": "transparent",        # §1: no filled panels
+    # NOTE: no "--line" entry, and that omission is load-bearing. The shell uses
+    # the same NAME, so `.legacypage{--line:var(--line)}` would be a custom
+    # property referencing itself — CSS calls that cyclic, makes it
+    # guaranteed-invalid, and every border on the page drawn with var(--line)
+    # disappears. A same-named token needs no bridge anyway: dropping the page's
+    # own declaration lets it inherit the shell's, which is the value we wanted.
+    "--fg": "var(--text)",
+    "--muted": "var(--faint)",
+    "--green": "var(--gain)",
+    "--red": "var(--loss)",
+    "--blue": "var(--accent)",
+    "--gold": "var(--accent)",
+}
+
+
+def _bridge_palette(css: str, scope: str = SCOPE) -> str:
+    """Re-point a legacy page's own palette at the shell's, if it has one.
+
+    Emitted AFTER the scoped sheet so it wins on order at equal specificity, and
+    only for names the page actually defines — a page already on Warm Feel
+    declares none of these and gets nothing.
+    """
+    import re as _re
+    declared = set()
+    for head, body, _w in _rules(css):
+        if head.startswith("@") or body is None:
+            continue
+        for name, _v in _re.findall(r"(--[\w-]+)\s*:\s*([^;]+)", body):
+            declared.add(name)
+    hit = {k: v for k, v in _PALETTE_BRIDGE.items() if k in declared}
+    if len(hit) < 4:
+        # Fewer than four of the nine is not that palette; leave it alone rather
+        # than half-repainting a page this was not written for.
+        return ""
+    decls = ";".join(f"{k}:{v}" for k, v in sorted(hit.items()))
+    fonts = ("font-family:var(--ui);" if "--bg" in hit else "")
+    return (f"/* legacy palette bridged to the shell's: {' '.join(sorted(hit))} */\n"
+            f".{scope}{{{decls}}}\n"
+            + (f".{scope},.{scope} body,.{scope} table,.{scope} th,.{scope} td"
+               f"{{{fonts}}}\n" if fonts else ""))
 
 
 def _rescale_type(css: str) -> str:
@@ -332,7 +415,8 @@ def render(template: str, *, active: str, title: str, user=None, snap=None,
     css = (_neutralise(page_css)
            + _root_tokens(RW._TERMINAL_CSS + "\n" + page_css)
            + _rescale_type(_scope_css(RW._TERMINAL_CSS) + "\n"
-                           + _scope_css(page_css)))
+                           + _scope_css(page_css))
+           + _bridge_palette(page_css))
     # The body goes inside the scope it was just confined to.
     body = f'<div class="{SCOPE}">{body}</div>' 
     if ownerinfo is not None:

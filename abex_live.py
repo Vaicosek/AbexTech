@@ -82,6 +82,25 @@ def _db():
     return db
 
 
+def _backing_ratio(backed_pct, target_pct) -> float:
+    """Collateral against the house target, the ONE way this site states backing.
+
+    `_backing_rating` hands back four things and the second is a trap: `weight`
+    is the market's INDEX SCALE, not its backing. It is
+    `min(1, BASE + (1-BASE) * ratio)` with BASE 0.5, so it lives between 0.50 and
+    1.00 by construction and PINS AT EXACTLY 1.00 for anything at or above
+    target. Rendered under a "× backed" label it told a reader GreyHames was
+    fully backed when its collateral is 39.5% against a 50% target — 0.79×. The
+    markets list had this right all along; the two market pages did not, so the
+    same market read 0.79x in one place and 1.00x in another.
+    """
+    try:
+        target = float(target_pct or 0)
+        return (float(backed_pct or 0) / target) if target else 0.0
+    except (TypeError, ValueError):                    # pragma: no cover
+        return 0.0
+
+
 def _owner_name(db, owner_id: Optional[str]) -> str:
     """The owner's in-game name, never their Discord id.
 
@@ -982,9 +1001,9 @@ def my_market(user_id: str, market_id: str = "") -> Optional[dict]:
     _pi, _ps, prev_net = _month_totals(db, chosen, prev)
 
     try:
-        grade, scale, _b, _t = core._backing_rating(chosen)
+        grade, _scale, _b, _t = core._backing_rating(chosen)
     except Exception:
-        grade, scale = "not rated", 0.0
+        grade, _b, _t = "not rated", 0.0, 0.0
     try:
         listing = (db.get_public_markets() or {}).get(chosen) or {}
     except Exception:
@@ -1043,7 +1062,7 @@ def my_market(user_id: str, market_id: str = "") -> Optional[dict]:
         "month": month, "month_name": _month_name(month),
         "income": income, "spent": spent, "net": net,
         "prev_net": prev_net, "prev_month_name": _month_name(prev),
-        "grade": str(grade), "backing": float(scale or 0),
+        "grade": str(grade), "backing": _backing_ratio(_b, _t),
         "share_price": float(listing.get("share_price") or 0) if listing else None,
         "shares_out": float(listing.get("shares_outstanding") or 0) if listing else None,
         "treasury": float(listing.get("treasury_coins") or 0) if listing else 0.0,
@@ -1269,10 +1288,14 @@ def stock_detail(market_id: str, user_id: str = "") -> Optional[dict]:
         core = _core()
     except Exception:
         core = None
-    grade, scale = "not rated", 0.0
+    # Initialised for the path where the bot module is absent or the call raises:
+    # `_b`/`_t` are read further down, and the old initialiser named `scale`, which
+    # is no longer what gets read. A miss here is a NameError on a live page, not a
+    # wrong number — pyflakes named it, py_compile could not.
+    grade, _b, _t = "not rated", 0.0, 0.0
     if core is not None:
         try:
-            grade, scale, _b, _t = core._backing_rating(mid)
+            grade, _scale, _b, _t = core._backing_rating(mid)
         except Exception:
             pass
 
@@ -1314,7 +1337,7 @@ def stock_detail(market_id: str, user_id: str = "") -> Optional[dict]:
     shares_out = float(listing.get("shares_outstanding") or 0)
     return {
         "market_id": mid, "name": name, "listed": bool(listing),
-        "grade": str(grade), "backing": float(scale or 0),
+        "grade": str(grade), "backing": _backing_ratio(_b, _t),
         "price": float(listing.get("share_price") or 0),
         "shares_out": shares_out,
         "pe": float(listing.get("pe_multiplier") or 0),

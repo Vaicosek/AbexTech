@@ -1596,15 +1596,29 @@ async def _handle_report(request):
     except Exception as _ee:
         print(f"[report] daily block failed for {mid} {month}: {_ee}")
 
+    # `nav_html=""` on purpose. That parameter exists so the SAME function can
+    # produce the downloadable attachment, which must stand alone — passing the
+    # old site nav in was how this page kept its own header while the rest of the
+    # site moved. The standalone document goes through the re-skin instead, which
+    # is the one place that knows how to hang a legacy body in the hub shell.
     try:
         html = m._render_full_report_html(
             f"Monthly Report — {mname}", mname, month_label,
             items, float(mo.get("income", 0) or 0), float(mo.get("spent", 0) or 0),
-            nav_html=_TERMINAL_NAV, extra_html=extra)
+            nav_html="", extra_html=extra)
     except Exception as e:
         return web.Response(text=f"Could not render report: {e}", status=500,
                             content_type="text/plain")
-    return web.Response(text=html, content_type="text/html")
+    # Reached from /ledger, so it lights that section. The report is a market's
+    # month, not a section of its own.
+    return _legacy_page(request, html, "markets.ledger",
+                        f"{mname} · {month_label} · Abex Tech")
+
+
+async def _handle_root_redirect(request):
+    """`/` -> the hub. 302, not 301: a permanent redirect is cached by the
+    browser for ever and would outlive any decision to move the landing again."""
+    raise web.HTTPFound("/hub")
 
 
 async def _handle_health(request):
@@ -3473,9 +3487,12 @@ window.addEventListener('load',initOwner);
 
 
 async def _handle_mymarket_page(request):
-    html = (_MYMARKET_HTML.replace("__TERMINAL_CSS__", _TERMINAL_CSS)
-            .replace("__NAV__", _TERMINAL_NAV))
-    return web.Response(text=html, content_type="text/html")
+    # Missed in the first re-skin pass: six pages moved into the hub shell and
+    # this one kept drawing `_TERMINAL_NAV`, so the site still had two navs for
+    # anyone who reached it. It reads OWNERINFO like the others, and _legacy_page
+    # is what supplies that now.
+    return _legacy_page(request, _MYMARKET_HTML, "mine",
+                        "My market · Abex Tech")
 
 
 # ── /exchange — pro-terminal exchange view (XTB/IBKR-style, read-only) ────────
@@ -5821,7 +5838,11 @@ async def start_webserver(port: int = 8080):
     app = web.Application(middlewares=[_rate_limit_mw])
     # Terminal redesign: every section is its own page. The old SPA stays at
     # /classic as a fallback until the new pages are proven in production.
-    app.router.add_get("/",              _handle_inventory_page)
+    # THE FRONT DOOR IS THE HUB. `/` served the Inventory page — a legacy tab,
+    # picked when it was the only page there was. Everyone arriving at the domain
+    # landed on one market's stock levels instead of the designed landing, and
+    # /inventory still serves that page for anyone who wants it.
+    app.router.add_get("/",              _handle_root_redirect)
     app.router.add_get("/classic",       _handle_index)
     app.router.add_get("/inventory",     _handle_inventory_page)
     app.router.add_get("/ledger",        _handle_ledger_page)
