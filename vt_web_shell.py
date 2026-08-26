@@ -1740,7 +1740,12 @@ h1{font-size:40px;font-weight:400;margin:0}
 .between{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .wrapf{flex-wrap:wrap}
 .right{text-align:right}
-table{width:100%;border-collapse:collapse;background:none;border:none}
+/* NOT width:100%. This rule loads after the theme's and was overriding it,
+   so every table in the product stretched to its container: seven columns
+   across a 1520px content box puts 100px+ of dead air between each pair and
+   the eye cannot get from a label to its figure. A table is as wide as what
+   is in it and sits left. */
+table{width:auto;max-width:100%;border-collapse:collapse;background:none;border:none}
 th, td{padding:8px 14px 8px 0;text-align:right;border-bottom:1px solid var(--border);
   font-size:21px}
 th:first-child, td:first-child{text-align:left}
@@ -1834,7 +1839,11 @@ tr:last-child td{border-bottom:none}
 .holdnote b{color:var(--text);font-weight:700}
 @media (max-width:820px){
 .tablewrap{-webkit-overflow-scrolling:touch}
-.tablewrap table{min-width:640px}
+/* `min-width:640px` was the floor that forced a narrow viewport to scroll
+   sideways, and it outranked the theme's `width:auto` besides. A table that
+   does not fit drops columns (see the theme's 720px rules); it does not put
+   the reader on a horizontal scrollbar. */
+.tablewrap table{min-width:0}
 .strip{padding:18px 20px;row-gap:12px}
 .seg{padding:0 22px 0 0;min-width:44%}
 .seg .val{font-size:21px}

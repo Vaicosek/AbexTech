@@ -111,3 +111,78 @@ def test_no_css_is_left_behind_for_the_removed_badge():
     import abex_shell
     for css in (abex_theme.THEME_CSS, abex_shell._FOOTER_CSS):
         assert ".brand .mark" not in css
+
+
+def _bare_table_rules(css):
+    """Every rule whose selector is exactly `table`, comments stripped.
+
+    A regex anchored on `}` or start-of-string finds NOTHING when the rule is
+    preceded by a comment — which is how the first version of these tests passed
+    while asserting nothing at all. Parsed instead of pattern-matched.
+    """
+    import re as _re
+    out = []
+    for chunk in css.split("}"):
+        if "{" not in chunk:
+            continue
+        sel, _, body = chunk.partition("{")
+        sel = _re.sub(r"/\*.*?\*/", " ", sel, flags=_re.S)
+        for one in sel.split(","):
+            if one.strip() == "table":
+                out.append(body)
+                break
+    return out
+
+
+def test_no_stylesheet_stretches_a_table_to_its_container():
+    """"the columns look like shit" had one cause, and it was measurable.
+
+    Every table in the product carried `width:100%` inside a content box up to
+    1520px wide. Seven columns across that puts 100px+ of dead air between each
+    pair, and the eye cannot get from a label to its figure. Measured in a
+    browser before and after: 1520px stretched -> 716px content-sized, and it no
+    longer grows with the viewport.
+
+    Three sheets declare table rules and they load in order — theme, then
+    `vt_web_shell._LEGACY_CSS`, then canvas. The last one wins, which is why
+    fixing only the theme changed nothing.
+    """
+    import re
+    import abex_theme
+    import vt_web_shell
+    checked = 0
+    for name, css in (("theme", abex_theme.THEME_CSS),
+                      ("legacy shell", vt_web_shell._LEGACY_CSS)):
+        rules = _bare_table_rules(css)
+        assert rules, "no bare `table` rule found in the %s — this test would " \
+                      "otherwise pass by checking nothing" % name
+        checked += len(rules)
+        for body in rules:
+            # `(?<![-a-z])` so this does not fire on `max-width:100%`, which is
+            # the cap that keeps a wide table inside its container and is wanted.
+            flat = body.replace(" ", "")
+            assert not re.search(r"(?<![-a-z])width:100%", flat), (
+                "%s stretches tables: %s" % (name, body.strip()[:90]))
+    assert checked >= 2
+
+
+def test_a_table_that_does_not_fit_drops_columns_rather_than_scrolling():
+    """`min-width:640px` on `.tablewrap table` was the floor that forced a narrow
+    viewport onto a horizontal scrollbar — and it outranked the theme's
+    `width:auto` besides, so it was also why the stretch survived one fix."""
+    import vt_web_shell
+    css = vt_web_shell._LEGACY_CSS.replace(" ", "")
+    assert ".tablewraptable{min-width:640px}" not in css
+    assert ".tablewraptable{min-width:0}" in css
+
+
+def test_figures_are_lining_and_tabular_across_the_whole_table():
+    """Georgia serves OLD-STYLE figures by default in several renderers — 3, 4, 7
+    and 9 hang below the baseline while 6 and 8 rise above it. Mixed-height
+    digits read as ragged even in a perfectly aligned column. This used to be set
+    only on `.num`, so a count or a year in a text column stayed old-style."""
+    import abex_theme
+    rules = _bare_table_rules(abex_theme.THEME_CSS)
+    assert rules, "no bare `table` rule in the theme"
+    joined = " ".join(rules).replace(" ", "")
+    assert "tabular-nums" in joined and "lining-nums" in joined

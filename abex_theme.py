@@ -296,12 +296,33 @@ h2,.h2{font-size:19px;font-weight:400;color:var(--text);margin-bottom:10px}
 /* -- tables -------- */
 .tablewrap{overflow-x:auto;scrollbar-width:thin;
   scrollbar-color:var(--line-up) var(--ground)}
-table{border-collapse:collapse;width:100%;min-width:640px}
+/* COLUMNS ARE SIZED TO CONTENT, NOT STRETCHED TO THE PAGE. `width:100%` inside a
+   1640px main put a six-column table across ~1520px, which is 100px+ of dead air
+   between every pair of columns — the eye has to travel from a label to a figure
+   that is nowhere near it, and no amount of type work fixes that. A table is as
+   wide as what is in it and sits left. `min-width:640px` went with it: it was
+   what forced a narrow viewport to scroll sideways.
+   Anchor: IBKR's commission schedule, a vertical stack of small content-width
+   tables rather than one wide grid. */
+table{border-collapse:collapse;width:auto;max-width:100%;
+  /* Georgia serves OLD-STYLE figures by default in several renderers: 3, 4, 7 and
+     9 hang below the baseline and 6, 8 rise above it. Mixed-height digits are
+     half of why a numeric column reads as ragged even when it is aligned.
+     `lining-nums` levels them, `tabular-nums` makes every digit the same width so
+     the columns line up down the page. On the whole table, not just `.num` —
+     a year, an id or a count in a text column is a figure too. */
+  font-variant-numeric:tabular-nums lining-nums}
+/* One gutter everywhere, on the right, so every column starts where the eye
+   expects. The last cell gets none — trailing padding on the final column is
+   invisible air that widens the table for nothing. */
+th,td{padding-right:28px}
+th:last-child,td:last-child{padding-right:0}
 th{text-align:left;font-size:15px;font-weight:400;color:var(--faint);
-  padding:8px 14px 8px 0;border-bottom:1px solid var(--line);white-space:nowrap}
-td{padding:8px 14px 8px 0;border-bottom:1px solid var(--line);font-size:15px}
-td.num,th.num{text-align:right;font-family:var(--mono);
-  font-variant-numeric:tabular-nums;white-space:nowrap;padding-right:24px}
+  padding-top:8px;padding-bottom:8px;padding-left:0;
+  border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding-top:8px;padding-bottom:8px;padding-left:0;
+  border-bottom:1px solid var(--line);font-size:15px;line-height:1.3}
+td.num,th.num{text-align:right;font-family:var(--mono);white-space:nowrap}
 tbody tr:hover td{background:var(--raised)}
 tr.clickable{cursor:pointer}
 .tfoot{padding:9px 0 0;font-size:13px;color:var(--faint)}
