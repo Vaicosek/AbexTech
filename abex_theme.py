@@ -202,10 +202,15 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
   border-right:1px solid var(--line);padding:30px 0 18px;position:sticky;top:0;
   height:100vh;overflow-y:auto;scrollbar-width:thin;
   scrollbar-color:var(--line-up) var(--ground)}
-.brand{display:flex;flex-direction:column;align-items:center;gap:8px;
-  padding:0 18px 20px;text-align:center;text-decoration:none;color:inherit}
-.brand .mark{display:block;border:1px solid var(--line-up);padding:7px 13px;
-  font-size:15.5px;font-weight:700;letter-spacing:.10em;color:var(--accent)}
+/* ONE LEFT EDGE DOWN THE SIDEBAR. The brand was centred over a left-aligned
+   nav, which reads as two columns that missed each other — and the masthead he
+   picked was drawn left-aligned in the first place. 21px, not 18px, because a
+   `.navitem` carries an 18px padding INSIDE a 3px left border, so its text
+   starts three pixels further in than its box does. Matching the box would have
+   left the wordmark three pixels adrift, which is worse than centring: a near
+   miss reads as a mistake where a deliberate offset reads as a choice. */
+.brand{display:flex;flex-direction:column;align-items:flex-start;gap:8px;
+  padding:0 18px 20px 21px;text-align:left;text-decoration:none;color:inherit}
 .brand .wordmark{font-size:20px;font-weight:700;letter-spacing:.01em}
 .brand .tag{font-size:13px;color:var(--faint)}
 .navgroup{padding:14px 0 2px}
@@ -372,8 +377,7 @@ tr.clickable{cursor:pointer}
   .navtree .navitem{display:flex;width:auto}
   .side{position:static;width:auto;height:auto;flex:none;border-right:none;
     border-bottom:1px solid var(--line);padding:14px 0}
-  .brand{align-items:flex-start;text-align:left;padding:0 20px 10px}
-  .brand .mark{font-size:14px;padding:5px 11px}
+  .brand{padding:0 20px 10px}
   .navgroup{padding:6px 0 0}
   .navgroup>.glabel{display:none}
   .navitem{font-size:15px;padding:7px 20px}

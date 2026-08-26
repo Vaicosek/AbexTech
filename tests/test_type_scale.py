@@ -71,3 +71,43 @@ if __name__ == "__main__":
         if name.startswith("test_"):
             fn()
     print("type scale: ok")
+
+
+def test_the_brand_shares_the_navs_left_edge():
+    """The sidebar had a centred brand over a left-aligned nav — two columns
+    that missed each other. They line up now, and this checks the ARITHMETIC
+    rather than a pixel, because the failure mode is somebody changing
+    `.navitem`'s padding and the brand silently drifting three pixels.
+
+    A `.navitem` puts its padding INSIDE a left border, so its text starts at
+    border + padding. The brand has no border, so its padding-left must equal
+    that sum.
+    """
+    import re
+    import abex_theme
+    css = abex_theme.THEME_CSS
+
+    item = re.search(r"\.navitem\{[^}]*\}", css, re.S).group(0)
+    pad = int(re.search(r"padding:\s*[\d.]+px\s+(\d+)px", item).group(1))
+    border = int(re.search(r"border-left:\s*(\d+)px", item).group(1))
+
+    brand = re.search(r"\n\.brand\{[^}]*\}", css, re.S).group(0)
+    assert "align-items:flex-start" in brand, "the brand must not be centred"
+    assert "text-align:left" in brand
+    # `0` is legal CSS without a unit, so the first three values may be bare.
+    bpad = re.search(r"padding:\s*[\d.]+(?:px)?\s+[\d.]+(?:px)?\s+"
+                     r"[\d.]+(?:px)?\s+(\d+)px", brand)
+    assert bpad, "the brand needs an explicit left padding to line up: " + brand
+    assert int(bpad.group(1)) == pad + border, (
+        "brand starts at %spx, nav text at %spx (%s padding inside a %spx border)"
+        % (bpad.group(1), pad + border, pad, border))
+
+
+def test_no_css_is_left_behind_for_the_removed_badge():
+    """`.brand .mark` styled the medallion `<img>`. The element is gone; rules
+    for an element that no longer exists are what makes a stylesheet unreadable
+    a year later."""
+    import abex_theme
+    import abex_shell
+    for css in (abex_theme.THEME_CSS, abex_shell._FOOTER_CSS):
+        assert ".brand .mark" not in css

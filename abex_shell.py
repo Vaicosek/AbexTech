@@ -61,7 +61,7 @@ _FOOTER_CSS = """
    ornament and it is the same 1px the tables use, so the brand is set in the
    product's own vocabulary rather than a second visual language bolted on top. */
 .brand .rule{display:block;height:1px;background:var(--line);
-  margin:9px auto 7px;width:100%;max-width:150px}
+  margin:9px 0 7px;width:150px;max-width:100%}
 @media (max-width:900px){.brand .rule{display:none}}
 .sitefoot{border-top:1px solid var(--line);margin:4rem 0 0;padding:1.1rem 0 2rem;
   color:var(--inert);font-size:.82rem;line-height:1.5;max-width:78ch}
