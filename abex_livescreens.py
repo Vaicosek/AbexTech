@@ -582,6 +582,25 @@ def _shop_blocks(market_id: str, name: str, listed: bool, owner: bool) -> list:
     out = []
 
     sh = abex_live.shelves(market_id)
+    if owner and sh is not None and not sh["rows"]:
+        # AN EMPTY SHELF IS A FACT TO THE OWNER AND NOISE TO EVERYONE ELSE.
+        # Empty states stay empty on a public page — a headed table with nothing
+        # in it is a worse read than no table. But the owner is asking a
+        # question the absence answers: he sees "there is no inventory here" and
+        # concludes the SITE has none, when what it means is that no stock scan
+        # has ever recorded a line for his shop. So the block stands for him,
+        # and says which of the two it is.
+        out.append({"h2": "On the shelves",
+                    "c": ["Item", "In stock#", "Capacity#", "Sells at#",
+                          "Buys at#", "Backing"],
+                    "r": [],
+                    "n": ("No stocked line has ever been recorded for this shop. "
+                          "Inventory comes from a stock scan — until one runs, "
+                          "there is nothing here to back the shares, and the "
+                          "rating sees the same nothing."
+                          if not sh["scanned"] else
+                          "The last stock scan (" + sh["scanned"].replace("T", " ")
+                          + ") found no stocked lines.")})
     if sh and sh["rows"]:
         rows = []
         for r in sh["rows"]:
@@ -1067,8 +1086,20 @@ def market(user_id: str = "") -> dict:
     asof = (f"{data['name']} · you are the owner · "
             + (f"listed at {data['share_price']:,.2f}c a share"
                if data.get("share_price") else "not listed on the exchange"))
+    # HIS OWN STOCK, ON HIS OWN CONSOLE. Inventory was built for a market's
+    # public page and never put here, so the one person who most needs to see
+    # what is on the shelves — the owner — had a console with a ledger, a
+    # waterfall and no goods on it. Same block, same "counted / not counted"
+    # flag, because the rating reads the same rows.
+    mid = str(data["market_id"])
+    listed = bool(data.get("share_price"))
+    shelves = [b for b in (_item_block(mid, listed, True),) if b is not None]
+    shelves += [b for b in _shop_blocks(mid, data["name"], listed, True)
+                # The ledger, the team and the liabilities are already on this
+                # console, in the owner's own form. Only the shelves are new.
+                if str(b.get("h2") or "").startswith("On the shelves")]
     screen_d = _shell("market", asof, band,
-                      [ledger, month_bal, waterfall, liab, staff])
+                      shelves + [ledger, month_bal, waterfall, liab, staff])
     screen_d["title"] = data["name"]
     return screen_d
 

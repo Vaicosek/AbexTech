@@ -81,14 +81,21 @@ def test_a_private_market_shows_all_of_it_to_its_owner():
 
 
 def test_an_empty_shop_gets_no_empty_tables():
-    """Empty states are empty: a market with no stock has no shelves block, not
-    a headed table with nothing in it."""
+    """Empty states are empty FOR A READER: a market with no stock shows no
+    shelves block to anyone but its owner.
+
+    Narrowed rather than dropped. The rule is still right for a stranger — a
+    headed table with nothing in it reads worse than no table. It was wrong for
+    the owner, who reads the absence as "this site has no inventory" when it
+    means "no stock scan has recorded a line for your shop". See
+    `test_the_owner_of_an_empty_shop_is_told_why` for that half.
+    """
     real = L.shelves
     L.shelves = lambda mid, limit=60: {"rows": [], "lines": 0, "counted": 0,
                                        "uncounted": 0, "legacy_lines": 0,
                                        "scanned": ""}
     try:
-        blocks = LS._shop_blocks("greyhames", "GreyHames", True, True)
+        blocks = LS._shop_blocks("greyhames", "GreyHames", True, False)
     finally:
         L.shelves = real
     assert not [b for b in blocks if b["h2"] == "On the shelves"]
@@ -106,3 +113,34 @@ if __name__ == "__main__":
         if name.startswith("test_"):
             fn()
     print("shop side: ok")
+
+
+def test_the_owner_of_an_empty_shop_is_told_why():
+    """The owner gets the block, empty, with the reason — because the absence is
+    the answer to what he is asking. A market console with a ledger, a waterfall
+    and no mention of stock reads as a missing feature, not an empty shelf."""
+    real = L.shelves
+    L.shelves = lambda mid, limit=60: {"rows": [], "lines": 0, "counted": 0,
+                                       "uncounted": 0, "legacy_lines": 0,
+                                       "scanned": ""}
+    try:
+        blocks = LS._shop_blocks("greyhames", "GreyHames", True, True)
+    finally:
+        L.shelves = real
+    shelf = [b for b in blocks if b["h2"] == "On the shelves"]
+    assert shelf, "the owner is told, not left to guess"
+    assert shelf[0]["r"] == [], "and it is honestly empty"
+    assert "stock scan" in shelf[0]["n"], "with the reason, not just a dash"
+
+
+def test_the_owners_console_carries_his_own_stock():
+    """Inventory was built for a market's public page and never put on the
+    console, so the one person who most needs to see the shelves — the owner —
+    had a page with a ledger, a waterfall and no goods on it."""
+    src = Path(__file__).resolve().parent.parent / "abex_livescreens.py"
+    body = src.read_text(encoding="utf-8")
+    body = body[body.index("def market(user_id"):]
+    body = body[:body.index("screen_d[\"title\"]")]
+    assert "_item_block(" in body, "the console must build the items block"
+    assert "_shop_blocks(" in body, "and the shelves"
+    assert "On the shelves" in body

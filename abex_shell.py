@@ -140,7 +140,7 @@ def grade_chip(grade: str) -> str:
 
 
 def _nav_html(active: str, staff: bool, available=None, prefix: str = "",
-              counts=None, paths=None) -> str:
+              counts=None, paths=None, subs=None) -> str:
     """The nav tree.
 
     `available`, when given, is the set of section keys this deployment actually
@@ -155,9 +155,19 @@ def _nav_html(active: str, staff: bool, available=None, prefix: str = "",
     `/markets`, so the tree sent every logged-out visitor who clicked Markets to
     a 404 while `available` happily said the section existed. Being mounted and
     being at the path the design assumed are two different facts, and only the
-    second one is a working link. A sub-entry under a remapped parent is dropped
-    unless it too has a real path — `/markets/shelves` cannot be right when
-    `/markets` itself is not.
+    second one is a working link.
+
+    `subs`, when given, is `{key: [(subkey, label, href, meta), ...]}` — the
+    ACTIVE screen's own blocks, by heading, replacing the design's guesses. §3
+    says a section expands to its own block headings, and those are a fact about
+    the page being rendered, not a list to keep in step by hand.
+
+    A sub-entry that is an ANCHOR (`#something`) is a jump inside the page that
+    is already open, so it needs no route and is never dropped. Only a sub that
+    claims a real path is checked against `paths` — `/markets/shelves` cannot be
+    right when `/markets` itself is not. That check used to run on every sub, and
+    since no sub-key is ever a registered SECTION, it dropped all of them: the
+    nav has not expanded anywhere since it was written.
     """
     root = active.split(".")[0]
     out = []
@@ -173,7 +183,7 @@ def _nav_html(active: str, staff: bool, available=None, prefix: str = "",
         # emits no heading at all. Named groups (the staff tree) keep theirs.
         head = f'<div class="glabel">{_h.escape(label)}</div>' if label else ""
         out.append(f'<div class="navgroup">{head}')
-        for key, text, href, _dom, meta, subs in items:
+        for key, text, href, _dom, meta, _subs in items:
             cur = ' aria-current="page"' if key == active else ""
             if counts is not None and key in counts:
                 # A count in a nav is a fact about the data. The tree's numbers are
@@ -199,14 +209,17 @@ def _nav_html(active: str, staff: bool, available=None, prefix: str = "",
                        f'href="{prefix}{real}"{cur}>'
                        f'{_h.escape(text)}{m}</a>')
             # Sub-entries appear only while their parent section is open.
-            if subs and key.split(".")[0] == root:
-                for skey, stext, shref, smeta in subs:
-                    if paths is not None and skey not in paths:
+            kids = (subs or {}).get(key, _subs)
+            if kids and key.split(".")[0] == root:
+                for skey, stext, shref, smeta in kids:
+                    if not str(shref).startswith("#") and (
+                            paths is not None and skey not in paths):
                         # The parent is somewhere else than the design assumed,
                         # or this child was never built. Either way the link is
                         # a 404 and an absent entry is the smaller lie.
                         continue
-                    shref = (paths or {}).get(skey, shref)
+                    shref = shref if str(shref).startswith("#") else \
+                        (paths or {}).get(skey, shref)
                     scur = ' aria-current="page"' if skey == active else ""
                     sm = f'<span class="meta">{_h.escape(smeta)}</span>' if smeta else ""
                     out.append(f'<a class="navsub" data-k="{_h.escape(skey)}" '
@@ -232,7 +245,7 @@ def _stats_html(stats) -> str:
 def render(active: str, body: str, *, title: str = "", who=None, stats=None,
            staff: bool = False, dock: str = "", extra_css: str = "",
            header: str = "", tail: str = "", available=None,
-           prefix: str = "", counts=None, paths=None) -> str:
+           prefix: str = "", counts=None, paths=None, subs=None) -> str:
     """Wrap a section's body in the shell. `body` is already-escaped HTML.
 
     This is the only shell in the product. The older pages — banking, lands,
@@ -283,7 +296,7 @@ def render(active: str, body: str, *, title: str = "", who=None, stats=None,
     <span class="chev">&#9662;</span> {_h.escape(page_title)}
   </button>
   <div id="navtree" class="navtree">
-    {_nav_html(active, staff, available, prefix, counts, paths)}
+    {_nav_html(active, staff, available, prefix, counts, paths, subs)}
   </div>
 </nav>
 <div class="col">

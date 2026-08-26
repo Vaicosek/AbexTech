@@ -1,0 +1,120 @@
+"""The nav expands to the active screen's own blocks.
+
+§3 says a section opens to its own block headings. It never did. Two bugs, one
+on top of the other, and the second hid the first:
+
+1. `_nav_html` dropped any sub-entry whose key was not in `paths`. `paths` is
+   built from REGISTERED SECTIONS, and no sub-key is ever a section, so every
+   sub-entry in the tree was discarded on every page. The nav has not expanded
+   anywhere since it was written.
+
+2. `NAV`'s Markets entry carries no children at all, so even with (1) fixed
+   there was nothing to open — which is exactly what "click Markets and it
+   doesn't roll out" looked like from outside.
+
+The fix for both is to stop keeping a second list by hand: the children are read
+off the screen being rendered. A sub is an ANCHOR into a page that is already
+open, so it needs no route and is never checked against `paths`.
+"""
+import sys
+import re
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent))
+
+import abex_shell as SH        # noqa: E402
+import abex_livescreens as LS  # noqa: E402
+import hub_web                 # noqa: E402
+
+AVAILABLE = {"hub", "markets", "exchange", "banking", "mine", "messages"}
+PATHS = {"hub": "/hub", "markets": "/hub/markets", "exchange": "/hub/exchange",
+         "banking": "/hub/banking", "mine": "/hub/market",
+         "messages": "/hub/messages"}
+
+
+def _keys(html, cls):
+    return re.findall(r'class="%s" data-k="([^"]+)"' % cls, html)
+
+
+def test_an_anchor_sub_is_not_checked_against_the_routes():
+    subs = {"markets": [("markets.a", "Filing next", "#filing-next", ""),
+                        ("markets.b", "All markets", "#all-markets", "")]}
+    html = SH._nav_html("markets", False, available=AVAILABLE, paths=PATHS, subs=subs)
+    assert _keys(html, "navsub") == ["markets.a", "markets.b"]
+    assert 'href="#filing-next"' in html
+
+
+def test_a_sub_that_claims_a_real_path_is_still_checked():
+    """The original rule survives where it was right: `/markets/shelves` cannot
+    be a working link when `/markets` itself is served somewhere else."""
+    subs = {"markets": [("nowhere", "Shelves", "/markets/shelves", "")]}
+    html = SH._nav_html("markets", False, available=AVAILABLE, paths=PATHS, subs=subs)
+    assert _keys(html, "navsub") == []
+
+
+def test_only_the_active_section_opens():
+    subs = {"markets": [("markets.a", "Filing next", "#filing-next", "")]}
+    html = SH._nav_html("banking", False, available=AVAILABLE, paths=PATHS, subs=subs)
+    assert _keys(html, "navsub") == [], "a closed section shows no children"
+
+
+def test_the_children_are_the_screens_own_blocks():
+    screen = {"blocks": [{"h2": "Filing next"}, {"h2": "All thirteen markets"}]}
+    subs = hub_web.nav_subs("markets", screen)
+    assert subs == {"markets": [
+        ("markets.filing-next", "Filing next", "#filing-next", ""),
+        ("markets.all-thirteen-markets", "All thirteen markets",
+         "#all-thirteen-markets", "")]}
+
+
+def test_the_anchor_matches_the_one_the_block_renders():
+    """`block_id` derives the id from the heading and `nav_subs` derives the
+    href from the same heading. If they ever disagree the link is a dead jump,
+    so they are checked against each other rather than trusted."""
+    import abex_render
+    for heading in ("On the shelves", "Where the net goes", "Ledger, August",
+                    "Waiting on you", "All thirteen markets"):
+        subs = hub_web.nav_subs("markets", {"blocks": [{"h2": heading}]})
+        _key, _label, href, _meta = subs["markets"][0]
+        assert href == "#" + abex_render.block_id(heading)
+
+
+def test_a_headless_block_is_skipped_not_rendered_blank():
+    screen = {"blocks": [{"h2": ""}, {"spark": {}}, {"h2": "Trade"}]}
+    subs = hub_web.nav_subs("markets", screen)
+    assert subs == {"markets": [("markets.trade", "Trade", "#trade", "")]}
+
+
+def test_a_long_screen_does_not_become_a_table_of_contents():
+    screen = {"blocks": [{"h2": f"Block {i}"} for i in range(12)]}
+    subs = hub_web.nav_subs("markets", screen)
+    assert len(subs["markets"]) == hub_web.NAV_SUB_LIMIT
+
+
+def test_a_screen_with_nothing_to_open_offers_nothing():
+    assert hub_web.nav_subs("markets", None) is None
+    assert hub_web.nav_subs("markets", {"blocks": []}) is None
+
+
+def test_markets_really_does_open_now():
+    """The end-to-end version of the complaint: build the real Markets screen,
+    ask for its nav, and check the sidebar has something under it."""
+    screen = LS.screen("markets", "", public=True)
+    subs = hub_web.nav_subs("markets", screen)
+    assert subs and subs["markets"], "Markets still does not roll out"
+    html = SH._nav_html("markets", False, available=AVAILABLE, paths=PATHS, subs=subs)
+    assert _keys(html, "navsub"), "the children were built and then dropped"
+
+
+def test_the_owners_console_opens_on_its_shelves():
+    """`market` is the section that prompted this: the console's children should
+    name what is on it, inventory first."""
+    screen = {"blocks": [{"h2": "What moves here"}, {"h2": "On the shelves"},
+                         {"h2": "Ledger, August"}]}
+    subs = hub_web.nav_subs("market", screen)
+    # `market` is keyed `mine` in the nav tree — the children hang off that key
+    # or they hang off nothing.
+    assert "mine" in subs
+    assert [s[1] for s in subs["mine"]][:2] == ["What moves here", "On the shelves"]

@@ -871,8 +871,55 @@ def _nav_html(active: str, user: Optional[dict] = None) -> str:
     return "<nav>" + "".join(tabs) + "</nav>"
 
 
+#: How many blocks a section's nav entry may expand to. §3 draws "one or two
+#: children"; a screen with nine blocks would turn the sidebar into a table of
+#: contents and push everything below it off the fold. The first four are the
+#: ones a reader scrolls to.
+NAV_SUB_LIMIT = 4
+
+
+def nav_subs(active: str, screen: Optional[dict]) -> Optional[dict]:
+    """`{navkey: [(subkey, label, anchor, meta)]}` from the screen's OWN blocks.
+
+    §3: a section expands to its own block headings. Those are a fact about the
+    page being rendered, so they are read off it rather than kept in a second
+    list that has to be edited every time a block is added — which is how the
+    tree ended up offering `Stocks` under Exchange and `Orders` under Work while
+    neither screen had a block by that name.
+
+    Anchors, not routes. `abex_render.block_id` derives the id from the heading
+    and this derives the href from the same heading, so the two cannot drift.
+    """
+    if not screen:
+        return None
+    try:
+        import abex_render
+    except Exception:                                  # pragma: no cover
+        return None
+    key = _NAV_KEY_FOR(active)
+    if not key:
+        return None
+    out = []
+    for b in (screen.get("blocks") or []):
+        h2 = str(b.get("h2") or "").strip()
+        if not h2:
+            continue
+        anchor = abex_render.block_id(h2)
+        if not anchor:
+            continue
+        out.append((f"{key}.{anchor}", h2, f"#{anchor}", ""))
+        if len(out) >= NAV_SUB_LIMIT:
+            break
+    return {key: out} if out else None
+
+
+def _NAV_KEY_FOR(active: str) -> str:
+    from vt_web_shell import _NAV_KEY
+    return _NAV_KEY.get(active, active)
+
+
 def page(title: str, active: str, user: Optional[dict], snap: Optional[dict],
-         body: str, subtitle: str = "") -> str:
+         body: str, subtitle: str = "", screen: Optional[dict] = None) -> str:
     """The shell. Every section renders through this so the nav, the theme, the
     strip and the drawer exist exactly once.
 
@@ -926,6 +973,7 @@ def page(title: str, active: str, user: Optional[dict], snap: Optional[dict],
         available=mounted,
         paths=paths,
         counts=counts,
+        subs=nav_subs(active, screen),
     )
 
 
@@ -1498,13 +1546,17 @@ async def h_markets(request: Any) -> Any:
         # Markets, grades, backing and disclosure are public facts about the
         # economy; the "You hold" column is not, and is dropped rather than
         # dashed - see `abex_livescreens.depersonalise`.
-        body = _canvas_body("markets", "", public=True)
+        body, screen = _canvas_screen("markets", "", public=True)
         if body is None:
             return _login_required_page(request)
-        return _html(page("Markets · Abex Tech", "markets", None, None, body))
+        return _html(page("Markets · Abex Tech", "markets", None, None, body,
+                          screen=screen))
     snap = money_snapshot(user["user_id"])
-    body = _canvas_body("markets", user["user_id"]) or _markets_body(user["user_id"])
-    return _html(page("Markets · Abex Tech", "markets", user, snap, body))
+    body, screen = _canvas_screen("markets", user["user_id"])
+    if body is None:
+        body, screen = _markets_body(user["user_id"]), None
+    return _html(page("Markets · Abex Tech", "markets", user, snap, body,
+                      screen=screen))
 
 
 async def h_api_markets(request: Any) -> Any:
@@ -1853,6 +1905,24 @@ except Exception:                                   # pragma: no cover
     _CANVAS_JS = ""
 
 
+def _canvas_screen(key: str, user_id: str, public: bool = False):
+    """`(body, screen)` — the drawn HTML and the shape it was drawn from.
+
+    The shape is kept because the NAV needs it: §3 expands a section to its own
+    block headings, and those are read off the screen that was actually built.
+    `_canvas_body` is the same call for the callers that only want the markup.
+    """
+    try:
+        import abex_livescreens
+        import abex_render
+    except Exception:                               # pragma: no cover
+        return None, None
+    screen = abex_livescreens.screen(key, str(user_id), public=public)
+    if screen is None:
+        return None, None
+    return abex_render.screen_html(screen, owner=not public), screen
+
+
 def _canvas_body(key: str, user_id: str, public: bool = False):
     """The designed screen for `key`, built from live data — or None.
 
@@ -1866,15 +1936,7 @@ def _canvas_body(key: str, user_id: str, public: bool = False):
     design's numbers. On a page that says "your holdings" they would be a lie,
     and a confident one.
     """
-    try:
-        import abex_livescreens
-        import abex_render
-    except Exception:                               # pragma: no cover
-        return None
-    screen = abex_livescreens.screen(key, str(user_id), public=public)
-    if screen is None:
-        return None
-    return abex_render.screen_html(screen, owner=not public)
+    return _canvas_screen(key, user_id, public)[0]
 
 
 async def h_root(request: Any) -> Any:
@@ -1886,16 +1948,18 @@ async def h_root(request: Any) -> Any:
     # and their grades. Its personal half - your holdings, your open orders - is
     # not built at all for a stranger, rather than built and hidden.
     if not user:
-        body = _canvas_body("hub", "", public=True)
+        body, screen = _canvas_screen("hub", "", public=True)
         if body is None:
             return _login_required_page(request)
-        return _html(page("Abex Tech", "hub", None, None, body))
+        return _html(page("Abex Tech", "hub", None, None, body, screen=screen))
     snap = money_snapshot(user["user_id"])
     # The designed Hub — Index / holdings / open orders band, the waiting-on-you
     # queue, markets by grade — on live rows. `_hub_home_body`'s section-card
     # launcher stays as the fallback for a deployment without the render modules.
-    body = _canvas_body("hub", user["user_id"]) or _hub_home_body(user)
-    return _html(page("Abex Tech", "hub", user, snap, body))
+    body, screen = _canvas_screen("hub", user["user_id"])
+    if body is None:
+        body, screen = _hub_home_body(user), None
+    return _html(page("Abex Tech", "hub", user, snap, body, screen=screen))
 
 
 async def h_health(request: Any) -> Any:

@@ -294,7 +294,8 @@ def register_live_routes(app) -> None:
                     snap = None
                 body = abex_render.screen_html(screen, owner=bool(user))
                 title = f'{screen.get("title", k.title())} · Abex Tech'
-                return hub_web._html(hub_web.page(title, k, user, snap, body))
+                return hub_web._html(hub_web.page(title, k, user, snap, body,
+                                                  screen=screen))
             handle.__name__ = f"live_{k}"
             return handle
 
@@ -927,7 +928,8 @@ async def _stock_page(request):
     body = abex_render.screen_html(screen, owner=bool(user))
     snap = hub_web.money_snapshot(uid) if user else None
     title = f'{screen.get("title", mid)} · Abex Tech'
-    return hub_web._html(hub_web.page(title, "stocks", user, snap, body))
+    return hub_web._html(hub_web.page(title, "stocks", user, snap, body,
+                                      screen=screen))
 
 
 async def _series(request):
