@@ -583,11 +583,118 @@ def _bidbox(block: dict) -> str:
          _e(str(b.get("hint") or "")))
 
 
+def _moneybox(block: dict) -> str:
+    """Bank instructions, on the page that shows the balances they change.
+
+    The fifth writing block, and the same argument as the ticket and the bid box:
+    the figures a player confirms have to be the figures he is looking at. Money
+    used to live at `/banking`, a second page with its own copy of the wallet,
+    the savings balance and the loan — and two copies of a number is one number
+    too many the first time they disagree.
+
+    NOTHING HERE DECIDES ANYTHING. Every box carries a server-minted idempotency
+    key and nothing else of consequence: the amount is re-priced by
+    `/api/banking/preview` at the moment of asking, and the commit re-reads the
+    account again. The cap in `data-cap` disables an obviously-impossible button
+    early; it is a courtesy, not the check.
+
+    An action whose previous key has not come back from the bank renders with no
+    button at all (`stuck`). That is deliberate and it is not a bug to "fix" by
+    re-enabling it: the key is still claimed, so the only thing a second press
+    could produce is a 409 — and the instruction it repeats may already have been
+    applied.
+    """
+    import json as _json
+    rows = block.get("money") or []
+    out = []
+    for m in rows:
+        stuck = str(m.get("stuck") or "")
+        amount = bool(m.get("amount", True))
+        cap = m.get("cap")
+        capattr = ("" if cap is None else ' data-cap="%s"' % _e("%d" % int(cap)))
+        extra = m.get("extra") or {}
+        extra_attr = ' data-extra="%s"' % _e(_json.dumps(extra, sort_keys=True))
+        eid = block_id(str(m.get("action") or "") + " " + str(m.get("subject") or ""))
+        field = ""
+        if amount:
+            field = (
+                '<label class="tklab" for="mny-%s">%s</label>'
+                '<input class="tkq" id="mny-%s" type="number" min="1" step="1" '
+                'inputmode="numeric" placeholder="%s">'
+            ) % (_e(eid), _e(str(m.get("field") or "Amount")), _e(eid),
+                 _e(str(m.get("placeholder") or "coins")))
+        button = ("" if stuck else
+                  '<button class="btn %s mnygo" type="button">%s</button>'
+                  % ("s" if m.get("quiet") else "p",
+                     _e(str(m.get("cta") or "Continue"))))
+        out.append(
+            ('<div class="moneybox%s" data-action="%s" data-url="%s" data-key="%s" '
+             'data-csrf="%s" data-title="%s"%s%s>'
+             '<div class="tkrow">%s%s</div>'
+             '<div class="tkhint">%s</div></div>')
+            % (" stuck" if stuck else "",
+               _e(str(m.get("action") or "")), _e(str(m.get("url") or "")),
+               _e(str(m.get("key") or "")), _e(str(m.get("csrf") or "")),
+               _e(str(m.get("title") or "")), capattr, extra_attr,
+               field, button,
+               _e(stuck or str(m.get("hint") or ""))))
+    return "".join(out)
+
+
+def _replybox(block: dict) -> str:
+    """A reply, on the page that lists the conversation.
+
+    The last piece of the split. `/messages` owned sending and marking-read, and
+    the designed screen could only say "open the messenger" — so reading who had
+    written to you and answering them were two different pages.
+
+    THE KEY IS BOUND TO THE THREAD (`message:t:<id>`). A key minted on one
+    conversation must not post into another, and the server checks that; minting
+    per thread here is what lets it. A thread whose last send has not come back
+    reuses THE SAME key rather than minting a fresh one — a new key would be one
+    the claim table has never seen, which is the double it exists to prevent.
+
+    Marking read is a separate button and carries no key on purpose: the write is
+    `MAX(old, new)`, so pressing it twice, out of order, or from a stale tab all
+    land on the same watermark.
+    """
+    rows = block.get("reply") or []
+    out = []
+    for r in rows:
+        tid = str(r.get("thread_id") or "")
+        unread = int(r.get("unread") or 0)
+        mark = ("" if not unread else
+                '<button class="btn s rdgo" type="button">Mark read</button>')
+        out.append(
+            ('<div class="replybox" data-tid="%s" data-key="%s" data-csrf="%s" '
+             'data-newest="%s" data-to="%s">'
+             '<label class="tklab" for="rp-%s">%s</label>'
+             '<textarea class="rpbody" id="rp-%s" rows="3" maxlength="%s" '
+             'placeholder="%s"></textarea>'
+             '<div class="tkrow">'
+             '<button class="btn p rpgo" type="button">Send</button>%s'
+             '<span class="rpcount">0 / %s</span>'
+             '</div><div class="tkhint">%s</div></div>')
+            % (_e(tid), _e(str(r.get("key") or "")), _e(str(r.get("csrf") or "")),
+               _e(str(int(r.get("newest") or 0))), _e(str(r.get("to") or "")),
+               _e(tid), _e(str(r.get("label") or "Reply")), _e(tid),
+               _e(str(int(r.get("max") or 2000))),
+               _e(str(r.get("placeholder") or "")), mark,
+               _e(str(int(r.get("max") or 2000))),
+               _e(str(r.get("hint") or "")))
+        )
+    return "".join(out)
+
+
 def _block(block: dict, mine=None) -> str:
     if "ticket" in block:
         inner = _ticket(block)
     elif "bid" in block:
         inner = _bidbox(block)
+    elif "money" in block:
+        inner = _moneybox(block)
+    elif "reply" in block:
+        inner = _replybox(block)
     elif "spark" in block:
         inner = _spark(block)
     elif "bal" in block:

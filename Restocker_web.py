@@ -5750,19 +5750,21 @@ async def start_webserver(port: int = 8080):
         ("messages_web", "register_messages_routes", "Messages"),
         ("history_web",  "register_history_routes",  "History"),
         ("admin_web",    "register_admin_routes",    "Owner"),
-        # The twelve designed screens, under /abex/*. They carry the design's
-        # sample rows, so they are mounted beside the live pages rather than over
-        # them; promoting one is a screen's worth of work, not a cutover.
+        # The design's own screens, under /abex/*. They still carry the design's
+        # SAMPLE rows, which is why they never took a real route — sample money
+        # on a live page is worse than an ugly page, it is a lying one.
         ("abex_web",     "register_abex_routes",     "Abex screens"),
         # The public notice page. No session, no database — it must still
         # answer when the bot is down, because it is what someone reads
         # BEFORE they have an account.
         ("terms_web",    "register_terms_routes",    "Terms"),
-        # The canvas screens, under /canvas/*. Mounted BESIDE the live pages,
-        # not over them: they still carry the design's sample rows, and sample
-        # money on a real route would be worse than an ugly page - it would be
-        # a lying one. Each moves onto its real route as it is wired to live
-        # data.
+        # THE SITE. This mounts the live screens at /hub/*, and it is registered
+        # LAST on purpose: `hub_web.register_section` updates an existing key, so
+        # the last writer owns the nav entry. Banking and Messages are registered
+        # by their own modules first and pointed at /banking and /messages; this
+        # pass repoints them at /hub/banking and /hub/messages, which is where
+        # the balances, the instructions and the replies now live together.
+        # /canvas is gone — it redirects here. There is one site.
         ("canvas_web",   "register_canvas_routes",   "Canvas screens"),
     ):
         try:

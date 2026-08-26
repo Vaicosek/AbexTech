@@ -157,7 +157,14 @@ def test_the_toggle_is_desktop_invisible_and_the_tree_desktop_visible():
 
 
 def test_the_nav_expands_inline_and_is_not_a_drawer():
-    js = canvas_web.CANVAS_JS
+    """§2: the toggle expands the tree in place. No drawer, no overlay.
+
+    Scanned with the COMMENTS STRIPPED. The script's own comment says "no
+    drawer, no overlay", which is the rule being enforced — reading it as a
+    violation made this test fail on the sentence that states its own intent.
+    """
+    import re as _re
+    js = _re.sub(r"/\*.*?\*/", "", canvas_web.CANVAS_JS, flags=_re.S)
     assert 'classList.toggle("open")' in js
     for drawer in ("position:fixed", "overlay", "backdrop"):
         assert drawer not in js, f"§2 says inline, not a drawer: {drawer}"

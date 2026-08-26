@@ -1472,7 +1472,61 @@ def auctions(user_id: str = "", csrf: str = "") -> dict:
 
 
 # ── Messages ────────────────────────────────────────────────────────────────
-def messages(user_id: str = "") -> dict:
+def _reply_blocks(user_id: str, csrf: str, threads: list) -> list:
+    """A reply box per conversation, newest first, unread ones first.
+
+    THE KEY IS RESUMED, NOT MINTED, when the last send has not come back from the
+    write. `messages_web._resume_key` hands back the same key with the reason in
+    words; minting a fresh one would produce a key the claim table has never
+    seen, and the whole point of the claim is that the retry collides with it.
+
+    Capped at eight boxes. Every box costs a key row, and a player with sixty
+    threads does not want sixty textareas on one screen — the messenger is still
+    there for the long tail, and the note says which threads are shown.
+    """
+    if not (user_id and csrf and threads):
+        return []
+    try:
+        import messages_web as MW
+    except Exception as exc:                          # pragma: no cover
+        log.warning("[livescreens] messages module unavailable: %s", exc)
+        return []
+
+    ordered = sorted(threads, key=lambda t: (0 if int(t.get("unread") or 0) else 1))
+    boxes = []
+    for t in ordered[:8]:
+        tid = int(t.get("id") or 0)
+        if not tid:
+            continue
+        try:
+            key, note = MW._resume_key(str(user_id), f"message:t:{tid}")
+        except Exception as exc:
+            log.warning("[livescreens] no message key for thread %s: %s", tid, exc)
+            continue
+        if not key:
+            continue
+        other = str(t.get("other_name") or "this conversation")
+        unread = int(t.get("unread") or 0)
+        boxes.append({"thread_id": tid, "key": str(key), "csrf": csrf,
+                      "label": f"Reply to {other}",
+                      "newest": int(t.get("last_message_id") or 0),
+                      "unread": unread,
+                      "max": int(getattr(MW, "BODY_MAX", 2000)),
+                      "placeholder": f"Write to {other}…",
+                      "hint": note or (f"{unread} unread in this thread."
+                                       if unread else
+                                       "Sent as you, from this page.")})
+    if not boxes:
+        return []
+    shown = len(boxes)
+    return [{"h2": "Reply", "reply": boxes,
+             "n": (f"The {shown} most recent conversation"
+                   f"{'' if shown == 1 else 's'}, unread first. Sending happens "
+                   f"here — there is no second page to open, and no second copy "
+                   f"of what you are replying to.")}]
+
+
+def messages(user_id: str = "", csrf: str = "") -> dict:
     """Unread and earlier, sender and subject only.
 
     The "subject" is the newest message's first line, because these threads have
@@ -1497,7 +1551,13 @@ def messages(user_id: str = "") -> dict:
             when = MW._stamp(t.get("last_message_at"))
         except Exception:
             when = DASH
-        row = [str(t.get("other_name") or DASH), preview, when or DASH]
+        # The sender's name IS the way into the conversation. The reply box
+        # below answers a thread; reading what was said before it is the one
+        # thing this screen genuinely cannot show, so the row links to it rather
+        # than a button somewhere else offering "the messenger".
+        who = str(t.get("other_name") or DASH)
+        tid = int(t.get("id") or 0)
+        row = [(f"A|/messages/t/{tid}|{who}" if tid else who), preview, when or DASH]
         (unread if int(t.get("unread") or 0) else earlier).append(row)
 
     total_unread = sum(1 for t in threads if int(t.get("unread") or 0))
@@ -1511,13 +1571,22 @@ def messages(user_id: str = "") -> dict:
          "c": _cols("messages", 1) or ["From", "Subject", "Received"], "r": earlier,
          "n": (f"{len(earlier)} thread{'' if len(earlier) == 1 else 's'}, newest "
                "first." if earlier else "No earlier threads.")}
-    act = {"h2": "Reading and replying", "ac": 1,
-           "act": ("Threads open in the messenger, which is where replies are "
-                   "written and where a thread is marked read."),
-           "btns": [["Open the messenger", "p", "/messages"]],
-           "n": "This page lists what is waiting. It does not mark anything read."}
+    # REPLYING HAPPENS HERE. "Open the messenger" was the last button on the site
+    # that answered a question by sending somebody somewhere else, and a second
+    # page meant a second copy of the thread being answered.
+    reply = _reply_blocks(uid, csrf, threads)
+    if not reply:
+        reply = [{"h2": "Reply", "ac": 1,
+                  "act": ("There is nothing to reply to yet. A conversation "
+                          "starts when somebody writes to you, or from a player's "
+                          "own page."),
+                  "btns": [],
+                  "n": "Replies are written on this page once a thread exists."}]
+    head = dict(reply[0])
+    head["ac"] = 1
+    reply[0] = head
     asof = (f"{total_unread} unread." if total_unread else "Nothing unread.")
-    return _shell("messages", asof, None, [act, a, b])
+    return _shell("messages", asof, None, reply + [a, b])
 
 
 # ── History ─────────────────────────────────────────────────────────────────
@@ -1602,7 +1671,202 @@ def history(user_id: str = "") -> dict:
 
 
 # ── Banking ─────────────────────────────────────────────────────────────────
-def banking(user_id: str = "") -> dict:
+
+#: purpose -> the endpoint that carries it out. One table, so a box and its
+#: commit route cannot drift apart the way the /banking copy and this one could.
+_MONEY_URL = {
+    "deposit": "/api/banking/deposit",
+    "withdraw": "/api/banking/withdraw",
+    "repay": "/api/banking/repay",
+    "bond_buy": "/api/banking/bond/buy",
+    "bond_redeem": "/api/banking/bond/redeem",
+}
+
+
+def _in_flight_note(action: str, flight: dict) -> str:
+    """What a player is told about an instruction the bank has not answered.
+
+    Not "try again". The key is still claimed, so a second press can only 409 —
+    and the first instruction MAY HAVE BEEN APPLIED, which is exactly why it is
+    closed rather than retryable. Nothing clears this automatically today, so it
+    says so and names who can.
+    """
+    label = {"deposit": "A deposit", "withdraw": "A withdrawal",
+             "repay": "A repayment", "bond_buy": "A bond purchase",
+             "bond_redeem": "A redemption"}.get(action, "An instruction")
+    age = int((flight or {}).get("age_seconds") or 0)
+    when = ("%d minutes" % (age // 60)) if age >= 60 else "less than a minute"
+    return (f"{label} you sent {when} ago has not been confirmed by the bank. It "
+            f"may already have been applied, so the same confirmation key is "
+            f"still held for it and it cannot be sent twice. Ask staff to settle "
+            f"it against your bank record — nothing clears it automatically.")
+
+
+def _bank_keys(user_id: str, acct: dict) -> tuple:
+    """`(keys, in_flight)` for this player, minted ONCE per page render.
+
+    Called once and shared, not once per block: `mint_form_key` issues a fresh
+    key each time, so asking twice leaves one of the pair claimed and unused in
+    `web_idempotency` — and the in-flight lookup would then find a key the
+    browser was never given.
+    """
+    if not (user_id and acct):
+        return {}, {}
+    try:
+        import banking_web
+        return banking_web._keys_for(str(user_id), acct)
+    except Exception as exc:
+        log.warning("[livescreens] bank form keys unavailable: %s", exc)
+        return {}, {}
+
+
+def _money_boxes(user_id: str, csrf: str, acct: dict, available: float,
+                 keys: dict, in_flight: dict) -> list:
+    """Every bank instruction this player can give, on the page showing his money.
+
+    THIS IS THE CENTRALISATION. `/banking` mints its keys at render time and
+    hands them to its own script; so does this, from the same `_keys_for`, so
+    there is one minting rule rather than two that must be kept in step. What is
+    NOT duplicated is the arithmetic: no figure here is computed for the confirm
+    screen. The preview endpoint re-reads the account when the button is pressed
+    and returns the rows; this only carries the instruction and its key.
+
+    A missing key is not an error to hide. `_keys_for` declines to mint for a
+    subject it cannot sign unambiguously (an opaque bond id from the bank), and a
+    box with no key would submit and be refused as `bad_form_key`. Those are
+    dropped, and the block's note says a bond is missing rather than showing a
+    button that cannot work.
+    """
+    if not (user_id and csrf and acct and keys):
+        return []
+
+    savings = acct.get("savings") or {}
+    loan = acct.get("loan") or None
+    principal = float(savings.get("balance") or 0)
+    avail = int(available)
+
+    def flight(action: str, subject: str = ""):
+        f = in_flight.get(action) or {}
+        if not f:
+            return None
+        subs = f.get("subjects") or {}
+        if subject:
+            return subs.get(str(subject))
+        return subs.get("") or f
+
+    def box(action, subject, title, cta, hint, cap=None, amount=True, extra=None,
+            field="Amount", quiet=False):
+        k = keys.get(action)
+        key = k.get(str(subject)) if isinstance(k, dict) else k
+        if not key:
+            return None
+        stuck = flight(action, str(subject) if isinstance(k, dict) else "")
+        return {"action": action, "subject": subject, "url": _MONEY_URL[action],
+                "key": str(key), "csrf": csrf, "title": title, "cta": cta,
+                "hint": hint, "cap": cap, "amount": amount, "field": field,
+                "quiet": quiet, "extra": extra or {},
+                "stuck": _in_flight_note(action, stuck) if stuck else ""}
+
+    out = []
+    out.append(box("deposit", "", "Deposit into savings", "Deposit",
+                   f"{avail:,}c available. Coins held by an open bid or order are "
+                   f"not depositable — a hold reserves them, it does not spend them.",
+                   cap=avail, field="Coins"))
+    if principal > 0:
+        out.append(box("withdraw", "", "Withdraw from savings", "Withdraw",
+                       f"{principal:,.0f}c in savings. Interest accrued since the "
+                       f"last credit is not forfeited by withdrawing today.",
+                       cap=int(principal), field="Coins", quiet=True))
+    if loan:
+        payoff = float(loan.get("payoff_today") or 0)
+        out.append(box("repay", "", f"Repay loan #{loan.get('id')}", "Pay",
+                       f"{payoff:,.0f}c settles it in full today. Payment goes to "
+                       f"interest first, then principal.",
+                       cap=int(min(avail, payoff)), field="Coins"))
+    return [b for b in out if b]
+
+
+def _bond_blocks(user_id: str, csrf: str, acct: dict, available: float,
+                 keys: dict, in_flight: dict) -> list:
+    """The bond ladder and its two instructions, as blocks.
+
+    A bond is the one bank product with a SUBJECT — which term, which bond — and
+    a key that did not bind it once let a player who read one bond's figures
+    redeem another. The key is minted per term and per bond id, and the server
+    checks it against the id in the body, so the confirm screen and the
+    instruction cannot be about different bonds.
+    """
+    if not (user_id and csrf and acct and keys):
+        return []
+
+    bonds = acct.get("bonds") or []
+    terms = acct.get("bond_terms") or []
+    avail = int(available)
+    blocks = []
+
+    if bonds:
+        rows = []
+        for b in bonds:
+            matured = bool(b.get("matured"))
+            rows.append([str(b.get("id") or DASH),
+                         f"{float(b.get('face') or 0):,.0f}c",
+                         f"{float(b.get('apr') or 0):,.2f}%",
+                         str(b.get("matures") or "")[:10] or DASH,
+                         ("matured" if matured else
+                          f"{float(b.get('early_redemption_penalty') or 0):,.0f}c penalty"),
+                         f"{float(b.get('redeem_value_today') or 0):,.0f}c"])
+        blocks.append({"h2": "Your bonds",
+                       "c": ["Bond", "Face#", "Rate#", "Matures",
+                             "Redeem early", "Value today#"],
+                       "r": rows,
+                       "n": "Redeeming before maturity is allowed and the penalty "
+                            "is the figure on the row — the confirm screen shows "
+                            "what holding to maturity would have paid instead."})
+
+    boxes = []
+    for b in bonds:
+        bid = str(b.get("id") or "")
+        k = (keys.get("bond_redeem") or {})
+        key = k.get(str(bid)) if isinstance(k, dict) else None
+        if not key:
+            continue
+        stuck = ((in_flight.get("bond_redeem") or {}).get("subjects") or {}).get(str(bid))
+        matured = bool(b.get("matured"))
+        boxes.append({"action": "bond_redeem", "subject": bid,
+                      "url": _MONEY_URL["bond_redeem"], "key": str(key),
+                      "csrf": csrf, "title": f"Redeem bond {bid}",
+                      "cta": ("Redeem " + bid) if matured else ("Redeem " + bid + " early"),
+                      "amount": False, "quiet": not matured, "extra": {"bond_id": bid},
+                      "hint": ("Matured — redeeming pays the full amount."
+                               if matured else
+                               f"Not matured until {str(b.get('matures') or '')[:10]}. "
+                               f"Redeeming now gives up the interest still to run."),
+                      "stuck": _in_flight_note("bond_redeem", stuck) if stuck else ""})
+    for t in terms:
+        term = int(t.get("term_days") or 0)
+        k = (keys.get("bond_buy") or {})
+        key = k.get(str(term)) if isinstance(k, dict) else None
+        if not key:
+            continue
+        stuck = ((in_flight.get("bond_buy") or {}).get("subjects") or {}).get(str(term))
+        lo = float(t.get("min_face") or 0)
+        boxes.append({"action": "bond_buy", "subject": term,
+                      "url": _MONEY_URL["bond_buy"], "key": str(key), "csrf": csrf,
+                      "title": f"Buy a {term}-day bond at {float(t.get('apr') or 0):,.2f}%",
+                      "cta": f"Buy {term}-day", "amount": True, "field": "Face value",
+                      "cap": avail, "extra": {"term_days": term},
+                      "hint": (f"{term} days at {float(t.get('apr') or 0):,.2f}% APR"
+                               + (f", from {lo:,.0f}c" if lo else "")
+                               + f". {avail:,}c available."),
+                      "stuck": _in_flight_note("bond_buy", stuck) if stuck else ""})
+    if boxes:
+        blocks.append({"h2": "Bonds", "money": boxes,
+                       "n": "A bond locks its face value for the term. The rate is "
+                            "fixed when you buy."})
+    return blocks
+
+
+def banking(user_id: str = "", csrf: str = "") -> dict:
     """Wallet, savings, debt and the borrowing limit.
 
     "Unavailable" ON A BANKING PAGE READS AS "YOUR MONEY IS GONE". So the two
@@ -1629,6 +1893,7 @@ def banking(user_id: str = "") -> dict:
     balance = float(snap.get("balance") or 0)
 
     acct = {}
+    bank_note = ""
     try:
         import bank_local
         got = bank_local.handle("GET", "/api/v1/account", {"user_id": uid}) or {}
@@ -1699,12 +1964,33 @@ def banking(user_id: str = "") -> dict:
                                for label, value in components],
                        "tot": ["Available to borrow",
                                f"{float(limit.get('headroom') or 0):,.0f}c"]})
-    blocks.append({"h2": "Moving money",
-                   "act": ("Deposits, withdrawals, borrowing and repayment happen "
-                           "in the bank. Nothing on this page moves a coin."),
-                   "btns": [["Open the bank", "p", "/banking"]],
-                   "n": "Read here, act there — so a page that cannot reach the "
-                        "bank can still show you your wallet."})
+    # THE INSTRUCTIONS LIVE HERE NOW, not behind a button to a second page.
+    # "Read here, act there" was the old rule and it is the /canvas split in
+    # miniature: two pages, two copies of the wallet, and the first time they
+    # disagreed the one somebody confirmed was the stale one.
+    _keys, _flight = _bank_keys(uid, acct) if csrf else ({}, {})
+    boxes = _money_boxes(uid, csrf, acct, available, _keys, _flight)
+    if boxes:
+        blocks.append({"h2": "Moving money", "money": boxes,
+                       "n": "Each of these is priced by the bank when you press "
+                            "it, not when this page loaded, and you see those "
+                            "figures before anything moves."})
+    elif acct:
+        blocks.append({"h2": "Moving money",
+                       "act": ("Sign-in could not be confirmed for a money "
+                               "instruction, so no button is offered. Reload the "
+                               "page rather than acting anywhere else."),
+                       "btns": [],
+                       "n": "No coin moves from a page that cannot prove who is "
+                            "asking."})
+    else:
+        blocks.append({"h2": "Moving money",
+                       "act": ("The bank is not answering, so nothing can be "
+                               "deposited, withdrawn or repaid right now. Your "
+                               "wallet above is live and unaffected."),
+                       "btns": [],
+                       "n": bank_note or "The bank is not deployed."})
+    blocks.extend(_bond_blocks(uid, csrf, acct, available, _keys, _flight))
     asof = ("Interest is paid weekly." if acct else
             "Your wallet is live. " + bank_note)
     return _shell("banking", asof, band, blocks)
@@ -1752,7 +2038,8 @@ def screen(key: str, user_id: str = "", public: bool = False,
     try:
         # `stocks` is the trading page and needs the token to draw a ticket.
         # A public build is passed neither, so it cannot carry one.
-        if key in ("stocks", "auctions", "lands") and not public:
+        if key in ("stocks", "auctions", "lands", "banking",
+                   "messages") and not public:
             built = fn(user_id, csrf)
         else:
             built = fn("" if public else user_id)

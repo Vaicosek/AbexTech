@@ -125,15 +125,23 @@ td.countdown{font-variant-numeric:tabular-nums}
 /* The trade ticket. Plain controls on the page's own type — a ticket that looks
    like a separate app is a ticket a trader reads separately from the figures
    above it. */
-.ticket,.bidbox{margin:2px 0 4px}
-.ticket .tkrow,.bidbox .tkrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.ticket .tklab,.bidbox .tklab{color:var(--faint);font-size:11.5px}
-.ticket .tkq,.bidbox .tkq{width:120px;padding:8px 10px;background:none;color:var(--text);
+.ticket,.bidbox,.moneybox,.replybox{margin:2px 0 4px}
+.ticket .tkrow,.bidbox .tkrow,.moneybox .tkrow,.replybox .tkrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.ticket .tklab,.bidbox .tklab,.moneybox .tklab,.replybox .tklab{color:var(--faint);font-size:11.5px}
+.ticket .tkq,.bidbox .tkq,.moneybox .tkq{width:120px;padding:8px 10px;background:none;color:var(--text);
   border:1px solid var(--line);border-radius:2px;font:inherit;
   font-variant-numeric:tabular-nums}
-.ticket .tkq:focus,.bidbox .tkq:focus{outline:none;border-color:var(--accent)}
+.ticket .tkq:focus,.bidbox .tkq:focus,.moneybox .tkq:focus{outline:none;border-color:var(--accent)}
 .ticket .tkest{margin-top:9px;font-variant-numeric:tabular-nums;font-size:14px}
-.ticket .tkhint,.bidbox .tkhint{margin-top:6px;color:var(--faint);font-size:10.5px}
+.replybox+.replybox{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
+.replybox .rpbody{display:block;width:100%;box-sizing:border-box;margin:6px 0 8px;
+  padding:8px 10px;background:none;color:var(--text);border:1px solid var(--line);
+  border-radius:2px;font:inherit;font-size:13px;resize:vertical}
+.replybox .rpbody:focus{outline:none;border-color:var(--accent)}
+.replybox .rpcount{color:var(--faint);font-size:10.5px;margin-left:auto}
+.moneybox+.moneybox{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
+.moneybox.stuck .tkhint{color:var(--loss)}
+.ticket .tkhint,.bidbox .tkhint,.moneybox .tkhint,.replybox .tkhint{margin-top:6px;color:var(--faint);font-size:10.5px}
 .ticket button[disabled]{opacity:.45;cursor:not-allowed}
 
 /* §5: `dense` toggles row padding and NOTHING else - "does not change font
@@ -510,6 +518,170 @@ CANVAS_JS = r"""
         .catch(function(){
           hint.textContent = "Network error — do not re-send. Reload and check " +
             "the lot before bidding again.";
+        });
+    });
+  }
+
+  /* Banking, on the page that shows the balances. Preview then confirm, the
+     same two-step as a bid: the server prices it fresh at the moment of asking
+     (a week's interest may have accrued since the page loaded), the player sees
+     those figures, and only then does the commit go. The commit carries the key
+     minted when the page was BUILT — pressing twice repeats one instruction, it
+     does not send two. */
+  var moneys = document.querySelectorAll(".moneybox");
+  for(var mi = 0; mi < moneys.length; mi++) wireMoney(moneys[mi]);
+
+  function wireMoney(box){
+    var go = box.querySelector(".mnygo");
+    if(!go) return;                       /* stuck: no button, nothing to wire */
+    var q = box.querySelector(".tkq");
+    var hint = box.querySelector(".tkhint");
+    var action = box.getAttribute("data-action") || "";
+    var url = box.getAttribute("data-url") || "";
+    var key = box.getAttribute("data-key") || "";
+    var csrf = box.getAttribute("data-csrf") || "";
+    var title = box.getAttribute("data-title") || action;
+    var capA = box.getAttribute("data-cap");
+    var cap = capA === null ? null : parseInt(capA, 10);
+    var extra = {};
+    try { extra = JSON.parse(box.getAttribute("data-extra") || "{}") || {}; }
+    catch(e){ extra = {}; }
+    var post = function(path, body){
+      return fetch(path, {method:"POST", credentials:"same-origin",
+        headers:{"Content-Type":"application/json", "X-CSRF-Token":csrf},
+        body: JSON.stringify(body)}).then(function(r){ return r.json(); });
+    };
+    var merge = function(base){
+      for(var k in extra){ if(extra.hasOwnProperty(k)) base[k] = extra[k]; }
+      return base;
+    };
+    go.addEventListener("click", function(){
+      var amount = 0;
+      if(q){
+        amount = parseInt(q.value, 10);
+        if(isNaN(amount) || amount <= 0){
+          hint.textContent = "Enter how many coins."; return;
+        }
+        if(cap !== null && amount > cap){
+          hint.textContent = "Only " + cap.toLocaleString() + "c available for this.";
+          return;
+        }
+      }
+      go.disabled = true; hint.textContent = "Checking with the bank…";
+      post("/api/banking/preview", merge({action: action, amount: amount}))
+        .then(function(p){
+          if(!p || !p.ok){
+            hint.textContent = (p && p.error) || "The bank could not price that.";
+            go.disabled = false; return;
+          }
+          var lines = (p.rows || []).map(function(r){ return r[0] + ": " + r[1]; });
+          if(p.total) lines.push(p.total[0] + ": " + p.total[1]);
+          (p.effect || []).forEach(function(r){ lines.push(r[0] + ": " + r[1]); });
+          if(p.blocked){
+            /* The preview says it cannot be done. That is shown INSTEAD of a
+               confirm, never behind one — with the figures that make it true,
+               because "blocked" on its own is not a reason. */
+            hint.textContent = "The bank will not do that: " +
+              (lines.length ? lines.join(" · ") : (p.note || "check the figures above."));
+            go.disabled = false; return;
+          }
+          if(!window.confirm((p.head ? p.head + "\n" : "") + title +
+              (lines.length ? "\n\n" + lines.join("\n") : "") +
+              (p.note ? "\n\n" + p.note : "") +
+              (p.confirm_label ? "\n\n[OK] " + p.confirm_label : ""))){
+            hint.textContent = ""; go.disabled = false; return;
+          }
+          return post(url, merge({amount: amount, idempotency_key: key}))
+            .then(function(j){
+              if(j && j.replayed){
+                hint.textContent = "That was a repeat of an instruction already " +
+                  "completed — it was not done a second time.";
+              } else {
+                hint.textContent = (j && (j.big || j.note || j.error)) || "Done.";
+              }
+              if(j && j.ok) setTimeout(function(){ location.reload(); }, 900);
+              else go.disabled = false;
+            });
+        })
+        .catch(function(){
+          /* Unknown, not failed. The instruction may have reached the bank, and
+             the key is claimed either way — re-sending can only 409, and telling
+             him to try again is how somebody deposits twice. */
+          hint.textContent = "Network error — do not re-send. Reload and check " +
+            "your balances before trying again.";
+        });
+    });
+  }
+
+  /* Replying, on the page that lists the conversation. No preview step: unlike
+     a bid or a deposit there is no arithmetic to confirm — the thing being
+     confirmed is the text, and it is on screen in the box. */
+  var replies = document.querySelectorAll(".replybox");
+  for(var ri = 0; ri < replies.length; ri++) wireReply(replies[ri]);
+
+  function wireReply(box){
+    var ta = box.querySelector(".rpbody");
+    var go = box.querySelector(".rpgo");
+    var rd = box.querySelector(".rdgo");
+    var hint = box.querySelector(".tkhint");
+    var count = box.querySelector(".rpcount");
+    if(!ta) return;
+    var tid = box.getAttribute("data-tid") || "";
+    var to = box.getAttribute("data-to") || "";
+    var key = box.getAttribute("data-key") || "";
+    var csrf = box.getAttribute("data-csrf") || "";
+    var newest = parseInt(box.getAttribute("data-newest"), 10) || 0;
+    var max = parseInt(ta.getAttribute("maxlength"), 10) || 2000;
+    var post = function(path, body){
+      return fetch(path, {method:"POST", credentials:"same-origin",
+        headers:{"Content-Type":"application/json", "X-CSRF-Token":csrf},
+        body: JSON.stringify(body)}).then(function(r){ return r.json(); });
+    };
+    var tick = function(){
+      if(count) count.textContent = ta.value.length + " / " + max;
+    };
+    ta.addEventListener("input", tick); tick();
+
+    if(go) go.addEventListener("click", function(){
+      var text = (ta.value || "").trim();
+      if(!text){ hint.textContent = "Write something first."; return; }
+      go.disabled = true; hint.textContent = "Sending…";
+      var body = {body: text, idempotency_key: key};
+      if(tid) body.thread_id = tid; else body.to = to;
+      post("/api/messages/send", body)
+        .then(function(j){
+          if(j && j.duplicate){
+            hint.textContent = "That confirmation had already posted a message — " +
+              "one exists, not two.";
+          } else if(j && j.ok){
+            ta.value = ""; tick();
+            hint.textContent = "Sent.";
+            setTimeout(function(){ location.reload(); }, 700);
+            return;
+          } else {
+            hint.textContent = (j && (j.error || j.note)) || "That was not sent.";
+          }
+          go.disabled = false;
+        })
+        .catch(function(){
+          /* The send may have landed. The key is claimed either way, so pressing
+             again can only be refused — which is better than a second message. */
+          hint.textContent = "Network error — do not re-send. Reload and check the " +
+            "conversation before writing again.";
+        });
+    });
+
+    if(rd) rd.addEventListener("click", function(){
+      rd.disabled = true;
+      post("/api/messages/read", {thread_id: tid, up_to: newest})
+        .then(function(j){
+          if(j && j.ok){ location.reload(); }
+          else { hint.textContent = (j && j.error) || "Not marked."; rd.disabled = false; }
+        })
+        .catch(function(){
+          /* Safe to repeat: the watermark write is MAX(old, new). */
+          hint.textContent = "Network error — reload and try again.";
+          rd.disabled = false;
         });
     });
   }
