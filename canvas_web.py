@@ -125,21 +125,6 @@ td.countdown{font-variant-numeric:tabular-nums}
 .ticket .tkhint{margin-top:6px;color:var(--faint);font-size:13px}
 .ticket button[disabled]{opacity:.45;cursor:not-allowed}
 
-/* The rail. A screen with a `side:1` block becomes two columns; everything else
-   stays the stack it was. Below 1100px it collapses back, because a 320px rail
-   beside a table is a table nobody can read. */
-.railed{display:grid;grid-template-columns:minmax(0,1fr) 336px;
-  gap:0 40px;align-items:start}
-.railside{border-left:1px solid var(--line);padding-left:32px}
-.railside .block{border-top:none;padding-top:0}
-.railside .block+.block{margin-top:30px;border-top:1px solid var(--line);
-  padding-top:22px}
-@media (max-width:1100px){
-  .railed{grid-template-columns:minmax(0,1fr)}
-  .railside{border-left:none;padding-left:0;margin-top:30px;
-    border-top:1px solid var(--line);padding-top:22px}
-}
-
 /* §5: `dense` toggles row padding and NOTHING else - "does not change font
    size". The theme's own rows are 10px; dense is 7px. */
 table.dense td, table.dense th{padding-top:7px;padding-bottom:7px}

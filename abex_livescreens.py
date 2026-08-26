@@ -605,7 +605,7 @@ def stock(user_id: str = "", market_id: str = "", csrf: str = "") -> dict:
                          "It is not being estimated here.")}
 
     float_pct = (d["free_float"] / shares * 100.0) if shares else 0.0
-    register = {"h2": "The register", "side": 1,
+    register = {"h2": "The register",
                 "bal": [["Shares outstanding", f"{shares:,.0f}", ""],
                         ["Held by the owner", f"{d['owner_holds']:,.0f}",
                          "not free float"],
@@ -624,10 +624,7 @@ def stock(user_id: str = "", market_id: str = "", csrf: str = "") -> dict:
     ticket = None
     if user_id and csrf and price > 0 and shares > 0:
         held = d["your_shares"]
-        # The ticket sits in the rail, beside the chart rather than above it:
-        # a trader reads the line and the price together, and a ticket that
-        # pushes the chart off the screen makes him choose.
-        ticket = {"h2": "Trade", "ac": 1, "side": 1,
+        ticket = {"h2": "Trade", "ac": 1,
                   "ticket": {"market_id": d["market_id"], "price": price,
                              "you_hold": held, "csrf": csrf,
                              "hint": ("You hold %s share%s. Selling is capped at "
@@ -643,7 +640,7 @@ def stock(user_id: str = "", market_id: str = "", csrf: str = "") -> dict:
     # account, AND the block is not built without one. Either alone is a bug
     # waiting for the other to be edited.
     if user_id and d["your_shares"]:
-        blocks.append({"h2": "Your position", "own": 1, "side": 1,
+        blocks.append({"h2": "Your position", "own": 1,
                        "bal": [["Shares you hold", f"{d['your_shares']:,.0f}", ""],
                                ["At the current price",
                                 f"{d['your_shares'] * price:,.0f}c",
@@ -789,14 +786,7 @@ def exchange(user_id: str = "") -> dict:
              "n": ("Free float counts shares in someone else's hands - the "
                    "register minus the owner's own holding."
                    if out else "No market is listed.")}
-    positions = None
-    if held:
-        rows_p = [[name, shares] for name, shares in held.items()]
-        positions = {"h2": "Your positions", "side": 1, "own": 1,
-                     "c": ["Market", "Shares#"], "r": rows_p,
-                     "n": "What each is worth is on its own page."}
-
-    blocks = [b for b in (index, table, positions) if b is not None]
+    blocks = [b for b in (index, table) if b is not None]
     return _shell("exchange", f"{listed} market{'' if listed == 1 else 's'} listed.",
                   band, blocks)
 
