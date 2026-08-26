@@ -1,6 +1,9 @@
 """abex_livescreens.py — the canvas screens, built from the live database.
 
-`abex_canvas` holds the design's screens with the design's SAMPLE rows.
+`abex_canvas` holds the design's screens - their titles, column headings and
+block order - with the design's sample rows still attached. Those rows are read
+by nothing: they were served under `/canvas/*` while each screen was being wired
+and that set is retired. What is read is the SHAPE.
 `abex_render` draws whatever screen dict it is handed. This module produces the
 same dict shape from `abex_live`, so the main site can render the design against
 real money.
@@ -1669,7 +1672,8 @@ def banking(user_id: str = "") -> dict:
 
 
 #: key -> builder. A screen absent here has no live source yet and keeps its
-#: canvas page under /canvas; it is NOT served with sample rows on a live route.
+#: shape from `abex_canvas` and nothing else - the design's sample rows are not
+#: served anywhere any more.
 BUILDERS = {
     "hub": hub, "markets": markets, "stocks": stocks, "work": work,
     "lands": lands, "exchange": exchange,

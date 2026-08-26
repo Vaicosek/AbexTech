@@ -1,14 +1,26 @@
-"""canvas_web.py — the design's screens, served.
+"""canvas_web.py — the live site's designed screens, and the API behind them.
 
-`abex_canvas` holds the canvas as data, `abex_render` turns one screen into HTML,
-and this mounts the set at `/canvas/*` inside the normal shell so the two can be
-compared with the mockup side by side without disturbing anything already live.
+ONE SITE. This module used to mount two sets of pages: the design's screens with
+the design's SAMPLE money under `/canvas/*`, and the same screens on live data
+under `/hub/*`. The sample set existed so a screen could be looked at before it
+was wired. Every screen is wired now, so it is gone — `/canvas/*` redirects to
+the live page it was a picture of.
 
-Why a new prefix rather than replacing a page: the screens still carry the
-design's SAMPLE rows. Their shape is right - columns, tone rules, copy - and
-their numbers are not yours. Putting sample money on `/hub` would be worse than
-an ugly page; it would be a lying one. Each screen moves onto its real route as
-it is wired to live data, one at a time.
+Keeping it would have been the same mistake as `/abex/banking`, which showed
+everybody the same invented 84,230c balance: a second set of pages answering
+"what do I own" with figures nobody has.
+
+What it serves:
+
+  * `/hub/<screen>` — the designed screens on live rows, through `hub_web.page`
+    so the shell, the nav and the money strip are the site's own.
+  * `/hub/stocks/<market>` — one market's page.
+  * `/api/series/*` — the points behind a chart, public because an index and a
+    share price are public facts about this economy.
+
+`abex_canvas.py` stays and is NOT a set of pages. It is the design itself —
+column headings, screen titles, block order — which `abex_livescreens` reads so
+a live screen keeps the shape the design gave it. Nothing serves its rows.
 """
 from __future__ import annotations
 
@@ -19,7 +31,6 @@ except Exception:                                   # pragma: no cover
 
 import abex_shell
 import abex_render
-from abex_canvas import SCREENS
 
 #: The live-data builders. Guarded because this module must still serve the
 #: canvas set in a deployment that has no database - and because a missing
@@ -191,60 +202,23 @@ CANVAS_CSS = _CSS
 
 
 
-def _page(key: str, public: bool = False) -> str:
-    """One canvas screen. `public` strips the reader-facing parts.
-
-    These rows are the design's sample data, so nothing here is anyone's - but a
-    signed-out visitor should still not be shown "You hold" columns, because the
-    page would be teaching them a shape the site will not give them.
-    """
-    screen = SCREENS.get(key)
-    if screen is not None and public and abex_livescreens is not None:
-        screen = abex_livescreens.depersonalise(screen)
-    body = abex_render.screen_html(screen, owner=not public)
-    return abex_shell.render(
-        _NAV.get(key, key),
-        body,
-        title=(screen or {}).get("title", "Canvas"),
-        extra_css=_CSS,
-        tail=f"<script>{CANVAS_JS}</script>",
-        dock=abex_render.dock_html(screen or {}),
-        prefix=PREFIX,
-        paths=_PATHS,
-        available=set(_PATHS),
-    )
+#: Where each retired `/canvas/*` page goes. There is one site.
+_MOVED = {
+    "hub": "/hub", "markets": "/hub/markets", "stocks": "/hub/stocks",
+    "exchange": "/hub/exchange", "work": "/hub/work", "orders": "/hub/work",
+    "market": "/hub/market", "filing": "/hub/filing", "banking": "/hub/banking",
+    "auctions": "/hub/auctions", "lands": "/hub/lands",
+    "messages": "/hub/messages", "history": "/hub/history",
+}
 
 
-def _handler(key: str):
+def _moved(target: str):
     async def handle(request):
-        # These pages carry the DESIGN's sample rows, so nothing here belongs to
-        # anybody - but they were also the only unauthenticated pages on the
-        # site, which was an accident rather than a decision anyone made. A
-        # signed-out visitor now gets the same treatment as everywhere else: the
-        # public screens with their reader-facing columns stripped, and a
-        # sign-in for the ones that are personal end to end.
-        signed_in = False
-        try:
-            import hub_web
-            signed_in = bool(hub_web.current_user(request))
-        except Exception:                            # pragma: no cover
-            pass
-        if not signed_in and key not in _PUBLIC_CANVAS:
-            try:
-                import hub_web
-                return hub_web._login_required_page(request)
-            except Exception:                        # pragma: no cover
-                raise web.HTTPFound("/hub/login")
-        return web.Response(text=_page(key, public=not signed_in),
-                            content_type="text/html", charset="utf-8")
-    handle.__name__ = f"canvas_{key}"
+        raise web.HTTPFound(target)
+    handle.__name__ = "canvas_moved_" + target.strip("/").replace("/", "_")
     return handle
 
 
-#: A live screen's route, its nav label, and where it sits in the sidebar order.
-#: Mounted under the hub prefix because that is where a signed-in, money-bearing
-#: page belongs - `hub_web.page()` supplies the wallet strip and the session
-#: check, and duplicating either here would be a second place for them to drift.
 LIVE_SECTIONS = [
     ("stocks",   "Stocks",    "/hub/stocks",   30),
     ("exchange", "Exchange",  "/hub/exchange", 25),
@@ -760,8 +734,10 @@ def register_canvas_routes(app) -> None:
     app.router.add_get("/hub/stocks/{mid}", _stock_page)
     app.router.add_get("/api/series/index", _series)
     app.router.add_get("/api/series/market/{mid}", _series)
-    for key in SCREENS:
+    # The sample pages redirect rather than 404: they were in the nav for weeks
+    # and somebody has them bookmarked.
+    for key, target in _MOVED.items():
         path = PREFIX if key == "hub" else f"{PREFIX}/{key}"
-        app.router.add_get(path, _handler(key))
-    print(f"     Canvas screens: {len(SCREENS)} under {PREFIX}")
+        app.router.add_get(path, _moved(target))
+    print(f"     {PREFIX}/* retired -> the live pages under /hub")
     register_live_routes(app)

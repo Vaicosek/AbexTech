@@ -1,5 +1,11 @@
 """abex_canvas.py — the design's screens, as data. GENERATED, do not hand-edit.
 
+NOT A SET OF PAGES. Nothing serves these rows: they are the design's sample
+money and were shown under `/canvas/*` only while each screen was being wired to
+the database. That set is retired and there is one site. What is still read from
+this file is the SHAPE — screen titles, column headings, block order — so a live
+screen keeps the form the design gave it.
+
 Extracted verbatim from the Claude Design canvas, which encodes every screen the
 way the spec describes it in §4:
 

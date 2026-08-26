@@ -72,3 +72,33 @@ if __name__ == "__main__":
         if name.startswith("test_"):
             fn()
     print("no sample money on a route: ok")
+
+
+# ── /canvas is retired: one site ───────────────────────────────────────────
+
+def test_the_sample_screen_set_is_no_longer_served():
+    """`/canvas/*` rendered `abex_canvas`'s rows — the design's invented money —
+    beside the real pages while each screen was being wired. Every screen is
+    wired, so a second set of pages answering "what do I own" with figures
+    nobody has is exactly the /abex/banking mistake with a different prefix."""
+    import canvas_web
+    assert not hasattr(canvas_web, "_page"), "the sample renderer is back"
+    assert not hasattr(canvas_web, "_handler"), "the sample route handler is back"
+    assert "SCREENS" not in dir(canvas_web), "sample rows imported again"
+
+
+def test_every_retired_canvas_path_lands_on_a_live_page():
+    import canvas_web
+    assert canvas_web._MOVED, "nothing is redirected"
+    for key, target in canvas_web._MOVED.items():
+        assert target.startswith("/hub"), (key, target)
+
+
+def test_the_design_file_is_still_read_for_shape():
+    """`abex_canvas` stays: a live screen keeps the column headings and block
+    order the design gave it. It is the ROWS that are not served."""
+    import abex_livescreens
+    from abex_canvas import SCREENS
+    assert SCREENS, "the design's shape source went away"
+    cols = abex_livescreens._cols("markets", 1)
+    assert cols, "live screens lost the design's column headings"
