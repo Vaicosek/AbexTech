@@ -555,9 +555,39 @@ def _ticket(block: dict) -> str:
     )
 
 
+def _bidbox(block: dict) -> str:
+    """A bid. Same shape as the trade ticket and the same rule behind it: the
+    figures a bidder confirms are the ones on the row above.
+
+    A BID IS A HOLD. The coins stay in the wallet, reserved so they cannot be
+    spent twice, and are released the moment somebody outbids. Every surface that
+    shows a bid has to say that rather than imply it, so the button's own hint
+    does — and the preview says it again as arithmetic, available before against
+    available after.
+    """
+    b = block.get("bid") or {}
+    lot = str(b.get("lot_id") or "")
+    return (
+        '<div class="bidbox" data-lot="%s" data-min="%s" data-key="%s" '
+        'data-csrf="%s" data-title="%s">'
+        '<div class="tkrow">'
+        '<label class="tklab" for="bid-%s">Your bid</label>'
+        '<input class="tkq" id="bid-%s" type="number" min="%s" step="1" value="%s" '
+        'inputmode="numeric">'
+        '<button class="btn p bidgo" type="button">Place a bid</button>'
+        '</div><div class="tkhint">%s</div></div>'
+    ) % (_e(lot), _e(str(int(b.get("minimum") or 1))), _e(str(b.get("key") or "")),
+         _e(str(b.get("csrf") or "")), _e(str(b.get("title") or "")),
+         _e(lot), _e(lot), _e(str(int(b.get("minimum") or 1))),
+         _e(str(int(b.get("minimum") or 1))),
+         _e(str(b.get("hint") or "")))
+
+
 def _block(block: dict, mine=None) -> str:
     if "ticket" in block:
         inner = _ticket(block)
+    elif "bid" in block:
+        inner = _bidbox(block)
     elif "spark" in block:
         inner = _spark(block)
     elif "bal" in block:

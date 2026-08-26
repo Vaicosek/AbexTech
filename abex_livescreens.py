@@ -846,7 +846,7 @@ def work(user_id: str = "") -> dict:
 
 
 # ── Claims — the LAND auction ───────────────────────────────────────────────
-def lands(user_id: str = "") -> dict:
+def lands(user_id: str = "", csrf: str = "") -> dict:
     """Land auctions. The item auction is a different page (`auctions`).
 
     `land_listings` holds both and separates them by `kind`. They are different
@@ -877,13 +877,9 @@ def lands(user_id: str = "") -> dict:
                    "separately, under Auctions."
                    if out else "No land is listed. Items are auctioned separately, "
                    "under Auctions.")}
-    act = {"h2": "Bidding",
-           "act": "Bids on land are placed in the auction room.",
-           "btns": [["Open the auction room", "p", "/lands"]],
-           "n": "A bid reserves the coins against your wallet; it moves nothing "
-                "until the lot settles."}
+    blocks = [table] + _bid_blocks("lands", str(user_id), csrf)
     return _shell("lands", f"{len(rows)} land lot{'' if len(rows) == 1 else 's'} "
-                  "on the register.", band, [table, act])
+                  "on the register.", band, blocks)
 
 
 # ── Exchange ────────────────────────────────────────────────────────────────
@@ -1352,8 +1348,55 @@ def _closes(ends_at) -> str:
     return "T|%d" % max(0, left)
 
 
+def _bid_blocks(kind: str, user_id: str, csrf: str) -> list:
+    """A bid box per open lot, on the designed page.
+
+    This is what retires `/auctions` and `/lands` as separate places to act. The
+    older pages own the bidding flow and the designed ones could only link to
+    them, so the site had a page to read a lot on and a different page to bid on
+    it — the /canvas split again, one level down.
+
+    The FORM KEY is minted here, bound to this user and this lot, exactly as
+    `estates_web._lots` mints it: `money_post` checks the key against the thing
+    the request is about, so a key from another lot is refused rather than
+    quietly spent.
+    """
+    if not (user_id and csrf) or abex_live is None:
+        return []
+    try:
+        import estates_web
+        import vt_web_shell as shell
+        db = abex_live._db()
+        want = "land" if kind == "lands" else "item"
+        lots = [l for l in (db.get_active_land_listings() or [])
+                if str(l.get("kind") or "item") == want
+                and str(l.get("mode") or "") == "auction"]
+    except Exception as exc:
+        log.warning("[livescreens] bid boxes unavailable: %s", exc)
+        return []
+
+    out = []
+    for lot in lots[:12]:
+        lid = int(lot.get("id") or 0)
+        if str(lot.get("seller_id") or "") == str(user_id):
+            continue                      # a seller cannot bid on his own lot
+        try:
+            minimum = int(estates_web._min_next_bid(lot))
+            key = shell.mint_form_key(str(user_id), f"bid:{lid}")
+        except Exception:
+            continue
+        title = str(lot.get("title") or f"Lot #{lid}")
+        out.append({"h2": f"Bid on {title}", "bid": {
+            "lot_id": lid, "minimum": minimum, "key": key, "csrf": csrf,
+            "title": title,
+            "hint": (f"{minimum:,}c or more. A bid is a HOLD — the coins stay "
+                     "yours, reserved so they cannot be spent twice, and are "
+                     "released the moment somebody outbids you.")}})
+    return out
+
+
 # ── Auctions ────────────────────────────────────────────────────────────────
-def auctions(user_id: str = "") -> dict:
+def auctions(user_id: str = "", csrf: str = "") -> dict:
     """ITEM auctions — live lots and your bids. Land is a different page.
 
     `land_listings` carries both kinds; this one takes `kind='item'`. Showing
@@ -1418,16 +1461,12 @@ def auctions(user_id: str = "") -> dict:
                    "separately, under Claims."
                    if rows else "No item lots are open. Land is auctioned "
                    "separately, under Claims.")}
-    act = {"h2": "Bidding", "ac": 1,
-           "act": ("Bids are placed in the auction room. A bid reserves the coins "
-                   "against your wallet and moves nothing until a lot settles."),
-           "btns": [["Open the auction room", "p", "/auctions"]],
-           "n": "This page is the board. The room is where you act."}
-    blocks = [act, table]
+    blocks = [table]
     if mine:
         blocks.append({"h2": "Your bids", "bal": mine,
                        "tot": ["Held in bids", f"{held:,.0f}c"],
                        "n": "Held, not spent."})
+    blocks += _bid_blocks("auctions", str(user_id), csrf)
     return _shell("auctions", f"{len(rows)} item lot"
                   f"{'' if len(rows) == 1 else 's'} live.", band, blocks)
 
@@ -1713,7 +1752,7 @@ def screen(key: str, user_id: str = "", public: bool = False,
     try:
         # `stocks` is the trading page and needs the token to draw a ticket.
         # A public build is passed neither, so it cannot carry one.
-        if key == "stocks" and not public:
+        if key in ("stocks", "auctions", "lands") and not public:
             built = fn(user_id, csrf)
         else:
             built = fn("" if public else user_id)

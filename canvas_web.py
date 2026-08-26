@@ -125,15 +125,15 @@ td.countdown{font-variant-numeric:tabular-nums}
 /* The trade ticket. Plain controls on the page's own type — a ticket that looks
    like a separate app is a ticket a trader reads separately from the figures
    above it. */
-.ticket{margin:2px 0 4px}
-.ticket .tkrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.ticket .tklab{color:var(--faint);font-size:11.5px}
-.ticket .tkq{width:120px;padding:8px 10px;background:none;color:var(--text);
+.ticket,.bidbox{margin:2px 0 4px}
+.ticket .tkrow,.bidbox .tkrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.ticket .tklab,.bidbox .tklab{color:var(--faint);font-size:11.5px}
+.ticket .tkq,.bidbox .tkq{width:120px;padding:8px 10px;background:none;color:var(--text);
   border:1px solid var(--line);border-radius:2px;font:inherit;
   font-variant-numeric:tabular-nums}
-.ticket .tkq:focus{outline:none;border-color:var(--accent)}
+.ticket .tkq:focus,.bidbox .tkq:focus{outline:none;border-color:var(--accent)}
 .ticket .tkest{margin-top:9px;font-variant-numeric:tabular-nums;font-size:14px}
-.ticket .tkhint{margin-top:6px;color:var(--faint);font-size:10.5px}
+.ticket .tkhint,.bidbox .tkhint{margin-top:6px;color:var(--faint);font-size:10.5px}
 .ticket button[disabled]{opacity:.45;cursor:not-allowed}
 
 /* §5: `dense` toggles row padding and NOTHING else - "does not change font
@@ -451,6 +451,67 @@ CANVAS_JS = r"""
     /* Called when the chart refreshes: requote at the new price so the figure
        being confirmed is the figure on screen. */
     tk.__repice = function(next){ price = next; draw(); };
+  }
+
+  /* Bidding, on the designed pages. Preview then confirm, with the figures in
+     the question — a bid is a hold and the preview proves it as arithmetic. */
+  var bids = document.querySelectorAll(".bidbox");
+  for(var bi = 0; bi < bids.length; bi++) wireBid(bids[bi]);
+
+  function wireBid(box){
+    var q = box.querySelector(".tkq");
+    var go = box.querySelector(".bidgo");
+    var hint = box.querySelector(".tkhint");
+    if(!q || !go) return;
+    var lot = parseInt(box.getAttribute("data-lot"), 10);
+    var min = parseInt(box.getAttribute("data-min"), 10) || 1;
+    var key = box.getAttribute("data-key") || "";
+    var csrf = box.getAttribute("data-csrf") || "";
+    var title = box.getAttribute("data-title") || ("lot #" + lot);
+    var post = function(path, body){
+      return fetch(path, {method:"POST", credentials:"same-origin",
+        headers:{"Content-Type":"application/json", "X-CSRF-Token":csrf},
+        body: JSON.stringify(body)}).then(function(r){ return r.json(); });
+    };
+    go.addEventListener("click", function(){
+      var amount = parseInt(q.value, 10);
+      if(isNaN(amount) || amount < min){
+        hint.textContent = "The next bid on this lot is " +
+          min.toLocaleString() + "c or more.";
+        return;
+      }
+      go.disabled = true; hint.textContent = "Checking…";
+      post("/api/estates/bid/preview", {lot_id: lot, amount: amount})
+        .then(function(p){
+          if(!p || !p.ok){
+            hint.textContent = (p && p.error) || "That bid was refused.";
+            go.disabled = false; return;
+          }
+          var lines = (p.rows || []).map(function(r){ return r[0] + ": " + r[1]; });
+          if(!window.confirm("Bid " + amount.toLocaleString() + "c on " + title +
+              (lines.length ? "\n\n" + lines.join("\n") : "") +
+              "\n\nThis places a HOLD, not a payment. The coins stay yours and " +
+              "are released the moment somebody outbids you.")){
+            hint.textContent = ""; go.disabled = false; return;
+          }
+          return post("/api/estates/bid",
+                      {lot_id: lot, amount: amount, idempotency_key: key})
+            .then(function(j){
+              if(j && j.replayed){
+                hint.textContent = "That was a repeat of a bid already placed — " +
+                  "one hold exists, not two.";
+              } else {
+                hint.textContent = (j && (j.message || j.error)) || "Done.";
+              }
+              if(j && j.ok) setTimeout(function(){ location.reload(); }, 900);
+              else go.disabled = false;
+            });
+        })
+        .catch(function(){
+          hint.textContent = "Network error — do not re-send. Reload and check " +
+            "the lot before bidding again.";
+        });
+    });
   }
 
   var head = document.querySelector(".top");
