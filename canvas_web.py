@@ -133,6 +133,13 @@ td.countdown{font-variant-numeric:tabular-nums}
   font-variant-numeric:tabular-nums}
 .ticket .tkq:focus,.bidbox .tkq:focus,.moneybox .tkq:focus{outline:none;border-color:var(--accent)}
 .ticket .tkest{margin-top:9px;font-variant-numeric:tabular-nums;font-size:14px}
+td.fill{white-space:nowrap}
+.fillbar{display:inline-block;width:64px;height:6px;vertical-align:middle;
+  background:var(--line);border-radius:1px;overflow:hidden;margin-right:8px}
+.fillon{display:block;height:100%}
+.fillnum{display:inline-block;min-width:34px;text-align:right;
+  font-variant-numeric:tabular-nums}
+@media (max-width:640px){.fillbar{width:38px;margin-right:5px}}
 .replybox+.replybox{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
 .replybox .rpbody{display:block;width:100%;box-sizing:border-box;margin:6px 0 8px;
   padding:8px 10px;background:none;color:var(--text);border:1px solid var(--line);

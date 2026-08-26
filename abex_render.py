@@ -16,7 +16,8 @@ tone — and in a money UI a wrongly-toned figure reads as a fact, not a bug.
     1. base            identity column = bold text, numeric column = plain
     2. inline tag      'g|' gain, 'l|' loss, 'w|' warn, 'm|' faint, 'k|' action,
                        'G|' grade ramp, 'T|<seconds>' live countdown,
-                       'A|<href>|<text>' a link
+                       'A|<href>|<text>' a link,
+                       'F|<pct>' a 0-100 fullness bar
     3. header rule     Grade / Backing / Coupon / Odds / Stake / Chunks, date
                        columns, pay columns — keyed off the column heading
     4. row wash        "your position" rows, only when holdings are the minority
@@ -72,7 +73,7 @@ def _split_tag(cell: str) -> tuple[str, str]:
     contains a pipe — none do today, but copy changes — is left alone rather
     than silently truncated at the first bar.
     """
-    m = re.match(r"^([glwmkGTA])\|(.*)$", cell, re.S)
+    m = re.match(r"^([glwmkGTAF])\|(.*)$", cell, re.S)
     return (m.group(1), m.group(2)) if m else ("", cell)
 
 
@@ -179,6 +180,29 @@ def _cell(head: str, raw, numeric: bool, identity: bool) -> str:
         # syntax error on 3.11. This file has hit that twice now.
         cls = ' class="num"' if numeric else ""
         return "<td%s%s><a href=\"%s\">%s</a></td>" % (cls, st, _e(href), _e(label))
+    elif tag == "F":                     # fullness: 'F|<pct>' 0..100, a bar
+        # A PERCENTAGE IS EASIER TO COMPARE AS A LENGTH THAN AS A NUMBER. Twenty
+        # rows of "12.4%" need reading; twenty bars need looking at, and the low
+        # ones are the point of the column. The figure stays next to it, because
+        # a bar alone cannot be quoted in Discord.
+        #
+        # The colour is the same three-stop ramp the rest of the site uses for
+        # "needs attention": loss under 20, warn under 50, gain above. It is not
+        # a fourth palette — an empty shelf is a loss-coloured fact exactly like
+        # a negative month.
+        try:
+            pct = float(text)
+        except ValueError:
+            return '<td class="num">%s</td>' % _e("—")
+        pct = 0.0 if pct < 0 else (100.0 if pct > 100 else pct)
+        var = ("var(--loss)" if pct <= 20 else
+               "var(--warn)" if pct <= 50 else "var(--gain)")
+        # width is the only thing that varies; the track is fixed so the bars
+        # line up down the column and can be compared at a glance.
+        return ('<td class="num fill"><span class="fillbar">'
+                '<span class="fillon" style="width:%.1f%%;background:%s"></span>'
+                '</span><span class="fillnum">%s</span></td>'
+                ) % (pct, var, _e("%.0f%%" % pct))
     elif tag == "T":                     # countdown; ticked by the page script
         # Server-rendered FIRST, like the price line: the script takes over a
         # cell that already says the right thing. It used to ship an em dash and

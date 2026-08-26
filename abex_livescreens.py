@@ -263,22 +263,45 @@ def markets(user_id: str = "") -> dict:
                for k, m in (abex_live._db().get_markets() or {}).items()}
     except Exception:
         ids = {}
+    # HOW FULL THE SHELVES ARE, on the list of shops. This is the legacy
+    # inventory reading — the same one `/inventory` has always drawn — put in
+    # the column where somebody choosing a market to visit will actually read
+    # it. Nothing about how it is computed changed; only where it is shown.
+    levels = abex_live.stock_levels() or {}
+    low_total = sum(1 for v in levels.values()
+                    if v.get("pct") is not None and v["pct"] <= 20)
+
     all_rows = []
     for ticker, name, _owner, grade, backing, last_net, _weight, last_report in rows:
         L = listings.get(name)
         mid = ids.get(name)
+        lv = levels.get(str(mid)) if mid else None
+        # UNKNOWN IS NOT EMPTY. A market nobody has scanned has no capacity to
+        # divide by, and a 0% bar next to a genuinely bare shop would make the
+        # two look the same.
+        fill = (f"F|{lv['pct']:.1f}" if lv and lv.get("pct") is not None
+                else "m|not scanned")
         all_rows.append([
             (f"A|/hub/stocks/{mid}|{name}" if mid else name),
             "G|" + grade, backing, last_net,
-            L[3] if L else DASH,                    # shares out
+            fill,
+            (f"{lv['lines']:,}" if lv and lv.get("lines") else DASH),
             L[5] if L else DASH,                    # share price
             held.get(name, DASH),                   # you hold
             "Listed" if L else "m|Private",
-            last_report,
         ])
-    table = {"h2": "All markets", "ac": 1, "c": _cols("markets", 1), "r": all_rows,
-             "n": ("Shares out and share price exist only for a listed market; "
-                   "a private market discloses nothing but its grade.")}
+    table = {"h2": "All markets", "ac": 1,
+             "c": ["Market", "Grade", "Backing#", "Last net#", "Stocked",
+                   "Lines#", "Share price#", "You hold#", "Disclosure"],
+             "r": all_rows,
+             "n": ("Stocked is total stock over total capacity across every "
+                   "scanned line — not the average of the per-item bars, which "
+                   "would weight a rare item the same as the staple nobody can "
+                   "buy. Open a market to see the shelf by shelf. Share price "
+                   "exists only for a listed market; a private one discloses "
+                   "nothing but its grade."
+                   + (f" {low_total} market{'' if low_total == 1 else 's'} at "
+                      f"20% or below." if low_total else ""))}
     # NO "WAITING ON A FILING" PANEL. It named markets that were a month behind
     # at the top of the public Markets screen, and the answer to what it was for
     # is: nothing this product does. Nothing in the engine penalises a late
@@ -556,8 +579,8 @@ def _shop_blocks(market_id: str, name: str, listed: bool, owner: bool) -> list:
         # has ever recorded a line for his shop. So the block stands for him,
         # and says which of the two it is.
         out.append({"h2": "On the shelves",
-                    "c": ["Item", "In stock#", "Capacity#", "Sells at#",
-                          "Buys at#", "Backing"],
+                    "c": ["Item", "Stocked", "In stock#", "Capacity#",
+                          "Sells at#", "Buys at#", "Backing"],
                     "r": [],
                     "n": ("No stocked line has ever been recorded for this shop. "
                           "Inventory comes from a stock scan — until one runs, "
@@ -574,9 +597,17 @@ def _shop_blocks(market_id: str, name: str, listed: bool, owner: bool) -> list:
             # is not rendered as a per-piece figure here either. Saying "per
             # stack" is the whole difference between a price and a 64x error.
             unit = "a piece" if r["per_unit"] else "a stack"
+            cap = float(r["capacity"] or 0)
+            have = float(r["stock"] or 0)
+            # The shelf bar, per line, from the same ratio the market list uses.
+            # No capacity is UNKNOWN, not empty — the legacy inventory page
+            # derives one (a barrel is 54 slots x the stack) and this table only
+            # has what the scan stored, so it says so rather than drawing 0%.
+            fill = (f"F|{min(100.0, 100.0 * have / cap):.1f}" if cap > 0
+                    else "m|no capacity")
             rows.append([
-                r["item"], f"{r['stock']:,.0f}",
-                (f"{r['capacity']:,.0f}" if r["capacity"] else DASH),
+                r["item"], fill, f"{have:,.0f}",
+                (f"{cap:,.0f}" if cap else DASH),
                 (f"{r['sell']:,.0f}c {unit}" if r["sell"] else DASH),
                 (f"{r['buy']:,.0f}c {unit}" if r["buy"] else DASH),
                 ("m|counted" if r["per_unit"] else "w|not counted"),
@@ -590,9 +621,9 @@ def _shop_blocks(market_id: str, name: str, listed: bool, owner: bool) -> list:
                      f"— {sh['uncounted']:,.0f}c of stock the rating cannot see — "
                      "because valuing a per-stack price per piece reads up to 64x "
                      "high. A fresh stock scan rewrites them.")
-        out.append({"h2": "On the shelves",
-                    "c": ["Item", "In stock#", "Capacity#", "Sells at#",
-                          "Buys at#", "Backing"],
+        out.append({"h2": "On the shelves", "dense": 1,
+                    "c": ["Item", "Stocked", "In stock#", "Capacity#",
+                          "Sells at#", "Buys at#", "Backing"],
                     "r": rows, "n": note})
 
     side = abex_live.shop_side(market_id)

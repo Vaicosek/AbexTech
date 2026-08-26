@@ -26,6 +26,7 @@ sample rows rather than taking the page down.
 """
 from __future__ import annotations
 
+import sys
 import logging
 from typing import Optional
 
@@ -44,8 +45,35 @@ def _month_name(month_key: Optional[str]) -> str:
         return "—"
 
 
+class BotNotLoaded(ImportError):
+    """`Restocker_main` is not in this process and must not be imported into it."""
+
+
 def _core():
-    import Restocker_main as core  # noqa: WPS433 - lazy on purpose, see docstring
+    """The bot module — ONLY if it is already loaded in this process.
+
+    `Restocker_main` RUNS THE BOT AT IMPORT: its last line is a bare
+    `asyncio.run(_main())`, so importing it does not give you a module, it
+    starts a Discord client and a web server and never returns.
+
+    Inside the live server that is free — the bot IS the process asking, and the
+    lazy import is a `sys.modules` lookup. Anywhere else this import is a trap,
+    and it was armed: every reader in this file goes through here, so a test, a
+    script or any future standalone process that touched one would silently boot
+    a second bot. It only ever LOOKED harmless because `discord` was not
+    installed in those environments and the import failed fast for the wrong
+    reason. Install discord.py and the same call hangs forever.
+
+    So: loaded means use it, not loaded means say so. Every caller already
+    handles the reader being unavailable — that is what the "not readable right
+    now" copy on the screens is for — and an honest empty page beats a page
+    render that starts a bot.
+    """
+    core = sys.modules.get("Restocker_main")
+    if core is None:
+        raise BotNotLoaded(
+            "Restocker_main is not loaded in this process; importing it would "
+            "start the bot")
     return core
 
 
@@ -1737,4 +1765,77 @@ def shop_side(market_id: str) -> Optional[dict]:
                  "accrued from closed months"))
     except Exception:
         pass
+    return out
+
+
+def stock_levels() -> Optional[dict]:
+    """How full every market's shelves are, 0-100, and its per-item lines.
+
+    THIS IS NOT A NEW READING. `Restocker_web._load_inventory_data` has computed
+    it since long before the redesign, and it does four things `shelves()` above
+    does not — which is exactly why the designed screens showed nothing useful:
+
+    * It DERIVES a capacity when the scan stored none: one barrel is 54 slots x
+      the item's stack size. Without that, most lines have `capacity = 0` and
+      every fullness reads 0%, which looks like an empty shop rather than a
+      missing figure.
+    * It resolves learned aliases, so `Diamond Pickaxe#akQ` and
+      `Diamond Pickaxe#9dR` merge into the real enchanted name instead of
+      rendering as a dozen phantom rows that match no catalog entry.
+    * It carries the listing BUNDLE (`3456 for 9,192c`) beside the per-unit
+      price, because a shop that sells in lots and a page that only prints the
+      unit price cannot be acted on.
+    * It includes every registered market, so one with no scan yet reads as
+      empty rather than vanishing.
+
+    So this wraps it rather than writing a third implementation. The call is
+    heavy — it re-reads every market's stock — and `Restocker_web._cached` gives
+    it a 60s TTL with a lock, which is the reason this asks through that module
+    instead of going to the database directly.
+
+    `pct` per market is total stock over total capacity, NOT the mean of the
+    per-line percentages: a market with one empty barrel and one full chest is
+    not "50% stocked", and averaging percentages weights a rare item the same as
+    the staple nobody can buy.
+    """
+    # `_load_inventory_data` does `import Restocker_main`, and THAT MODULE RUNS
+    # THE BOT AT IMPORT — its last line is a bare `asyncio.run(_main())`. Inside
+    # the live server that is free, because the bot is the process asking and
+    # the module is already in `sys.modules`. Anywhere else — a test, a script,
+    # a future standalone web process — the import would boot a second Discord
+    # client and a second web server off a page render, and never return.
+    #
+    # So this refuses rather than risks it. No bar on the page is a small loss;
+    # a page that starts a bot is not a loss, it is an incident.
+    if "Restocker_main" not in sys.modules:
+        log.info("[abex_live] stock levels skipped: the bot module is not loaded "
+                 "in this process, and importing it would start it")
+        return None
+    try:
+        import Restocker_web as _RW
+    except Exception as exc:                        # pragma: no cover
+        log.warning("[abex_live] inventory reader unavailable: %s", exc)
+        return None
+    try:
+        data = _RW._cached("inventory", _RW._load_inventory_data)
+    except Exception as exc:
+        log.warning("[abex_live] inventory unreadable: %s", exc)
+        return None
+    out = {}
+    for m in (data or {}).get("markets", []) or []:
+        items = m.get("items") or []
+        stock = sum(float(i.get("stock") or 0) for i in items)
+        cap = sum(float(i.get("capacity") or 0) for i in items)
+        out[str(m.get("market_id") or "")] = {
+            "market_id": str(m.get("market_id") or ""),
+            "name": str(m.get("name") or m.get("market_id") or ""),
+            "lines": int(m.get("count") or 0),
+            "low": int(m.get("low") or 0),
+            "stock": stock, "capacity": cap,
+            # No capacity anywhere means UNKNOWN, and unknown is not zero: an
+            # unscanned market must not render a full-width empty bar next to
+            # one that is genuinely bare.
+            "pct": (100.0 * stock / cap) if cap > 0 else None,
+            "items": items,
+        }
     return out

@@ -36,16 +36,31 @@ def test_the_shelves_are_on_a_listed_markets_page():
     assert "On the shelves" in _headings(LS.stock(STRANGER, "amazonia"))
 
 
+def _col(block, heading):
+    """Index of a column by its HEADING, not by counting.
+
+    These tests used to index `row[3]`, `row[5]`. Adding a "Stocked" column at
+    position 1 shifted every one of them and two tests failed for a reason that
+    had nothing to do with what they were checking. A heading is the stable
+    name; the position is not.
+    """
+    for i, c in enumerate(block["c"]):
+        if str(c).rstrip("#") == heading:
+            return i
+    raise AssertionError(f"no {heading!r} column in {block['c']}")
+
+
 def test_a_legacy_line_is_priced_per_stack_never_per_piece():
     """Rendering it as a piece price is the 64x error the guard exists for."""
     blocks = LS._shop_blocks("amazonia", "Amazonia", True, False)
     shelf = next(b for b in blocks if b["h2"] == "On the shelves")
+    sells, buys = _col(shelf, "Sells at"), _col(shelf, "Buys at")
     for row in shelf["r"]:
-        for cell in (row[3], row[4]):
+        for cell in (row[sells], row[buys]):
             if cell != LS.DASH:
                 assert "a stack" in cell or "a piece" in cell, cell
     # Amazonia's are all legacy, so all of them read per stack.
-    assert all("a stack" in r[3] for r in shelf["r"] if r[3] != LS.DASH)
+    assert all("a stack" in r[sells] for r in shelf["r"] if r[sells] != LS.DASH)
 
 
 def test_the_shelves_say_what_the_rating_cannot_see():
@@ -59,8 +74,9 @@ def test_the_shelves_say_what_the_rating_cannot_see():
 def test_every_line_is_marked_counted_or_not():
     blocks = LS._shop_blocks("amazonia", "Amazonia", True, False)
     shelf = next(b for b in blocks if b["h2"] == "On the shelves")
+    backing = _col(shelf, "Backing")
     for row in shelf["r"]:
-        assert row[5] in ("m|counted", "w|not counted"), row
+        assert row[backing] in ("m|counted", "w|not counted"), row
 
 
 def test_the_ledger_and_the_team_are_on_a_listed_page():
@@ -144,3 +160,33 @@ def test_the_owners_console_carries_his_own_stock():
     assert "_item_block(" in body, "the console must build the items block"
     assert "_shop_blocks(" in body, "and the shelves"
     assert "On the shelves" in body
+
+
+def test_every_shelf_line_carries_its_own_bar():
+    """The per-item version of the market list's column: a length beats twenty
+    rows of percentages when the low ones are the whole point."""
+    blocks = LS._shop_blocks("amazonia", "Amazonia", True, False)
+    shelf = next(b for b in blocks if b["h2"] == "On the shelves")
+    col = _col(shelf, "Stocked")
+    assert shelf["r"], "amazonia has lines; this test is pointless without them"
+    for row in shelf["r"]:
+        cell = row[col]
+        assert cell.startswith("F|") or cell == "m|no capacity", cell
+        if cell.startswith("F|"):
+            assert 0.0 <= float(cell[2:]) <= 100.0, cell
+
+
+def test_a_line_with_no_capacity_says_so_rather_than_reading_empty():
+    real = L.shelves
+    L.shelves = lambda mid, limit=60: {
+        "rows": [{"item": "Mystery", "stock": 40, "capacity": 0, "sell": 2,
+                  "buy": 0, "per_unit": True, "worth": 80}],
+        "lines": 1, "counted": 80, "uncounted": 0, "legacy_lines": 0,
+        "scanned": "2026-08-01T00:00"}
+    try:
+        blocks = LS._shop_blocks("m", "M", True, False)
+    finally:
+        L.shelves = real
+    shelf = next(b for b in blocks if b["h2"] == "On the shelves")
+    assert shelf["r"][0][_col(shelf, "Stocked")] == "m|no capacity", (
+        "no capacity is unknown, not 0% — a 0 bar reads as a bare shelf")
