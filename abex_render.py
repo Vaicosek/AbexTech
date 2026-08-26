@@ -594,9 +594,25 @@ def screen_html(screen: dict, *, owner: bool = False, mine=None) -> str:
         band = band_html(screen["band"])
     elif screen.get("band3"):
         band = band_html(screen["band3"], three=True)
-    blocks = "".join(_block(b, mine) for b in screen.get("blocks", [])
-                     if owner or not b.get("own"))
-    return head + band + blocks
+    visible = [b for b in screen.get("blocks", []) if owner or not b.get("own")]
+
+    # A SCREEN IS A STACK UNLESS SOMETHING ASKS FOR A RAIL. A block marked
+    # `side:1` goes into a right-hand column; everything else stays in the main
+    # one. That is the whole of the terminal layout — watchlist and positions
+    # beside the chart rather than a screen further down.
+    #
+    # Deliberately not a grid engine. The design describes a screen as a band
+    # and a list of blocks (§4), and a second layout language would mean every
+    # future screen has to decide which one it speaks. One flag, two columns,
+    # and it collapses back to the stack on a narrow viewport.
+    rail = [b for b in visible if b.get("side")]
+    if not rail:
+        return head + band + "".join(_block(b, mine) for b in visible)
+
+    main = "".join(_block(b, mine) for b in visible if not b.get("side"))
+    aside = "".join(_block(b, mine) for b in rail)
+    return (head + band + '<div class="railed"><div class="railmain">' + main
+            + '</div><div class="railside">' + aside + "</div></div>")
 
 
 def dock_html(screen: dict) -> str:
