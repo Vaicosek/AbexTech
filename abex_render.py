@@ -377,15 +377,88 @@ def _spark(block: dict) -> str:
     # rather than an empty box that would have been filled in.
     src = f' data-src="{_e(str(d["src"]))}"' if d.get("src") else ""
     unit_attr = f' data-unit="{_e(unit)}"' if unit else ""
+
+    # MARKED POINTS ARE TRADES. Everything else on this line is the model
+    # repricing the share — a filed report, a reversion, a parameter change. On
+    # an exchange where every print is a trade the distinction never comes up;
+    # here three of GreyHames' eighty-two points are trades, so an unmarked line
+    # implies eighty of them.
+    def _y(v):
+        return 28.0 - ((v - lo) / span) * 26.0 - 1.0
+
+    dots = []
+    for m in (d.get("marks") or []):
+        try:
+            i = int(m["i"])
+            if not (0 <= i < n):
+                continue
+            colour = "var(--gain)" if m.get("kind") == "buy" else "var(--loss)"
+            dots.append('<circle cx="%.2f" cy="%.2f" r="0.9" fill="%s" '
+                        'vector-effect="non-scaling-stroke"/>'
+                        % (i * 100.0 / (n - 1), _y(pts[i]), colour))
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    rules = "".join(
+        '<line x1="0" y1="%.1f" x2="100" y2="%.1f" stroke="var(--line)" '
+        'stroke-width="0.4" vector-effect="non-scaling-stroke"/>' % (y, y)
+        for y in (1.0, 14.0, 27.0))
+
     svg = (f'<svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none" '
            f'role="img" aria-label="{_e(caption)}"{src}{unit_attr}>'
+           f'{rules}'
            f'<polyline points="{coords}" fill="none" stroke="{tone}" '
            f'stroke-width="1.2" vector-effect="non-scaling-stroke" '
-           f'stroke-linejoin="round" stroke-linecap="round"/></svg>')
+           f'stroke-linejoin="round" stroke-linecap="round"/>'
+           f'{"".join(dots)}</svg>')
     foot = f'<div class="bnote">{_e(note)}</div>' if note else ""
-    return (f'<div class="sparkwrap">{svg}'
+
+    # The legend only appears where a trade actually did, so a market nobody has
+    # traded does not carry a key to marks it has none of.
+    legend = ""
+    trades = int(d.get("trades") or 0)
+    if trades:
+        legend = ('<div class="sklegend">'
+                  '<span><i style="background:var(--gain)"></i>a buy</span>'
+                  '<span><i style="background:var(--loss)"></i>a sell</span>'
+                  '<span class="skdim">%d trade%s in this window · every other step '
+                  'is the model repricing</span></div>'
+                  % (trades, "" if trades == 1 else "s"))
+
+    # Filled by the page script on hover: the point under the pointer, and what
+    # moved it. Server-rendered empty rather than absent, so the row does not
+    # appear and shift the page down on first hover.
+    read = ('<div class="skread"><span class="skwhen">&nbsp;</span>'
+            '<span class="skprice"></span><span class="skwhy"></span></div>')
+
+    tf = ""
+    if d.get("src"):
+        # Timeframes re-fetch the same endpoint with a different window. The
+        # served one is marked so the page opens on a range that is already
+        # drawn rather than blank until the first fetch returns.
+        served = int(d.get("days") or 0)
+        spans = [(7, "1W"), (30, "1M"), (90, "3M"), (365, "1Y")]
+        tf = '<div class="sktf">' + "".join(
+            '<button type="button" class="sktfb%s" data-days="%d">%s</button>'
+            % (" on" if days == served else "", days, label)
+            for days, label in spans) + "</div>"
+
+    # The series the page was SERVED, so hovering works before the first refresh
+    # rather than after sixty seconds. JSON in a script tag, not a data
+    # attribute: eighty points of timestamps and reasons is not an attribute.
+    import json as _json
+    payload = _json.dumps({"points": pts, "at": d.get("at") or [],
+                           "why": d.get("why") or [],
+                           "marks": d.get("marks") or []},
+                          separators=(",", ":"))
+    # `</` cannot appear inside a script element; nothing here should contain it,
+    # and escaping it costs nothing if a reason string ever does.
+    payload = payload.replace("</", "<\\/")
+    data = f'<script type="application/json" class="skdata">{payload}</script>'
+
+    return (f'<div class="sparkwrap">{tf}{svg}'
             f'<div class="skmeta"><span style="color:{tone}">{_e(caption)}</span>'
-            f'{scale}</div>{foot}</div>')
+            f'{scale}</div>{read}{legend}{foot}{data}</div>')
 
 
 def _action(block: dict) -> str:

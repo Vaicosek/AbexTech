@@ -202,3 +202,84 @@ def test_the_canvas_stylesheet_actually_reaches_the_hub():
     assert canvas_web.CANVAS_CSS, "canvas_web exports no stylesheet"
     assert hub_web._CANVAS_CSS == canvas_web.CANVAS_CSS
     assert "svg.spark" in hub_web._CANVAS_CSS
+
+
+# ── trades marked, model moves named (the trading-terminal chart) ───────────
+#
+# On a real exchange every print is a trade and the chart never has to say so.
+# Here GreyHames has 82 price points and THREE trades: 54 filed reports, 21
+# reversions, 3 parameter changes. An unmarked line implies eighty trades that
+# did not happen, which is why this chart carries what moved each point.
+
+def test_a_trade_is_marked_and_a_reprice_is_not():
+    d = L.price_series("greyhames", 90)
+    assert d is not None
+    assert d["trades"] == 3, d["trades"]
+    assert len(d["marks"]) == 3
+    for m in d["marks"]:
+        assert m["kind"] in ("buy", "sell"), m
+        assert d["why"][m["i"]] in ("a buy", "a sell"), d["why"][m["i"]]
+
+
+def test_every_point_carries_a_time_and_a_reason():
+    d = L.price_series("greyhames", 90)
+    assert len(d["at"]) == len(d["points"]) == len(d["why"])
+    assert all(d["at"]), "a point with no timestamp cannot be read off the chart"
+    assert all(d["why"]), "a point with no reason implies it was a trade"
+
+
+def test_an_unknown_reason_is_shown_not_guessed():
+    kind, human = L._move("some_new_mechanism")
+    assert kind == "model"
+    assert human == "some_new_mechanism", human
+    assert L._move("trade:buy") == ("buy", "a buy")
+    assert L._move("trade:short")[0] == "sell"
+
+
+def test_the_markers_render_on_the_line():
+    d = L.price_series("greyhames", 90)
+    html = R._spark({"spark": dict(d, unit="c")})
+    assert html.count("<circle") == 3, html.count("<circle")
+    assert "var(--gain)" in html and "var(--loss)" in html
+
+
+def test_a_market_with_no_trades_gets_no_legend():
+    """A key to marks the chart does not have is noise."""
+    html = R._spark({"spark": {"points": [1.0, 2.0, 3.0], "marks": [], "trades": 0}})
+    assert "sklegend" not in html
+    assert "<circle" not in html
+
+
+def test_the_served_series_is_embedded_for_the_first_hover():
+    """Without it, hovering does nothing until the 60-second refresh lands."""
+    import json as _json
+    import re as _re
+    d = L.price_series("greyhames", 90)
+    html = R._spark({"spark": dict(d, unit="c", src="/api/series/market/greyhames")})
+    blob = _re.search(r'class="skdata">(.*?)</script>', html, _re.S)
+    assert blob, "no served series on the page"
+    served = _json.loads(blob.group(1))
+    assert served["points"] == d["points"]
+    assert served["why"] == d["why"]
+
+
+def test_timeframes_only_appear_where_the_chart_can_refetch():
+    d = {"points": [1.0, 2.0], "trades": 0}
+    assert "sktf" not in R._spark({"spark": d})
+    assert "sktf" in R._spark({"spark": dict(d, src="/api/series/index")})
+
+
+def test_the_served_window_is_the_lit_tab():
+    d = {"points": [1.0, 2.0], "trades": 0, "src": "/api/series/index", "days": 30}
+    html = R._spark({"spark": d})
+    lit = [seg for seg in html.split("<button") if "sktfb on" in seg]
+    assert len(lit) == 1, lit
+    assert 'data-days="30"' in lit[0], lit[0]
+
+
+def test_the_client_redraws_markers_rather_than_leaving_stale_ones():
+    import canvas_web
+    js = canvas_web.CANVAS_JS
+    assert "querySelectorAll(\"circle\")" in js, "old markers would survive a refresh"
+    assert "createElementNS" in js
+    assert "svg.__series" in js, "the hover readout would show the served window forever"

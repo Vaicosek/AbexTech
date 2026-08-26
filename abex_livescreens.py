@@ -1028,10 +1028,14 @@ def _spark_block(heading: str, series, unit: str = "c", note: str = "",
     """
     if not series:
         return None
-    return {"h2": heading,
-            "spark": {"points": series.get("points") or [], "unit": unit,
-                      "window": series.get("window") or "",
-                      "src": src, "note": note}}
+    spark = {"points": series.get("points") or [], "unit": unit,
+             "window": series.get("window") or "", "src": src, "note": note}
+    # Carried through so the chart can mark trades, name what moved each point
+    # on hover, and open on the timeframe it was actually served.
+    for key in ("at", "why", "marks", "trades", "days"):
+        if series.get(key) is not None:
+            spark[key] = series[key]
+    return {"h2": heading, "spark": spark}
 
 
 # ── Orders — the owner's half of Work, on the same page ─────────────────────

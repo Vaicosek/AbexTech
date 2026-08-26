@@ -146,6 +146,28 @@ svg.spark{display:block;width:100%;height:64px}
 .skmeta .skhi::before{content:"high ";color:var(--faint)}
 .skmeta .sklo::before{content:"low ";color:var(--faint)}
 
+/* Timeframes. Text with an underline when current — the nav's own grammar, not
+   a row of pills. */
+.sktf{display:flex;gap:18px;margin-bottom:8px}
+.sktf button{background:none;border:none;padding:2px 0 3px;cursor:pointer;
+  color:var(--faint);font:inherit;font-size:15px;border-bottom:2px solid transparent}
+.sktf button.on{color:var(--text);border-bottom-color:var(--accent)}
+.sktf button:hover{color:var(--text)}
+
+/* The crosshair readout. Reserved on load so the first hover does not shift the
+   page. */
+.skread{display:flex;gap:14px;align-items:baseline;margin-top:8px;min-height:24px;
+  font-size:15px;font-variant-numeric:tabular-nums}
+.skread .skwhen{color:var(--faint)}
+.skread .skprice{font-size:18px}
+.skread .skwhy{color:var(--faint)}
+.sklegend{display:flex;gap:20px;align-items:baseline;margin-top:6px;font-size:15px;
+  flex-wrap:wrap}
+.sklegend i{display:inline-block;width:9px;height:9px;border-radius:50%;
+  margin-right:7px}
+.sklegend .skdim{color:var(--faint)}
+svg.spark{cursor:crosshair}
+
 /* The sticky-bottom draft bar. Only present on a screen with work in progress. */
 .dockbar{position:sticky;bottom:0;display:flex;align-items:baseline;gap:14px;
   padding:12px 0;border-top:1px solid var(--accent);background:var(--ground);
@@ -520,6 +542,27 @@ CANVAS_JS = r"""
     var arrow = flat ? "=" : (ch > 0 ? "▲" : "▼");
     line.setAttribute("points", out.join(" "));
     line.setAttribute("stroke", tone);
+    /* Markers are redrawn with the line: a refresh that kept stale dots would
+       put a trade at a price that is no longer there. */
+    var old = svg.querySelectorAll("circle");
+    for(var k = 0; k < old.length; k++) old[k].remove();
+    var marks = (d && d.marks) || [];
+    var NS = "http://www.w3.org/2000/svg";
+    for(var m = 0; m < marks.length; m++){
+      var idx = marks[m].i;
+      if(!(idx >= 0 && idx < n)) continue;
+      var c = document.createElementNS(NS, "circle");
+      c.setAttribute("cx", (idx * 100 / (n - 1)).toFixed(2));
+      c.setAttribute("cy", (28 - ((pts[idx] - lo) / span) * 26 - 1).toFixed(2));
+      c.setAttribute("r", "0.9");
+      c.setAttribute("fill", marks[m].kind === "buy" ? "var(--gain)" : "var(--loss)");
+      c.setAttribute("vector-effect", "non-scaling-stroke");
+      svg.appendChild(c);
+    }
+    /* Kept for the hover readout, which reads whatever the chart is showing
+       NOW rather than what the page was served. */
+    svg.__series = d;
+
     var wrap = svg.parentNode, meta = wrap.querySelector(".skmeta");
     if(meta){
       var pct = pctv;
@@ -534,6 +577,65 @@ CANVAS_JS = r"""
       svg.setAttribute("aria-label", cap);
     }
   }
+  /* Hover: name the point under the pointer and what moved it. Without the
+     "what moved it" half a reader assumes every step is a trade — on this
+     exchange most are the model repricing. */
+  function readout(svg){
+    var wrap = svg.parentNode;
+    var row = wrap.querySelector(".skread");
+    if(!row) return;
+    /* Adopt the served series so the first hover works immediately. */
+    if(!svg.__series){
+      var blob = wrap.querySelector("script.skdata");
+      if(blob){
+        try { svg.__series = JSON.parse(blob.textContent); } catch(err){}
+      }
+    }
+    var when = row.querySelector(".skwhen"), price = row.querySelector(".skprice"),
+        why = row.querySelector(".skwhy");
+    var clear = function(){
+      when.innerHTML = "&nbsp;"; price.textContent = ""; why.textContent = "";
+    };
+    svg.addEventListener("mousemove", function(e){
+      var d = svg.__series;
+      if(!d || !d.points || d.points.length < 2) return;
+      var box = svg.getBoundingClientRect();
+      if(!box.width) return;
+      var t = (e.clientX - box.left) / box.width;
+      var i = Math.round(t * (d.points.length - 1));
+      if(i < 0) i = 0;
+      if(i > d.points.length - 1) i = d.points.length - 1;
+      var unit = svg.getAttribute("data-unit") || "";
+      when.textContent = (d.at && d.at[i]) || "";
+      price.textContent = d.points[i].toLocaleString(undefined,
+        {minimumFractionDigits:2, maximumFractionDigits:2}) + unit;
+      why.textContent = (d.why && d.why[i]) ? "· " + d.why[i] : "";
+    });
+    svg.addEventListener("mouseleave", clear);
+  }
+
+  /* Timeframe buttons re-fetch the same endpoint with a different window. */
+  function timeframes(svg){
+    var wrap = svg.parentNode;
+    var bar = wrap.querySelector(".sktf");
+    if(!bar) return;
+    bar.addEventListener("click", function(e){
+      var b = e.target.closest(".sktfb");
+      if(!b) return;
+      var days = b.getAttribute("data-days");
+      var base = (svg.getAttribute("data-src") || "").split("?")[0];
+      if(!base) return;
+      var all = bar.querySelectorAll(".sktfb");
+      for(var i = 0; i < all.length; i++) all[i].classList.remove("on");
+      b.classList.add("on");
+      svg.setAttribute("data-src", base + "?days=" + days);
+      fetch(base + "?days=" + days, {credentials:"same-origin"})
+        .then(function(r){ return r.ok ? r.json() : null; })
+        .then(function(j){ if(j && j.ok) draw(svg, j); })
+        .catch(function(){ /* leave the range that is drawn */ });
+    });
+  }
+
   function tick(){
     /* Nothing is polled while the tab is hidden. A chart nobody is looking at
        does not need to be current, and a background tab quietly hitting the
@@ -549,6 +651,9 @@ CANVAS_JS = r"""
       })(all[i]);
     }
   }
+  var sparks = document.querySelectorAll("svg.spark");
+  for(var s = 0; s < sparks.length; s++){ readout(sparks[s]); timeframes(sparks[s]); }
+
   if(document.querySelector("svg.spark[data-src]")){
     setInterval(tick, EVERY);
     document.addEventListener("visibilitychange", function(){

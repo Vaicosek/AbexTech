@@ -1102,11 +1102,41 @@ def _thin(rows: list, target: int = 120) -> list:
     return out
 
 
-def price_series(market_id: str, days: int = 30) -> Optional[dict]:
-    """One market's share price over `days`, oldest first.
+#: What a price-log `reason` means to a reader. The distinction this whole chart
+#: exists to make: a TRADE is somebody buying or selling; everything else is the
+#: model repricing the share. On a real exchange every print is a trade and the
+#: question never comes up. Here three of GreyHames' 82 points are trades, so a
+#: line that does not say which is a line that implies eighty trades.
+_MOVE = {
+    "trade:buy":  ("buy", "a buy"),
+    "trade:sell": ("sell", "a sell"),
+    "csn_report": ("model", "a filed report"),
+    "reversion":  ("model", "drift back toward fundamental"),
+    "params_changed": ("model", "a parameter change"),
+    "ipo_model":  ("model", "the listing price"),
+    "vtech_gex_merger": ("model", "the GEX merger"),
+}
 
-    Returns None when the log is unreadable — distinct from an empty series,
-    which means the market has never been priced and is a fact worth showing.
+
+def _move(reason) -> tuple:
+    """`(kind, human)` for a price-log reason. Unknown reasons are `model` and
+    are shown under their own stored word rather than guessed at."""
+    raw = str(reason or "").strip()
+    if raw in _MOVE:
+        return _MOVE[raw]
+    if raw.startswith("trade:"):
+        side = raw.split(":", 1)[1]
+        return ("buy" if side == "buy" else "sell", f"a {side}")
+    return ("model", raw or "repriced")
+
+
+def price_series(market_id: str, days: int = 30) -> Optional[dict]:
+    """One market's share price over `days`, oldest first, WITH what moved it.
+
+    Every point carries its timestamp and why the price changed, because on this
+    exchange most of them are not trades. Returns None when the log is
+    unreadable — distinct from an empty series, which means the market has never
+    been priced and is a fact worth showing.
     """
     try:
         db = _db()
@@ -1114,15 +1144,27 @@ def price_series(market_id: str, days: int = 30) -> Optional[dict]:
         return None
     try:
         rows = db._get_conn().execute(
-            "SELECT logged_at, price FROM stock_price_log "
+            "SELECT logged_at, price, reason FROM stock_price_log "
             "WHERE market_id = ? AND logged_at >= datetime('now', ?) "
             "ORDER BY id ASC", (str(market_id), f"-{int(days)} days")).fetchall()
     except Exception as exc:
         log.warning("[abex_live] price log for %s unreadable: %s", market_id, exc)
         return None
-    rows = _thin([(r[0], float(r[1] or 0)) for r in rows])
+    rows = _thin([(r[0], float(r[1] or 0), r[2]) for r in rows])
+    marks, labels, whens = [], [], []
+    for i, (at, _p, reason) in enumerate(rows):
+        kind, human = _move(reason)
+        labels.append(human)
+        whens.append(str(at or "")[:16])
+        if kind in ("buy", "sell"):
+            marks.append({"i": i, "kind": kind})
     return {
-        "points": [p for _t, p in rows],
+        "points": [p for _t, p, _r in rows],
+        "at": whens,
+        "why": labels,
+        "marks": marks,
+        "trades": len(marks),
+        "days": int(days),
         "from": (rows[0][0] or "")[:10] if rows else "",
         "to": (rows[-1][0] or "")[:10] if rows else "",
         "window": f"{days} days",
@@ -1151,6 +1193,11 @@ def index_series(days: int = 30) -> Optional[dict]:
     rows = _thin([(r[0], float(r[1] or 0)) for r in rows])
     return {
         "points": [p for _t, p in rows],
+        "at": [str(t or "")[:16] for t, _p in rows],
+        "why": ["" for _r in rows],
+        "marks": [],
+        "trades": 0,
+        "days": int(days),
         "from": (rows[0][0] or "")[:10] if rows else "",
         "to": (rows[-1][0] or "")[:10] if rows else "",
         "window": f"{days} days",
