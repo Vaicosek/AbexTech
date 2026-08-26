@@ -216,6 +216,10 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 .navitem:hover{color:var(--text);background:var(--raised);text-decoration:none}
 .navitem[aria-current="page"]{color:var(--text);background:none;
   border-left-color:var(--accent)}
+/* The section you are inside, when the page itself is one of its children. Lit,
+   but not as loud as the child that is actually current. */
+.navitem[aria-current="true"]{color:var(--text);background:none;
+  border-left-color:var(--line)}
 .navitem .meta{margin-left:auto;padding-left:10px;font-family:var(--mono);
   font-variant-numeric:tabular-nums;font-size:13px;color:var(--inert)}
 /* Sub-entries: the indent MUST live inside the button box, or the sidebar scrolls

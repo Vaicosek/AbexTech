@@ -473,7 +473,19 @@ def current_user(request: Any) -> Optional[dict]:
     uid = str(sess.get("user_id") or "").strip()
     if not uid:
         return None
-    return {"user_id": uid, "name": sess.get("name") or "", "csrf": sess.get("csrf") or ""}
+    # `anonymous` rides along because the header draws the leaderboard toggle
+    # from it. Default TRUE, matching `_holder_label()` on the public
+    # leaderboard, which hides an unset user: reporting False for somebody who
+    # is actually hidden shows "visible" — and a toggle on then off would then
+    # have EXPOSED them. The same reasoning is written into `_handle_api_me`.
+    anon = True
+    try:
+        import Restocker_web as _w
+        anon = bool(_w._user_prefs().get(uid, {}).get("anonymous", True))
+    except Exception as e:                             # pragma: no cover
+        log.warning("[hub] anonymity preference unreadable: %s", e)
+    return {"user_id": uid, "name": sess.get("name") or "",
+            "csrf": sess.get("csrf") or "", "anonymous": anon}
 
 
 def _mint_session(user_id: str, name: str) -> str:
@@ -873,25 +885,45 @@ def _nav_html(active: str, user: Optional[dict] = None) -> str:
 
 #: The sections that have real CHILD PAGES, and where each one lives.
 #:
-#: `Market` is the case that forced this. Its console had grown to seven blocks
-#: — items, shelves, ledger, month, waterfall, liabilities, staff — because the
-#: things that used to be separate pages got stacked onto one screen. Seven
-#: things in one scroll is not an information architecture, and the nav made it
-#: worse: children were derived from block headings and capped at four, so
-#: Liabilities and Staff were silently not in the nav at all.
+#: WHICH PARENT IS THE WHOLE QUESTION, and it was got wrong once: these six hung
+#: under "My market" for a commit, which is the owner's console for HIS shop.
+#: Every one of them is the opposite — read their loaders and they all say so:
+#: `_load_inventory_data` ("EVERY market shows up"), `_load_earnings_full`
+#: ("Per-market earnings"), `_load_orders_data` ("grouped by market"),
+#: `_load_teams_data` ("cross-team"), `_load_liabilities_data` (what the company
+#: owes). They are views ACROSS the economy, so they belong under Markets, which
+#: is the economy. My market keeps what is actually his: his report.
 #:
 #: These are the LEGACY pages, at their own routes, re-hung in this shell by
 #: `abex_reskin`. The data and the behaviour are theirs; only the chrome is new.
 #: Declared here rather than derived, because a child page is a routing fact and
-#: cannot be read off the parent's blocks.
+#: cannot be read off the parent's blocks — deriving them from block headings is
+#: what capped them at four and silently dropped two.
 SECTION_CHILDREN = {
+    "markets": [
+        ("markets.inventory",   "Inventory",   "/inventory"),
+        ("markets.ledger",      "Ledger",      "/ledger"),
+        ("markets.orders",      "Orders",      "/orders"),
+        ("markets.teams",       "Teams",       "/teams"),
+        ("markets.liabilities", "Liabilities", "/liabilities"),
+        ("markets.investor",    "Investor",    "/investor"),
+    ],
+    # SOME OF THESE BELONG UNDER BOTH, and that is not duplication for its own
+    # sake. Every one of these pages is organised BY MARKET — it opens with a
+    # market picker — so it answers two different questions depending on who is
+    # asking. "How stocked is the economy" is a Markets question; "how stocked
+    # is MY shop" is the same page, reached from where an owner already is.
+    # Making him go up to Markets to look at his own stock is the same mistake
+    # as making him leave a page to act on it.
+    #
+    # Investor is the one that is not both: it is a view of the economy for
+    # somebody holding shares in it, not a thing an owner does to his shop.
     "mine": [
         ("mine.inventory",   "Inventory",   "/inventory"),
         ("mine.ledger",      "Ledger",      "/ledger"),
         ("mine.orders",      "Orders",      "/orders"),
         ("mine.teams",       "Teams",       "/teams"),
         ("mine.liabilities", "Liabilities", "/liabilities"),
-        ("mine.investor",    "Investor",    "/investor"),
         ("mine.report",      "Report",      "/hub/filing"),
     ],
 }
@@ -969,8 +1001,21 @@ def page(title: str, active: str, user: Optional[dict], snap: Optional[dict],
     from vt_web_shell import _LEGACY_CSS, _NAV_KEY
 
     if user:
+        # THE ANONYMITY TOGGLE. It controls whether your name shows on the public
+        # shareholder leaderboard, and it has now been orphaned TWICE: once when
+        # /classic was retired (the old nav's own comment records that, and says
+        # the leaderboard kept using the setting with no way to change it), and
+        # again when these pages stopped drawing that nav. A setting with real
+        # effect and no control is worse than no setting.
+        #
+        # Rendered from the server's own value, so it is never briefly wrong the
+        # way an async fetch would leave it.
         who = (f'<span class="user-tag">'
-               f'<span class="auth-name">{esc(user.get("name") or user["user_id"])}</span></span>')
+               f'<button type="button" class="anontog" id="navAnon" '
+               f'data-anon="{"1" if user.get("anonymous", True) else "0"}" '
+               f'data-csrf="{esc(str(user.get("csrf") or ""))}"></button>'
+               f'<span class="auth-name">{esc(user.get("name") or user["user_id"])}</span>'
+               f'</span>')
     else:
         who = f'<a class="btn ghost sm" href="{HUB_PREFIX}/login">Sign in</a>'
 

@@ -133,6 +133,11 @@ td.countdown{font-variant-numeric:tabular-nums}
   font-variant-numeric:tabular-nums}
 .ticket .tkq:focus,.bidbox .tkq:focus,.moneybox .tkq:focus{outline:none;border-color:var(--accent)}
 .ticket .tkest{margin-top:9px;font-variant-numeric:tabular-nums;font-size:14px}
+.anontog{background:none;border:1px solid var(--line);color:var(--faint);
+  font:inherit;font-size:11px;padding:2px 8px;margin-right:9px;border-radius:2px;
+  cursor:pointer;transition:color .14s ease,border-color .14s ease}
+.anontog:hover{color:var(--text);border-color:var(--accent)}
+.anontog[data-anon="0"]{color:var(--accent);border-color:var(--accent)}
 td.fill{white-space:nowrap}
 .fillbar{display:inline-block;width:64px;height:6px;vertical-align:middle;
   background:var(--line);border-radius:1px;overflow:hidden;margin-right:8px}
@@ -355,7 +360,13 @@ CANVAS_JS = r"""
      again collapses it instead of navigating." Following the link you are
      already on is a page reload that changes nothing, so it reads as a dead
      click; collapsing is at least an answer. */
-  var active = document.querySelector('.navitem[aria-current="page"]');
+  /* The open SECTION, which is the item the children hang under — that is
+     `aria-current="true"` when the current page is a child, and `page` when the
+     section itself is what you are on. Looking only for `page` meant that on a
+     child page this found the child's parent not at all, and the collapse did
+     nothing. */
+  var active = document.querySelector('.navitem[aria-current="true"]')
+            || document.querySelector('.navitem[aria-current="page"]');
   if(active){
     var group = active.parentNode;
     var kids = [];
@@ -690,6 +701,44 @@ CANVAS_JS = r"""
           /* Safe to repeat: the watermark write is MAX(old, new). */
           hint.textContent = "Network error — reload and try again.";
           rd.disabled = false;
+        });
+    });
+  }
+
+  /* Whether your name shows on the public shareholder leaderboard. This control
+     has been orphaned twice — once when /classic was retired, once when the
+     legacy pages stopped drawing their own nav — while the setting itself kept
+     working. It lives in the shared header now, so it cannot be lost with a
+     page again. */
+  var anon = document.getElementById("navAnon");
+  if(anon){
+    var paint = function(){
+      var hidden = anon.getAttribute("data-anon") === "1";
+      anon.textContent = hidden ? "Hidden" : "Visible";
+      anon.title = hidden
+        ? "Your name is hidden on the shareholder leaderboard — click to show it"
+        : "Your name is public on the shareholder leaderboard — click to hide it";
+    };
+    paint();
+    anon.addEventListener("click", function(){
+      var want = anon.getAttribute("data-anon") !== "1";
+      anon.disabled = true;
+      fetch("/api/anon", {method:"POST", credentials:"same-origin",
+        headers:{"Content-Type":"application/json",
+                 "X-CSRF-Token": anon.getAttribute("data-csrf") || ""},
+        body: JSON.stringify({anonymous: want})})
+        .then(function(r){ return r.json(); })
+        .then(function(j){
+          /* Repainted from what the SERVER says it is, not from what was asked
+             for. A refused toggle that still flips the label tells somebody they
+             are hidden when they are not — on a page about who can see them. */
+          if(j && j.ok) anon.setAttribute("data-anon", j.anonymous ? "1" : "0");
+          else anon.title = (j && j.error) || "That could not be changed.";
+          paint(); anon.disabled = false;
+        })
+        .catch(function(){
+          anon.title = "Could not reach the server — reload and check.";
+          anon.disabled = false;
         });
     });
   }

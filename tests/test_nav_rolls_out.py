@@ -60,13 +60,19 @@ def test_only_the_active_section_opens():
     assert _keys(html, "navsub") == [], "a closed section shows no children"
 
 
+# Banking is the worked example throughout: a section with NO declared child
+# pages, so its nav entry still opens on its own block headings. Markets used to
+# play this part and cannot any more — it has real sub-pages now, and declared
+# children deliberately win over derived ones.
+DERIVED = "banking"
+
+
 def test_the_children_are_the_screens_own_blocks():
-    screen = {"blocks": [{"h2": "Filing next"}, {"h2": "All thirteen markets"}]}
-    subs = hub_web.nav_subs("markets", screen)
-    assert subs == {"markets": [
-        ("markets.filing-next", "Filing next", "#filing-next", ""),
-        ("markets.all-thirteen-markets", "All thirteen markets",
-         "#all-thirteen-markets", "")]}
+    screen = {"blocks": [{"h2": "Waiting on you"}, {"h2": "Accounts"}]}
+    subs = hub_web.nav_subs(DERIVED, screen)
+    assert subs == {"banking": [
+        ("banking.waiting-on-you", "Waiting on you", "#waiting-on-you", ""),
+        ("banking.accounts", "Accounts", "#accounts", "")]}
 
 
 def test_the_anchor_matches_the_one_the_block_renders():
@@ -76,35 +82,35 @@ def test_the_anchor_matches_the_one_the_block_renders():
     import abex_render
     for heading in ("On the shelves", "Where the net goes", "Ledger, August",
                     "Waiting on you", "All thirteen markets"):
-        subs = hub_web.nav_subs("markets", {"blocks": [{"h2": heading}]})
-        _key, _label, href, _meta = subs["markets"][0]
+        subs = hub_web.nav_subs(DERIVED, {"blocks": [{"h2": heading}]})
+        _key, _label, href, _meta = subs["banking"][0]
         assert href == "#" + abex_render.block_id(heading)
 
 
 def test_a_headless_block_is_skipped_not_rendered_blank():
     screen = {"blocks": [{"h2": ""}, {"spark": {}}, {"h2": "Trade"}]}
-    subs = hub_web.nav_subs("markets", screen)
-    assert subs == {"markets": [("markets.trade", "Trade", "#trade", "")]}
+    subs = hub_web.nav_subs(DERIVED, screen)
+    assert subs == {"banking": [("banking.trade", "Trade", "#trade", "")]}
 
 
 def test_a_long_screen_does_not_become_a_table_of_contents():
     screen = {"blocks": [{"h2": f"Block {i}"} for i in range(12)]}
-    subs = hub_web.nav_subs("markets", screen)
-    assert len(subs["markets"]) == hub_web.NAV_SUB_LIMIT
+    subs = hub_web.nav_subs(DERIVED, screen)
+    assert len(subs["banking"]) == hub_web.NAV_SUB_LIMIT
 
 
 def test_a_screen_with_nothing_to_open_offers_nothing():
-    assert hub_web.nav_subs("markets", None) is None
-    assert hub_web.nav_subs("markets", {"blocks": []}) is None
+    assert hub_web.nav_subs(DERIVED, None) is None
+    assert hub_web.nav_subs(DERIVED, {"blocks": []}) is None
 
 
-def test_markets_really_does_open_now():
-    """The end-to-end version of the complaint: build the real Markets screen,
-    ask for its nav, and check the sidebar has something under it."""
-    screen = LS.screen("markets", "", public=True)
-    subs = hub_web.nav_subs("markets", screen)
-    assert subs and subs["markets"], "Markets still does not roll out"
-    html = SH._nav_html("markets", False, available=AVAILABLE, paths=PATHS, subs=subs)
+def test_a_real_screen_really_does_open_now():
+    """The end-to-end version of the complaint: build a real screen, ask for its
+    nav, and check the sidebar has something under it."""
+    screen = LS.screen(DERIVED, "", public=True) or {"blocks": [{"h2": "Accounts"}]}
+    subs = hub_web.nav_subs(DERIVED, screen)
+    assert subs and subs["banking"], "the section still does not roll out"
+    html = SH._nav_html(DERIVED, False, available=AVAILABLE, paths=PATHS, subs=subs)
     assert _keys(html, "navsub"), "the children were built and then dropped"
 
 

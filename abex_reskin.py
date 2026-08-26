@@ -35,6 +35,7 @@ Three rules of the extraction, and each one is a bug that happened:
 """
 from __future__ import annotations
 
+import json as _json
 import logging
 import re
 
@@ -107,8 +108,16 @@ def _split(template: str) -> tuple[str, str, str]:
 
 
 def render(template: str, *, active: str, title: str, user=None, snap=None,
-           replacements: dict | None = None) -> str:
-    """One legacy page, in the shell. `replacements` are its JSON injections."""
+           replacements: dict | None = None, ownerinfo=None) -> str:
+    """One legacy page, in the shell. `replacements` are its JSON injections.
+
+    `ownerinfo` is NOT optional decoration. The old nav's script was the only
+    thing that set `window.OWNERINFO`, and these pages gate real controls on it
+    — the restock-generate button, the ordering cart, the trade ticket — and
+    sign their POSTs with the CSRF token inside it. Dropping the nav without
+    this locks ordering and unsigns two writes. It is inlined FIRST, before the
+    page's own script, so nothing has to wait for it.
+    """
     import abex_shell
     import hub_web
     import Restocker_web as RW
@@ -118,5 +127,10 @@ def render(template: str, *, active: str, title: str, user=None, snap=None,
         html = html.replace(key, value)
     body, page_css, scripts = _split(html)
     css = _strip_shell_css(RW._TERMINAL_CSS) + "\n" + _strip_shell_css(page_css)
+    if ownerinfo is not None:
+        # `</script>` inside the JSON would close this tag early; `<` is escaped
+        # so no value in a market name can break out of it.
+        blob = _json.dumps(ownerinfo).replace("<", "\\u003c")
+        scripts = f"<script>window.OWNERINFO={blob};</script>" + scripts
     return hub_web.page(title, active, user, snap, body, extra_css=css,
                         tail=scripts)

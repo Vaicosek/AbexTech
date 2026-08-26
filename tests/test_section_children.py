@@ -58,31 +58,31 @@ def _subs(html):
                       html)
 
 
-def test_market_opens_to_every_one_of_its_pages():
-    subs = hub_web.nav_subs("market", None)
-    labels = [s[1] for s in subs["mine"]]
+def test_markets_opens_to_every_one_of_its_pages():
+    subs = hub_web.nav_subs("markets", None)
+    labels = [s[1] for s in subs["markets"]]
     for want in ("Inventory", "Ledger", "Orders", "Teams", "Liabilities",
                  "Investor"):
-        assert want in labels, f"{want} is not under Market: {labels}"
+        assert want in labels, f"{want} is not under Markets: {labels}"
 
 
 def test_declared_children_are_not_capped():
     """The four-block cap is for anchors. Seven pages is seven pages."""
-    subs = hub_web.nav_subs("market", None)
-    assert len(subs["mine"]) > hub_web.NAV_SUB_LIMIT
+    subs = hub_web.nav_subs("markets", None)
+    assert len(subs["markets"]) > hub_web.NAV_SUB_LIMIT
 
 
 def test_a_child_needs_no_screen_to_be_offered():
     """A re-skinned legacy page passes no screen at all. Asking for one first is
     how those pages rendered with the design's hardcoded child instead of their
     real siblings."""
-    assert hub_web.nav_subs("mine.inventory", None) is not None
-    assert hub_web.nav_subs("mine.ledger", None) is not None
+    assert hub_web.nav_subs("markets.inventory", None) is not None
+    assert hub_web.nav_subs("markets.ledger", None) is not None
 
 
 def test_the_child_you_are_on_is_the_one_marked_current():
-    subs = hub_web.nav_subs("mine.teams", None)
-    html = _nav("mine.teams", subs)
+    subs = hub_web.nav_subs("markets.teams", None)
+    html = _nav("markets.teams", subs)
     current = [label for _k, _h, attrs, label in _subs(html)
                if "aria-current" in attrs]
     assert current == ["Teams"], current
@@ -91,13 +91,14 @@ def test_the_child_you_are_on_is_the_one_marked_current():
 def test_children_only_open_under_their_own_parent():
     subs = hub_web.nav_subs("banking", None)
     html = _nav("banking", subs)
-    assert _subs(html) == [], "another section must not show Market's pages"
+    assert _subs(html) == [], "another section must not show Markets' pages"
 
 
 def test_every_child_points_at_a_route_that_exists():
     src = (HERE.parent / "Restocker_web.py").read_text(encoding="utf-8")
     hub = (HERE.parent / "canvas_web.py").read_text(encoding="utf-8")
-    for _k, label, href in hub_web.SECTION_CHILDREN["mine"]:
+    every = [c for kids in hub_web.SECTION_CHILDREN.values() for c in kids]
+    for _k, label, href in every:
         served = (f'add_get("{href}"' in src
                   or f'"{href}"' in src
                   or href in hub)
@@ -125,7 +126,8 @@ def test_a_legacy_page_comes_back_with_one_nav_and_no_second_header():
         RW._INVENTORY_HTML, active="mine.inventory", title="Inventory",
         user=None, snap=None,
         replacements={"__TERMINAL_CSS__": RW._TERMINAL_CSS,
-                      "__INVENTORY_JSON__": "<script>window.INVENTORY={}</script>"})
+                      "__INVENTORY_JSON__": RW._jscript({"markets": []})},
+        ownerinfo={"logged_in": False})
     assert html.count("<!DOCTYPE") == 1 and html.count("<body") == 1
     assert 'header class="tshell"' not in html, "the old header bar is gone"
     assert "header.tshell" not in html, "and so are the rules that drew it"
@@ -136,9 +138,10 @@ def test_no_placeholder_survives_the_re_skin():
     import abex_reskin
     import Restocker_web as RW
     html = abex_reskin.render(
-        RW._TEAMS_HTML, active="mine.teams", title="Teams", user=None, snap=None,
+        RW._TEAMS_HTML, active="markets.teams", title="Teams", user=None, snap=None,
         replacements={"__TERMINAL_CSS__": RW._TERMINAL_CSS,
-                      "__TEAMS_JSON__": "<script>window.TEAMS={}</script>"})
+                      "__TEAMS_JSON__": RW._jscript({})},
+        ownerinfo={"logged_in": False})
     for marker in ("__NAV__", "__TERMINAL_CSS__", "__TEAMS_JSON__"):
         assert marker not in html, marker
 
@@ -148,12 +151,13 @@ def test_the_page_keeps_its_own_script_and_its_own_styles():
     import abex_reskin
     import Restocker_web as RW
     html = abex_reskin.render(
-        RW._ORDERS_HTML, active="mine.orders", title="Orders", user=None,
+        RW._ORDERS_HTML, active="markets.orders", title="Orders", user=None,
         snap=None,
         replacements={"__TERMINAL_CSS__": RW._TERMINAL_CSS,
-                      "__ORDERS_JSON__": "<script>window.ORDERS={x:1}</script>",
-                      "__ITEMS_JSON__": "<script>window.ITEMS={}</script>"})
-    assert "window.ORDERS" in html, "its data must still reach it"
+                      "__ORDERS_JSON__": RW._jscript({"markets": ["MARKER"]}),
+                      "__ITEMS_JSON__": RW._jscript({})},
+        ownerinfo={"logged_in": False})
+    assert "MARKER" in html, "its data must still reach it"
     assert ".panel" in html, "its own stylesheet must ride along"
 
 
@@ -177,3 +181,71 @@ def test_every_legacy_handler_goes_through_the_shell():
         body = body[:body.index("\n\n\n")]
         assert "_legacy_page(" in body, f"{handler} still renders its own shell"
         assert "_TERMINAL_NAV" not in body, f"{handler} still draws the old nav"
+
+
+# ── what the old nav was carrying ───────────────────────────────────────────
+
+def test_ownerinfo_is_set_before_anything_reads_it():
+    """`window.OWNERINFO` was set by the OLD NAV'S SCRIPT and by nothing else.
+
+    Re-hanging the body without it did not merely change chrome: `/inventory`
+    shows its restock-generate button only to a market's owner and signs that
+    POST with `OWNERINFO.csrf`; `/orders` keeps its whole cart behind `#locked`
+    until it sees `logged_in`, and posts `/api/order` with the same token. Both
+    were silently broken. It is inlined server-side and FIRST — which also kills
+    the async race `_MYMARKET_HTML` already carries a hand-written guard for.
+    """
+    import abex_reskin
+    import Restocker_web as RW
+    for tmpl, act, rep in (
+            (RW._INVENTORY_HTML, "markets.inventory",
+             {"__INVENTORY_JSON__": RW._jscript({"markets": []})}),
+            (RW._ORDERS_HTML, "markets.orders",
+             {"__ORDERS_JSON__": RW._jscript({"markets": []}),
+              "__ITEMS_JSON__": RW._jscript({})})):
+        rep = dict(rep, __TERMINAL_CSS__=RW._TERMINAL_CSS)
+        html = abex_reskin.render(
+            tmpl, active=act, title="x", user=None, snap=None, replacements=rep,
+            ownerinfo={"logged_in": True, "csrf": "TOK", "owned": []})
+        set_at = html.find("window.OWNERINFO=")
+        assert set_at >= 0, f"{act} has no OWNERINFO at all"
+        uses = [m.start() for m in re.finditer(r"window\.OWNERINFO(?!=)", html)]
+        assert uses, f"{act} was chosen because it READS it"
+        assert all(u > set_at for u in uses), (
+            f"{act} reads OWNERINFO before it is set")
+
+
+def test_ownerinfo_cannot_break_out_of_its_script_tag():
+    import abex_reskin
+    import Restocker_web as RW
+    html = abex_reskin.render(
+        RW._TEAMS_HTML, active="markets.teams", title="x", user=None, snap=None,
+        replacements={"__TERMINAL_CSS__": RW._TERMINAL_CSS,
+                      "__TEAMS_JSON__": RW._jscript({})},
+        ownerinfo={"logged_in": True, "csrf": "T",
+                   "owned": [{"mid": "m", "name": "</script><b>x"}]})
+    blob = html[html.index("window.OWNERINFO="):]
+    blob = blob[:blob.index("</script>")]
+    assert "</script" not in blob and "<b>" not in blob, blob[:200]
+
+
+def test_the_leaderboard_toggle_has_a_control_again():
+    """It has been orphaned twice — when /classic went, and when these pages
+    stopped drawing their own nav — while the setting kept working. A setting
+    with a real effect and no control is worse than no setting."""
+    src = (HERE.parent / "hub_web.py").read_text(encoding="utf-8")
+    assert 'id="navAnon"' in src
+    assert "anonymous" in src, "the header must know the current value"
+    js = canvas_web.CANVAS_JS
+    assert "/api/anon" in js
+    i = js.index("navAnon")
+    assert "j.anonymous" in js[i:i + 3000], (
+        "repaint from what the server says, not from what was asked for")
+
+
+def test_the_toggle_defaults_to_hidden_when_unknown():
+    """`_holder_label()` hides an unset user. Reporting "visible" for somebody
+    who is actually hidden, then toggling twice, would EXPOSE them."""
+    src = (HERE.parent / "hub_web.py").read_text(encoding="utf-8")
+    i = src.index("anonymity preference unreadable")
+    assert "anon = True" in src[max(0, i - 700):i]

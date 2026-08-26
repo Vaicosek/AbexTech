@@ -2311,6 +2311,62 @@ document.getElementById('divsub').textContent='% of treasury';
 </script></body></html>"""
 
 
+def _ownerinfo(request) -> dict:
+    """`window.OWNERINFO` — who is asking, their CSRF token and what they own.
+
+    THIS WAS SET BY THE OLD NAV, AND ONLY BY IT. `_TERMINAL_NAV` carried a script
+    that fetched `/api/me` and hung the answer on `window`. Every one of these
+    pages then read it: `/inventory` shows its "generate restock orders" button
+    only to the market's owner and signs the POST with `OWNERINFO.csrf`;
+    `/orders` keeps its whole cart behind `#locked` until it sees `logged_in`,
+    and posts `/api/order` with the same token; `/exchange` refuses to trade
+    without it.
+
+    Re-hanging the body without the nav therefore did not merely change the
+    chrome — it silently locked ordering and unsigned two POSTs. That is the
+    cost of treating a nav as decoration: this one was load-bearing.
+
+    Computed SERVER-SIDE and inlined ahead of the page's own script, which is
+    strictly better than what it replaces: the old one arrived asynchronously,
+    and `_MYMARKET_HTML` already carries a hand-written fallback for exactly
+    that race ("that race left logged-in owners stuck on the locked screen").
+    There is no race to lose now.
+    """
+    sess = _session_user(request)
+    if not sess:
+        return {"logged_in": False}
+    uid = str(sess["user_id"])
+    owned = []
+    try:
+        import Restocker_main as m
+        raw = _load_markets() or {}
+        for omid in m._owner_markets_for_user(uid):
+            info = raw.get(omid)
+            name = (info.get("name") if isinstance(info, dict) else None) or omid
+            owned.append({"mid": omid, "name": name})
+    except Exception as exc:
+        # An owner with no `owned` sees the read-only page, which is wrong but
+        # safe. Guessing a list here would show somebody another market's
+        # controls, which is neither.
+        print(f"[ownerinfo] owned markets unreadable: {exc!r}")
+    csrf = sess.get("csrf")
+    if not csrf:
+        import secrets as _s
+        csrf = _s.token_urlsafe(24)
+        sess["csrf"] = csrf
+        tok = request.cookies.get("vtm_sess")
+        if tok:
+            _SESSIONS[tok] = sess
+            try:
+                _ss = _load_sessions(); _ss[tok] = sess; _save_sessions(_ss)
+            except Exception:
+                pass
+    return {"logged_in": True, "name": sess.get("name", ""), "owned": owned,
+            "csrf": csrf,
+            "anonymous": bool(_user_prefs().get(uid, {}).get("anonymous", True))}
+
+
+
 def _legacy_page(request, template, active, title, replacements=None):
     """A legacy terminal page, served inside the hub shell — ONE nav, one skin.
 
@@ -2330,7 +2386,8 @@ def _legacy_page(request, template, active, title, replacements=None):
         user = hub_web.current_user(request)
         snap = hub_web.money_snapshot(user["user_id"]) if user else None
         html = abex_reskin.render(template, active=active, title=title,
-                                  user=user, snap=snap, replacements=rep)
+                                  user=user, snap=snap, replacements=rep,
+                                  ownerinfo=_ownerinfo(request))
     except Exception as exc:
         print(f"[reskin] {active} fell back to the legacy shell: {exc!r}")
         html = template
@@ -2343,7 +2400,7 @@ def _legacy_page(request, template, active, title, replacements=None):
 
 async def _handle_liabilities_page(request):
     data = _cached("liabilities", _load_liabilities_data)
-    return _legacy_page(request, _LIAB_HTML, "mine.liabilities",
+    return _legacy_page(request, _LIAB_HTML, "markets.liabilities",
                         "Liabilities · Abex Tech",
                         {"__LIAB_JSON__": _jscript(data)})
 
@@ -2355,13 +2412,13 @@ async def _handle_api_liabilities(request):
 
 
 async def _handle_investor_page(request):
-    return _legacy_page(request, _INVESTOR_HTML, "mine.investor",
+    return _legacy_page(request, _INVESTOR_HTML, "markets.investor",
                         "Investor · Abex Tech")
 
 
 async def _handle_inventory_page(request):
     inventory = _cached("inventory", _load_inventory_data)
-    return _legacy_page(request, _INVENTORY_HTML, "mine.inventory",
+    return _legacy_page(request, _INVENTORY_HTML, "markets.inventory",
                         "Inventory · Abex Tech",
                         {"__INVENTORY_JSON__": _jscript(inventory)})
 
@@ -2591,7 +2648,7 @@ chips();render();addEventListener('resize',render);
 
 async def _handle_ledger_page(request):
     ef = _cached("earnings_full", _load_earnings_full)
-    return _legacy_page(request, _LEDGER_HTML, "mine.ledger",
+    return _legacy_page(request, _LEDGER_HTML, "markets.ledger",
                         "Ledger · Abex Tech",
                         {"__EARNFULL_JSON__": _jscript(ef)})
 
@@ -2775,7 +2832,7 @@ chips();render();
 async def _handle_orders_page(request):
     orders = _cached("orders_board", _load_orders_data)
     items = _cached("items", _load_items)
-    return _legacy_page(request, _ORDERS_HTML, "mine.orders",
+    return _legacy_page(request, _ORDERS_HTML, "markets.orders",
                         "Orders · Abex Tech",
                         {"__ORDERS_JSON__": _jscript(orders),
                          "__ITEMS_JSON__": _jscript(items)})
@@ -2903,7 +2960,7 @@ async def _handle_teams_page(request):
     # Cache key MUST include the window: a single "teams_data" key would serve the
     # all-time numbers under the 30-day heading and vice versa.
     teams = _cached(f"teams_data:{days}", lambda: _load_teams_data(days))
-    return _legacy_page(request, _TEAMS_HTML, "mine.teams",
+    return _legacy_page(request, _TEAMS_HTML, "markets.teams",
                         "Teams · Abex Tech",
                         {"__TEAMS_JSON__": _jscript(teams)})
 

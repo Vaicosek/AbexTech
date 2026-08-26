@@ -184,7 +184,17 @@ def _nav_html(active: str, staff: bool, available=None, prefix: str = "",
         head = f'<div class="glabel">{_h.escape(label)}</div>' if label else ""
         out.append(f'<div class="navgroup">{head}')
         for key, text, href, _dom, meta, _subs in items:
-            cur = ' aria-current="page"' if key == active else ""
+            # `page` is the exact page you are on; `true` is the SECTION that
+            # page belongs to. Standing on Markets > Inventory, the child is the
+            # page and Markets is the section — without the second mark the
+            # parent read as unselected while its own children were open under
+            # it, which looks like the nav has lost its place.
+            if key == active:
+                cur = ' aria-current="page"'
+            elif key == root and key != active:
+                cur = ' aria-current="true"'
+            else:
+                cur = ""
             if counts is not None and key in counts:
                 # A count in a nav is a fact about the data. The tree's numbers are
                 # the design's; where the caller knows the real one it wins, and
