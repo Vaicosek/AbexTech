@@ -79,7 +79,7 @@ _CSS = """/* The block vocabulary the canvas uses and this theme did not have ye
    has `surface: transparent` and "panels have no fill, just a top rule when
    accented". */
 .block{border-top:1px solid var(--line);margin:0 0 34px;padding:18px 0 0}
-.block>h2{font-size:28px;font-weight:400;letter-spacing:normal;color:var(--text);
+.block>h2{font-size:22px;font-weight:400;letter-spacing:normal;color:var(--text);
   margin:0 0 14px}
 /* `ac:1` - the lead block. This is the one place a block gets the accent, and it
    is a rule, not a fill. */
@@ -116,13 +116,13 @@ td.countdown{font-variant-numeric:tabular-nums}
    above it. */
 .ticket{margin:2px 0 4px}
 .ticket .tkrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.ticket .tklab{color:var(--faint);font-size:14px}
+.ticket .tklab{color:var(--faint);font-size:11.5px}
 .ticket .tkq{width:120px;padding:8px 10px;background:none;color:var(--text);
   border:1px solid var(--line);border-radius:2px;font:inherit;
   font-variant-numeric:tabular-nums}
 .ticket .tkq:focus{outline:none;border-color:var(--accent)}
-.ticket .tkest{margin-top:9px;font-variant-numeric:tabular-nums;font-size:17px}
-.ticket .tkhint{margin-top:6px;color:var(--faint);font-size:13px}
+.ticket .tkest{margin-top:9px;font-variant-numeric:tabular-nums;font-size:14px}
+.ticket .tkhint{margin-top:6px;color:var(--faint);font-size:10.5px}
 .ticket button[disabled]{opacity:.45;cursor:not-allowed}
 
 /* §5: `dense` toggles row padding and NOTHING else - "does not change font
@@ -141,7 +141,7 @@ table.dense td, table.dense th{padding-top:7px;padding-bottom:7px}
 .sparkwrap{margin:2px 0 4px}
 svg.spark{display:block;width:100%;height:64px}
 .skmeta{display:flex;align-items:baseline;gap:12px;margin-top:6px;
-  font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums}
+  font-size:10px;color:var(--faint);font-variant-numeric:tabular-nums}
 .skmeta .skhi{margin-left:auto}
 .skmeta .skhi::before{content:"high ";color:var(--faint)}
 .skmeta .sklo::before{content:"low ";color:var(--faint)}
@@ -149,22 +149,22 @@ svg.spark{display:block;width:100%;height:64px}
 /* Timeframes. Text with an underline when current — the nav's own grammar, not
    a row of pills. */
 .sknow{display:flex;align-items:baseline;gap:9px;margin-bottom:6px}
-.sknow .sknowv{font-size:26px;font-variant-numeric:tabular-nums}
-.sknow .sknowl{color:var(--faint);font-size:15px}
+.sknow .sknowv{font-size:21px;font-variant-numeric:tabular-nums}
+.sknow .sknowl{color:var(--faint);font-size:12.5px}
 .sktf{display:flex;gap:18px;margin-bottom:8px}
 .sktf button{background:none;border:none;padding:2px 0 3px;cursor:pointer;
-  color:var(--faint);font:inherit;font-size:15px;border-bottom:2px solid transparent}
+  color:var(--faint);font:inherit;font-size:12.5px;border-bottom:2px solid transparent}
 .sktf button.on{color:var(--text);border-bottom-color:var(--accent)}
 .sktf button:hover{color:var(--text)}
 
 /* The crosshair readout. Reserved on load so the first hover does not shift the
    page. */
 .skread{display:flex;gap:14px;align-items:baseline;margin-top:8px;min-height:24px;
-  font-size:15px;font-variant-numeric:tabular-nums}
+  font-size:12.5px;font-variant-numeric:tabular-nums}
 .skread .skwhen{color:var(--faint)}
-.skread .skprice{font-size:18px}
+.skread .skprice{font-size:15px}
 .skread .skwhy{color:var(--faint)}
-.sklegend{display:flex;gap:20px;align-items:baseline;margin-top:6px;font-size:15px;
+.sklegend{display:flex;gap:20px;align-items:baseline;margin-top:6px;font-size:12.5px;
   flex-wrap:wrap}
 .sklegend i{display:inline-block;width:9px;height:9px;border-radius:50%;
   margin-right:7px}
@@ -182,7 +182,7 @@ svg.spark{cursor:crosshair}
 .dockbar .dspace{flex:1 1 auto}
 
 @media (max-width:900px){
-  .block>h2{font-size:22px}
+  .block>h2{font-size:18px}
   .dockbar{gap:8px}
 }
 """
