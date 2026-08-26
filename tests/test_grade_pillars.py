@@ -63,8 +63,36 @@ def test_the_ceiling_was_the_bug():
     assert old / 0.60 < 1.0, "a market with perfect backing AND history rated below AA"
 
 
+#: A cached `quality:<mid>` blob, as the engine writes one. The tests below used
+#: to read whatever was in the database, which made them pass or fail on the
+#: state of somebody's cache rather than on the code.
+CACHED = {
+    "score": 0.5687, "backing_score": 0.7904, "traffic_score": 0.0,
+    "orders_score": 0.41, "history_score": 1.0, "backed_pct": 39.5,
+    "target_pct": 50.0, "history_months": 28, "order_value_30d": 205000,
+    "visitors_month": 0, "orders_total_30d": 6,
+    "pillars_measured": ["backing", "history", "orders"],
+}
+
+
+def _with_cached(blob, mid="greyhames"):
+    real = L._db
+
+    class _Db:
+        @staticmethod
+        def get_config(key):
+            import json as _json
+            return _json.dumps(blob) if key == f"quality:{mid}" else None
+
+    L._db = lambda: _Db
+    try:
+        return L.grade_detail(mid)
+    finally:
+        L._db = real
+
+
 def test_grade_detail_reports_which_pillars_were_measured():
-    d = L.grade_detail("greyhames")
+    d = _with_cached(CACHED)
     assert d is not None
     by = {r["key"]: r for r in d["rows"]}
     assert set(by) == {"backing", "traffic", "orders", "history"}
@@ -74,8 +102,18 @@ def test_grade_detail_reports_which_pillars_were_measured():
     assert by["traffic"]["measured"] is False
 
 
+def _block_with(blob, grade="BBB", mid="greyhames"):
+    detail = _with_cached(blob, mid)          # computed BEFORE the patch goes on,
+    real = L.grade_detail                      # or the patch would call itself
+    L.grade_detail = lambda m: detail if m == mid else None
+    try:
+        return LS._grade_block(mid, grade)
+    finally:
+        L.grade_detail = real
+
+
 def test_the_block_says_no_data_not_zero():
-    blk = LS._grade_block("greyhames", "BBB")
+    blk = _block_with(CACHED)
     assert blk is not None
     traffic = [r for r in blk["r"] if r[0] == "Traffic"][0]
     assert "no data" in traffic[1], traffic
@@ -84,16 +122,18 @@ def test_the_block_says_no_data_not_zero():
 
 
 def test_the_block_names_the_cap_that_binds():
-    blk = LS._grade_block("greyhames", "BBB")
+    blk = _block_with(CACHED)
     assert "0.79x the target" in blk["n"], blk["n"]
     assert "CAPS the grade" in blk["n"]
 
 
 def test_the_note_agrees_with_itself_on_number():
     """One unmeasured pillar reads 'has ... it'; two read 'have ... them'."""
-    one = LS._grade_block("greyhames", "BBB")["n"]
+    one = _block_with(CACHED)["n"]
     assert "has no data feeding it" in one, one
-    two = LS._grade_block("amazonia", "BBB")["n"]
+    both_absent = dict(CACHED, orders_score=0.0, orders_total_30d=0,
+                       pillars_measured=["backing", "history"])
+    two = _block_with(both_absent)["n"]
     assert "have no data feeding them" in two, two
 
 

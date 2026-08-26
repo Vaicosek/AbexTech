@@ -148,6 +148,9 @@ svg.spark{display:block;width:100%;height:64px}
 
 /* Timeframes. Text with an underline when current — the nav's own grammar, not
    a row of pills. */
+.sknow{display:flex;align-items:baseline;gap:9px;margin-bottom:6px}
+.sknow .sknowv{font-size:26px;font-variant-numeric:tabular-nums}
+.sknow .sknowl{color:var(--faint);font-size:15px}
 .sktf{display:flex;gap:18px;margin-bottom:8px}
 .sktf button{background:none;border:none;padding:2px 0 3px;cursor:pointer;
   color:var(--faint);font:inherit;font-size:15px;border-bottom:2px solid transparent}
@@ -294,7 +297,9 @@ def register_live_routes(app) -> None:
                 user = hub_web.current_user(request)
                 if user:
                     snap = hub_web.money_snapshot(user["user_id"])
-                    screen = abex_livescreens.screen(k, str(user["user_id"]))
+                    screen = abex_livescreens.screen(
+                        k, str(user["user_id"]),
+                        csrf=str(user.get("csrf") or ""))
                 else:
                     # Public read. `screen(public=True)` is passed no user id, so
                     # nothing is looked up against an account, and then strips
@@ -378,8 +383,11 @@ CANVAS_JS = r"""
 
   /* The trade ticket. Every check that matters is the server's — this only
      shows the figures being confirmed and carries them over unchanged. */
-  var tk = document.querySelector(".ticket");
-  if(tk){
+  var tickets = document.querySelectorAll(".ticket");
+  for(var ti = 0; ti < tickets.length; ti++) wireTicket(tickets[ti]);
+
+  function wireTicket(tk){
+    if(!tk) return;
     var q = tk.querySelector(".tkq");
     var est = tk.querySelector(".tkest");
     var hint = tk.querySelector(".tkhint");
@@ -465,6 +473,10 @@ CANVAS_JS = r"""
     };
     if(buy) buy.addEventListener("click", function(){ send("buy"); });
     if(sell) sell.addEventListener("click", function(){ send("sell"); });
+
+    /* Called when the chart refreshes: requote at the new price so the figure
+       being confirmed is the figure on screen. */
+    tk.__repice = function(next){ price = next; draw(); };
   }
 
   var head = document.querySelector(".top");
@@ -515,6 +527,7 @@ CANVAS_JS = r"""
   /* Mirrors `abex_render._FLAT_BAND`. Two implementations of one projection, so
      they are kept identical on purpose and asserted equal in the tests. */
   var FLAT = 0.001;
+  function wrapOf(svg){ return svg.parentNode; }
   function draw(svg, d){
     var pts = (d && d.points) || [];
     var line = svg.querySelector("polyline");
@@ -562,6 +575,25 @@ CANVAS_JS = r"""
     /* Kept for the hover readout, which reads whatever the chart is showing
        NOW rather than what the page was served. */
     svg.__series = d;
+
+    /* The live price, and the ticket that quotes it. Both move with the line —
+       a heading saying 999.77c above a chart whose last point is 1,010c is the
+       page disagreeing with itself, and the ticket is what somebody confirms. */
+    var unitq = svg.getAttribute("data-unit") || "";
+    var nowEl = wrapOf(svg).querySelector(".sknow");
+    if(nowEl){
+      var v = nowEl.querySelector(".sknowv");
+      if(v) v.textContent = last.toLocaleString(undefined,
+        {minimumFractionDigits:2, maximumFractionDigits:2}) + unitq;
+      var mid = nowEl.getAttribute("data-mid");
+      if(mid){
+        var tks = document.querySelectorAll('.ticket[data-mid="' + mid + '"]');
+        for(var q = 0; q < tks.length; q++){
+          tks[q].setAttribute("data-price", last.toFixed(4));
+          if(tks[q].__repice) tks[q].__repice(last);
+        }
+      }
+    }
 
     var wrap = svg.parentNode, meta = wrap.querySelector(".skmeta");
     if(meta){

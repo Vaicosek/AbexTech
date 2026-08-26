@@ -96,8 +96,15 @@ def test_action_links_point_at_routes_that_exist():
     for key in sorted(LS.BUILDERS):
         for block in LS.screen(key, NOBODY).get("blocks") or []:
             for btn in block.get("btns") or []:
-                if len(btn) > 2 and btn[2]:
-                    assert btn[2] in known, f"{key} links to {btn[2]}"
+                target = btn[2] if len(btn) > 2 else ""
+                if not target:
+                    continue
+                # `/hub/stocks/<market>` is one route with a parameter, mounted
+                # by `canvas_web._stock_page`. Listing every market id here would
+                # make the test a copy of the registry.
+                if target.startswith("/hub/stocks/"):
+                    continue
+                assert target in known, f"{key} links to {target}"
 
 
 def test_every_live_section_has_a_builder():

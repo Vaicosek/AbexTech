@@ -131,6 +131,41 @@ def test_the_confirmation_names_the_figures():
     assert "toFixed(2)" in ask and "total" in ask
 
 
+# ── the trading page ───────────────────────────────────────────────────────
+
+def test_the_trading_page_gives_every_listed_market_a_ticket():
+    screen = LS.stocks(OWNER, csrf=TOKEN)
+    tickets = [b for b in screen["blocks"] if "ticket" in b]
+    charts = [b for b in screen["blocks"] if "spark" in b]
+    assert len(tickets) == 2, "two markets are listed"
+    assert len(charts) == 2, "each one carries its own line"
+
+
+def test_the_trading_page_refuses_a_ticket_without_a_token():
+    screen = LS.stocks(OWNER)
+    assert not [b for b in screen["blocks"] if "ticket" in b]
+
+
+def test_the_trading_page_is_never_public():
+    assert LS.screen("stocks", "anyone", public=True) is None
+
+
+def test_a_public_build_cannot_be_handed_a_token():
+    """The screen dispatcher passes the token only on a signed-in build."""
+    assert LS.screen("stocks", public=True, csrf="SHOULD-NOT-APPEAR") is None
+
+
+def test_the_price_is_live_and_the_ticket_follows_it():
+    screen = LS.stocks(OWNER, csrf=TOKEN)
+    html = R.screen_html(screen, owner=True)
+    assert "sknow" in html, "no live price above the line"
+    assert 'data-mid=' in html
+    import canvas_web
+    js = canvas_web.CANVAS_JS
+    assert "__repice" in js, "the ticket would keep quoting the served price"
+    assert "wireTicket" in js, "only the first ticket on the page would work"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

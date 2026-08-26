@@ -328,82 +328,101 @@ def _filing_block() -> dict | None:
 
 
 # ── Stocks ──────────────────────────────────────────────────────────────────
-def stocks(user_id: str) -> dict:
+def stocks(user_id: str = "", csrf: str = "") -> dict:
+    """THE TRADING PAGE. Every listed market: its line, its price, buy and sell.
+
+    This replaced a seven-column positions table. Market, shares, price, value,
+    cost, unrealised, dividend — for GreyHames that is 92,863 / 999.77c /
+    92,841,741c / 96,183,410c / -3,341,188c across one row, and the last column
+    said "none declared" and always would. Seven figures of the same size, one of
+    them dead, and nowhere to act on any of it.
+
+    A holder asks two things: what is it doing, and do I buy or sell. So each
+    market is a section — the line, then what you hold in one sentence, then the
+    ticket — and the page is those sections stacked. Two listed markets today, so
+    it is short; it stays readable at ten because a section is three blocks and
+    not a row of twelve columns.
+    """
     if abex_live is None:
         return _empty("stocks", "The exchange is not reachable from this process.")
-    data = abex_live.stocks(str(user_id))
-    if data is None:
+    try:
+        db = abex_live._db()
+        listings = db.get_public_markets() or {}
+        registry = db.get_markets() or {}
+    except Exception as exc:
+        log.warning("[livescreens] listings unreadable: %s", exc)
         return _empty("stocks", "The share register is not readable right now.")
 
-    rows = data.get("rows", [])
-    value = cost = 0.0
-    positions = []
-    for r in rows:
-        # abex_live.stocks row, in order:
-        #   0 ticker  1 name  2 grade  3 shares  4 average cost  5 price
-        #   6 value   7 profit  8 profit >= 0  9 dividend  10 month
-        # Average cost, not total paid - the total is implied by shares x average,
-        # and the column a holder compares against price is the per-share one.
-        try:
-            v = _coins(r[6])
-            c = _coins(r[4]) * _num(r[3])
-        except (ValueError, IndexError):
-            v = c = 0.0
-        value += v
-        cost += c
-        up = bool(r[8]) if len(r) > 8 else True
-        positions.append([r[1], r[3], r[5], r[6], r[4],
-                          ("g|" if up else "l|") + str(r[7]),
-                          r[9] if len(r) > 9 else DASH])
+    held = {}
+    data = abex_live.stocks(str(user_id)) if user_id else None
+    for r in (data or {}).get("rows", []):
+        # 0 ticker 1 name 2 grade 3 shares 4 average cost 5 price 6 value 7 profit
+        held[str(r[1])] = {"shares": _num(r[3]), "avg": _coins(r[4]),
+                           "value": _coins(r[6]), "profit": _coins(r[7]),
+                           "up": bool(r[8]) if len(r) > 8 else True}
 
+    value = sum(h["value"] for h in held.values())
+    cost = sum(h["avg"] * h["shares"] for h in held.values())
     unrealised = value - cost
-    band = [("Holdings", f"{value:,.0f}c", f"{len(rows)} position"
-             f"{'' if len(rows) == 1 else 's'}", "g" if value else ""),
-            ("Unrealised", f"{unrealised:+,.0f}c", "value less cost",
-             "g" if unrealised >= 0 else "l"),
-            ("Dividends", "none paid yet", "no market has declared one"),
-            ("Cost", f"{cost:,.0f}c", "what you paid")]
 
-    pos = {"h2": "Your positions", "ac": 1, "c": _cols("stocks", 1), "r": positions,
-           "n": "" if positions else "You hold no shares."}
-    portfolio = {"h2": "Portfolio",
-                 "bal": [["Value", f"{value:,.2f}c", ""],
-                         ["Less cost", f"{cost:,.2f}c", "what you paid for it"]],
-                 "tot": ["Unrealised", ("g|" if unrealised >= 0 else "l|")
-                         + f"{unrealised:+,.2f}c"]}
-    # A price line for the position that most decides this portfolio's value.
-    # One chart, not one per row: the biggest holding is the one whose shape
-    # actually changes what the reader does, and seven sparklines down a column
-    # is decoration.
-    blocks = [pos, portfolio]
-    biggest = None
-    if rows:
-        try:
-            biggest = max(rows, key=lambda r: _coins(r[6]))
-        except (ValueError, IndexError):
-            biggest = None
-    if biggest is not None:
-        series, match = None, []
-        try:
-            registry = abex_live._db().get_markets() or {}
-            match = [k for k, m in registry.items()
-                     if str((m or {}).get("name") or "") == str(biggest[1])]
-            if match:
-                series = abex_live.price_series(match[0], 60)
-        except Exception as exc:
-            log.warning("[livescreens] price series unreadable: %s", exc)
-        blk = _spark_block(f"{biggest[1]} · share price", series,
-                           src=(f"/api/series/market/{match[0]}?days=60"
-                                if match else ""),
-                           note="Your largest position. Every point is a price "
-                                "the exchange actually recorded — the series is "
-                                "sampled, never averaged, so no drawn point is "
-                                "a price nobody saw.")
-        if blk is not None:
-            blocks.insert(1, blk)
-    return _shell("stocks", f"{len(rows)} position"
-                  f"{'' if len(rows) == 1 else 's'} in your name.",
-                  band, blocks)
+    band = [("Your holdings", f"{value:,.0f}c",
+             f"across {len(held)} market{'' if len(held) == 1 else 's'}"),
+            ("Unrealised", f"{unrealised:+,.0f}c", "value less what you paid",
+             "g" if unrealised >= 0 else "l"),
+            ("Listed", str(len(listings)), "markets you can trade"),
+            ("Dividends", "none paid yet", "no market has declared one")]
+
+    blocks = []
+    for mid, listing in sorted(listings.items(),
+                               key=lambda kv: -float((kv[1] or {}).get("share_price") or 0)):
+        name = str((registry.get(mid) or {}).get("name") or mid)
+        price = float((listing or {}).get("share_price") or 0)
+        mine = held.get(name)
+
+        chart = _spark_block(name, abex_live.price_series(mid, 30),
+                             src=f"/api/series/market/{mid}?days=30", note="")
+        if chart is None:
+            chart = {"h2": name, "c": [], "r": [],
+                     "n": "No price has been recorded for this market yet."}
+        else:
+            chart["spark"]["live"] = 1
+            chart["spark"]["mid"] = mid
+        blocks.append(chart)
+
+        if mine:
+            tone = "g|" if mine["up"] else "l|"
+            blocks.append({
+                "bal": [["You hold", f"{mine['shares']:,.0f} shares", ""],
+                        ["Worth today", f"{mine['value']:,.0f}c",
+                         f"at {price:,.2f}c a share"],
+                        ["You paid", f"{mine['avg'] * mine['shares']:,.0f}c",
+                         f"{mine['avg']:,.2f}c a share on average"]],
+                "tot": ["Unrealised", tone + f"{mine['profit']:+,.0f}c"]})
+        else:
+            blocks.append({"bal": [["You hold", "nothing", ""]],
+                           "n": "Nothing is committed until you place an order."})
+
+        if user_id and csrf and price > 0:
+            hold = mine["shares"] if mine else 0.0
+            blocks.append({
+                "ticket": {"market_id": mid, "price": price, "you_hold": hold,
+                           "csrf": csrf,
+                           "hint": (f"Selling is capped at the {hold:,.0f} you hold."
+                                    if hold else "You hold none of this market yet.")}})
+
+        blocks.append({"act": "", "btns": [["Everything about " + name, "s",
+                                            f"/hub/stocks/{mid}"]],
+                       "n": "Months filed, the grade and its pillars, the register, "
+                            "and what moves through the shop."})
+
+    if not blocks:
+        return _shell("stocks", "No market is listed yet.", band,
+                      [{"h2": "Nothing to trade", "c": [], "r": [],
+                        "n": "A market appears here when its owner lists it."}])
+
+    asof = (f"{len(listings)} market{'' if len(listings) == 1 else 's'} listed. "
+            "Prices refresh every minute.")
+    return _shell("stocks", asof, band, blocks)
 
 
 def _item_block(market_id: str, listed: bool, owner: bool) -> dict | None:
@@ -618,6 +637,12 @@ def stock(user_id: str = "", market_id: str = "", csrf: str = "") -> dict:
                       "someone else's hands are facts about the security. Who "
                       "holds which shares is a fact about a person, and nothing "
                       "asks him to publish it.")}
+
+    if chart is not None:
+        # The live price rides on the chart here too, so the market page and the
+        # trading page cannot disagree about what a share costs.
+        chart["spark"]["live"] = 1
+        chart["spark"]["mid"] = d["market_id"]
 
     items = _item_block(d["market_id"], d["listed"], owner)
 
@@ -1533,7 +1558,8 @@ BUILDERS = {
 PUBLIC = {"hub", "markets", "exchange", "work", "lands"}
 
 
-def screen(key: str, user_id: str = "", public: bool = False) -> dict | None:
+def screen(key: str, user_id: str = "", public: bool = False,
+           csrf: str = "") -> dict | None:
     """One screen. `public=True` builds it for a reader who is not signed in.
 
     Two independent halves, both needed. The build is passed NO user id, so
@@ -1550,7 +1576,12 @@ def screen(key: str, user_id: str = "", public: bool = False) -> dict | None:
     if fn is None:
         return None
     try:
-        built = fn("" if public else user_id)
+        # `stocks` is the trading page and needs the token to draw a ticket.
+        # A public build is passed neither, so it cannot carry one.
+        if key == "stocks" and not public:
+            built = fn(user_id, csrf)
+        else:
+            built = fn("" if public else user_id)
     except Exception as exc:                        # pragma: no cover
         log.warning("[livescreens] %s failed: %s", key, exc, exc_info=True)
         return _empty(key, "That screen could not be built from live data.")

@@ -431,6 +431,16 @@ def _spark(block: dict) -> str:
     read = ('<div class="skread"><span class="skwhen">&nbsp;</span>'
             '<span class="skprice"></span><span class="skwhy"></span></div>')
 
+    # The live price, above the line, updated by the same refresh that redraws
+    # it. Rendering it into the block HEADING instead would mean the heading
+    # says one price and the chart's last point says another the moment one
+    # refreshes and the other cannot.
+    now = ""
+    if d.get("live"):
+        now = ('<div class="sknow" data-mid="%s"><span class="sknowv">%s%s</span>'
+               '<span class="sknowl">a share</span></div>'
+               % (_e(str(d.get("mid") or "")), f"{last:,.2f}", _e(unit)))
+
     tf = ""
     if d.get("src"):
         # Timeframes re-fetch the same endpoint with a different window. The
@@ -456,7 +466,7 @@ def _spark(block: dict) -> str:
     payload = payload.replace("</", "<\\/")
     data = f'<script type="application/json" class="skdata">{payload}</script>'
 
-    return (f'<div class="sparkwrap">{tf}{svg}'
+    return (f'<div class="sparkwrap">{now}{tf}{svg}'
             f'<div class="skmeta"><span style="color:{tone}">{_e(caption)}</span>'
             f'{scale}</div>{read}{legend}{foot}{data}</div>')
 
