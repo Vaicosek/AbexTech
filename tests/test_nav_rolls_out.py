@@ -1,23 +1,24 @@
-"""The nav expands to the active screen's own blocks.
+"""The nav expands to a section's real CHILD PAGES, and to nothing else.
 
-§3 says a section opens to its own block headings. It never did. Two bugs, one
-on top of the other, and the second hid the first:
+This file used to test the opposite, and the opposite was wrong twice over.
 
-1. `_nav_html` dropped any sub-entry whose key was not in `paths`. `paths` is
-   built from REGISTERED SECTIONS, and no sub-key is ever a section, so every
-   sub-entry in the tree was discarded on every page. The nav has not expanded
-   anywhere since it was written.
+FIRST the nav did not expand at all: `_nav_html` dropped any sub-entry whose key
+was not in `paths`, and `paths` is built from REGISTERED SECTIONS, so no sub-key
+was ever in it and every child was discarded on every page. That fix stands — an
+ANCHOR child needs no route and is never checked against `paths`.
 
-2. `NAV`'s Markets entry carries no children at all, so even with (1) fixed
-   there was nothing to open — which is exactly what "click Markets and it
-   doesn't roll out" looked like from outside.
+THEN, to give Markets something to open, children were DERIVED from the active
+screen's block headings. That was the wrong model and it showed on the Hub,
+which expanded to "Today / Markets by grade / Dividends" — three scroll targets
+wearing the same clothes as pages. Once Markets got real sub-pages the same slot
+meant two different things and nothing distinguished a link that navigates from
+one that scrolls.
 
-The fix for both is to stop keeping a second list by hand: the children are read
-off the screen being rendered. A sub is an ANCHOR into a page that is already
-open, so it needs no route and is never checked against `paths`.
+So children are DECLARED only (`hub_web.SECTION_CHILDREN`). A section with no
+sub-pages does not expand, which is the honest rendering of having none.
 """
-import sys
 import re
+import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -25,7 +26,6 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 
 import abex_shell as SH        # noqa: E402
-import abex_livescreens as LS  # noqa: E402
 import hub_web                 # noqa: E402
 
 AVAILABLE = {"hub", "markets", "exchange", "banking", "mine", "messages"}
@@ -38,94 +38,65 @@ def _keys(html, cls):
     return re.findall(r'class="%s" data-k="([^"]+)"' % cls, html)
 
 
-def test_an_anchor_sub_is_not_checked_against_the_routes():
-    subs = {"markets": [("markets.a", "Filing next", "#filing-next", ""),
-                        ("markets.b", "All markets", "#all-markets", "")]}
-    html = SH._nav_html("markets", False, available=AVAILABLE, paths=PATHS, subs=subs)
-    assert _keys(html, "navsub") == ["markets.a", "markets.b"]
-    assert 'href="#filing-next"' in html
+def _nav(active, subs, paths=None):
+    p = dict(paths or PATHS)
+    for kids in hub_web.SECTION_CHILDREN.values():
+        for k, _l, href in kids:
+            p.setdefault(k, href)
+    return SH._nav_html(active, False, available=AVAILABLE, paths=p, subs=subs)
+
+
+def test_a_section_with_no_child_pages_does_not_expand():
+    """The Hub bug: it opened to its own block headings, so "Dividends" — a
+    block on the page you are already on — read as somewhere to go."""
+    for key in ("hub", "banking", "exchange", "work", "messages", "history"):
+        assert hub_web.nav_subs(key) is None, f"{key} should have no children"
+
+
+def test_a_screen_cannot_conjure_children():
+    """Passing a screen changes nothing. Blocks are not pages."""
+    screen = {"blocks": [{"h2": "Today"}, {"h2": "Dividends"}]}
+    assert hub_web.nav_subs("hub", screen) is None
+    assert hub_web.nav_subs("banking", screen) is None
+
+
+def test_markets_expands_to_its_real_pages():
+    subs = hub_web.nav_subs("markets")
+    labels = [s[1] for s in subs["markets"]]
+    assert "Inventory" in labels and "Ledger" in labels, labels
+    html = _nav("markets", subs)
+    assert _keys(html, "navsub"), "the children were built and then dropped"
 
 
 def test_a_sub_that_claims_a_real_path_is_still_checked():
     """The original rule survives where it was right: `/markets/shelves` cannot
     be a working link when `/markets` itself is served somewhere else."""
     subs = {"markets": [("nowhere", "Shelves", "/markets/shelves", "")]}
-    html = SH._nav_html("markets", False, available=AVAILABLE, paths=PATHS, subs=subs)
+    html = SH._nav_html("markets", False, available=AVAILABLE, paths=PATHS,
+                        subs=subs)
     assert _keys(html, "navsub") == []
 
 
-def test_only_the_active_section_opens():
+def test_an_anchor_sub_is_not_checked_against_the_routes():
+    """Anchors are still supported by the renderer — nothing declares them
+    today, but the check that used to eat them must stay gone."""
     subs = {"markets": [("markets.a", "Filing next", "#filing-next", "")]}
-    html = SH._nav_html("banking", False, available=AVAILABLE, paths=PATHS, subs=subs)
+    html = SH._nav_html("markets", False, available=AVAILABLE, paths=PATHS,
+                        subs=subs)
+    assert _keys(html, "navsub") == ["markets.a"]
+    assert 'href="#filing-next"' in html
+
+
+def test_only_the_active_section_opens():
+    html = _nav("banking", hub_web.nav_subs("markets"))
     assert _keys(html, "navsub") == [], "a closed section shows no children"
 
 
-# Banking is the worked example throughout: a section with NO declared child
-# pages, so its nav entry still opens on its own block headings. Markets used to
-# play this part and cannot any more — it has real sub-pages now, and declared
-# children deliberately win over derived ones.
-DERIVED = "banking"
-
-
-def test_the_children_are_the_screens_own_blocks():
-    screen = {"blocks": [{"h2": "Waiting on you"}, {"h2": "Accounts"}]}
-    subs = hub_web.nav_subs(DERIVED, screen)
-    assert subs == {"banking": [
-        ("banking.waiting-on-you", "Waiting on you", "#waiting-on-you", ""),
-        ("banking.accounts", "Accounts", "#accounts", "")]}
-
-
-def test_the_anchor_matches_the_one_the_block_renders():
-    """`block_id` derives the id from the heading and `nav_subs` derives the
-    href from the same heading. If they ever disagree the link is a dead jump,
-    so they are checked against each other rather than trusted."""
-    import abex_render
-    for heading in ("On the shelves", "Where the net goes", "Ledger, August",
-                    "Waiting on you", "All thirteen markets"):
-        subs = hub_web.nav_subs(DERIVED, {"blocks": [{"h2": heading}]})
-        _key, _label, href, _meta = subs["banking"][0]
-        assert href == "#" + abex_render.block_id(heading)
-
-
-def test_a_headless_block_is_skipped_not_rendered_blank():
-    screen = {"blocks": [{"h2": ""}, {"spark": {}}, {"h2": "Trade"}]}
-    subs = hub_web.nav_subs(DERIVED, screen)
-    assert subs == {"banking": [("banking.trade", "Trade", "#trade", "")]}
-
-
-def test_a_long_screen_does_not_become_a_table_of_contents():
-    screen = {"blocks": [{"h2": f"Block {i}"} for i in range(12)]}
-    subs = hub_web.nav_subs(DERIVED, screen)
-    assert len(subs["banking"]) == hub_web.NAV_SUB_LIMIT
-
-
-def test_a_screen_with_nothing_to_open_offers_nothing():
-    assert hub_web.nav_subs(DERIVED, None) is None
-    assert hub_web.nav_subs(DERIVED, {"blocks": []}) is None
-
-
-def test_a_real_screen_really_does_open_now():
-    """The end-to-end version of the complaint: build a real screen, ask for its
-    nav, and check the sidebar has something under it."""
-    screen = LS.screen(DERIVED, "", public=True) or {"blocks": [{"h2": "Accounts"}]}
-    subs = hub_web.nav_subs(DERIVED, screen)
-    assert subs and subs["banking"], "the section still does not roll out"
-    html = SH._nav_html(DERIVED, False, available=AVAILABLE, paths=PATHS, subs=subs)
-    assert _keys(html, "navsub"), "the children were built and then dropped"
-
-
-def test_a_section_with_declared_children_does_not_use_block_headings():
-    """This test used to check that Market opened on its own block headings.
-    That was the wrong model: Market's sub-categories are PAGES, so they are
-    declared rather than derived, and deriving them from blocks is what capped
-    them at four and dropped two. See `tests/test_section_children.py`.
-
-    Everything here still applies to a section WITHOUT declared children —
-    Markets, Banking, the Hub — which is what the rest of this file covers.
-    """
-    screen = {"blocks": [{"h2": "Ledger, August"}, {"h2": "Liabilities"}]}
-    subs = hub_web.nav_subs("market", screen)
-    labels = [s[1] for s in subs["mine"]]
-    assert "Inventory" in labels, labels
-    assert "Ledger, August" not in labels, (
-        "a declared child list must win over whatever blocks the page has")
+def test_the_parent_lights_while_you_are_on_a_child():
+    html = _nav("markets.inventory", hub_web.nav_subs("markets.inventory"))
+    parent = re.search(r'class="navitem" data-k="markets"([^>]*)', html).group(1)
+    assert 'aria-current="true"' in parent, parent
+    cur = [l for a, l in re.findall(
+        r'class="navsub" data-k="[^"]+" href="[^"]+"([^>]*)>([^<]*)', html)
+        if "aria-current" in a]
+    assert cur == ["Inventory"], cur

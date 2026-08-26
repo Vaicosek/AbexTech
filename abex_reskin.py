@@ -145,6 +145,48 @@ def _shell_css() -> str:
 
 
 
+
+#: The legacy sheets were written at a 19px base. The shell's type scale was
+#: deliberately brought down to 15px after "the website is like BIG, people set
+#: the zoom to 80% since it's overwhelming" — but that decision only touched the
+#: theme, so every re-skinned page kept its old ramp and the site now had two
+#: type scales side by side: 15px chrome around 19-28px content.
+#:
+#: 15/19. Applied to font-size only, never to padding, widths or heights: those
+#: are the page's layout and shrinking them is a different change he did not ask
+#: for. Type gets smaller, the spacing stays, which is the same shape the theme
+#: rescale took.
+_TYPE_SCALE = 15.0 / 19.0
+
+#: Below this, a size is already a fine-print label and scaling it further makes
+#: it unreadable rather than smaller.
+_TYPE_FLOOR = 11.0
+
+
+def _rescale_type(css: str) -> str:
+    """Bring a legacy stylesheet onto the shell's type scale.
+
+    Mechanical on purpose. Hand-editing thirty font sizes across seven sheets is
+    thirty chances to put one in the wrong place, and the ramp between them is
+    the page's own design — scaling it preserves the relationships and only
+    moves the base.
+    """
+    import re as _re
+
+    def one(m):
+        try:
+            size = float(m.group(1))
+        except ValueError:
+            return m.group(0)
+        if size <= _TYPE_FLOOR:
+            return m.group(0)
+        scaled = max(_TYPE_FLOOR, round(size * _TYPE_SCALE, 1))
+        out = ("%g" % scaled)
+        return "font-size:" + out + "px"
+
+    return _re.sub(r"font-size:\s*([\d.]+)px", one, css)
+
+
 def _root_tokens(css: str, scope: str = SCOPE) -> str:
     """Legacy custom properties the SHELL does not define, restored to `:root`.
 
@@ -289,7 +331,8 @@ def render(template: str, *, active: str, title: str, user=None, snap=None,
     body, page_css, scripts = _split(html)
     css = (_neutralise(page_css)
            + _root_tokens(RW._TERMINAL_CSS + "\n" + page_css)
-           + _scope_css(RW._TERMINAL_CSS) + "\n" + _scope_css(page_css))
+           + _rescale_type(_scope_css(RW._TERMINAL_CSS) + "\n"
+                           + _scope_css(page_css)))
     # The body goes inside the scope it was just confined to.
     body = f'<div class="{SCOPE}">{body}</div>' 
     if ownerinfo is not None:

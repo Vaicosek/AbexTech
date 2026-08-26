@@ -929,57 +929,30 @@ SECTION_CHILDREN = {
 }
 
 
-#: How many blocks a section's nav entry may expand to. §3 draws "one or two
-#: children"; a screen with nine blocks would turn the sidebar into a table of
-#: contents and push everything below it off the fold. The first four are the
-#: ones a reader scrolls to.
-NAV_SUB_LIMIT = 4
+def nav_subs(active: str, screen: Optional[dict] = None) -> Optional[dict]:
+    """`{navkey: [(subkey, label, href, meta)]}` — a section's real CHILD PAGES.
 
+    ONLY DECLARED CHILDREN. This used to also derive children from the active
+    screen's block headings, so a section with no sub-pages still expanded — and
+    what it expanded to was scroll targets wearing the same clothes as pages.
+    Hub opened to "Today / Markets by grade / Dividends", which reads as three
+    places to go and is three places on the page you are already on.
 
-def nav_subs(active: str, screen: Optional[dict]) -> Optional[dict]:
-    """`{navkey: [(subkey, label, anchor, meta)]}` from the screen's OWN blocks.
+    Once Markets got real child pages the two kinds sat in the same slot with the
+    same styling, and nothing distinguished a link that navigates from one that
+    scrolls. A section with no sub-pages does not expand now, which is the honest
+    rendering of having none.
 
-    §3: a section expands to its own block headings. Those are a fact about the
-    page being rendered, so they are read off it rather than kept in a second
-    list that has to be edited every time a block is added — which is how the
-    tree ended up offering `Stocks` under Exchange and `Orders` under Work while
-    neither screen had a block by that name.
-
-    Anchors, not routes. `abex_render.block_id` derives the id from the heading
-    and this derives the href from the same heading, so the two cannot drift.
+    `screen` is still accepted so callers need not change; it is unused.
     """
     key = _NAV_KEY_FOR(active)
     if not key:
         return None
     root = key.split(".")[0]
     declared = SECTION_CHILDREN.get(root)
-    # Checked BEFORE the screen. A declared child does not come from the parent's
-    # blocks, so it must not need one — a legacy page re-hung by `abex_reskin`
-    # passes no screen at all, and asking for one first is how those pages
-    # rendered with the design's hardcoded child instead of their real siblings.
-    if declared:
-        # A declared child is a PAGE. It is never capped and never derived: the
-        # cap exists to stop a long screen becoming a table of contents, and a
-        # section's real sub-pages are not a table of contents.
-        return {root: [(k, label, href, "") for k, label, href in declared]}
-    if not screen:
+    if not declared:
         return None
-    try:
-        import abex_render
-    except Exception:                                  # pragma: no cover
-        return None
-    out = []
-    for b in (screen.get("blocks") or []):
-        h2 = str(b.get("h2") or "").strip()
-        if not h2:
-            continue
-        anchor = abex_render.block_id(h2)
-        if not anchor:
-            continue
-        out.append((f"{key}.{anchor}", h2, f"#{anchor}", ""))
-        if len(out) >= NAV_SUB_LIMIT:
-            break
-    return {key: out} if out else None
+    return {root: [(k, label, href, "") for k, label, href in declared]}
 
 
 def _NAV_KEY_FOR(active: str) -> str:

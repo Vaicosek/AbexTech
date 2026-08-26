@@ -66,10 +66,14 @@ def test_markets_opens_to_every_one_of_its_pages():
         assert want in labels, f"{want} is not under Markets: {labels}"
 
 
-def test_declared_children_are_not_capped():
-    """The four-block cap is for anchors. Seven pages is seven pages."""
+def test_every_declared_child_is_offered():
+    """There is no cap any more. The cap existed to stop a long screen becoming
+    a table of contents, and screens no longer contribute children at all — a
+    section's declared sub-pages are all of them, however many."""
     subs = hub_web.nav_subs("markets", None)
-    assert len(subs["markets"]) > hub_web.NAV_SUB_LIMIT
+    assert len(subs["markets"]) == len(hub_web.SECTION_CHILDREN["markets"])
+    assert not hasattr(hub_web, "NAV_SUB_LIMIT"), (
+        "the cap belonged to derived children, which are gone")
 
 
 def test_a_child_needs_no_screen_to_be_offered():
@@ -343,3 +347,46 @@ def test_the_orders_progress_bar_has_a_colour_to_read():
     assert "getComputedStyle(document.documentElement)" in RW._ORDERS_HTML
     root = abex_reskin._root_tokens(RW._TERMINAL_CSS)
     assert "#8fbf6a" in root
+
+
+def test_the_legacy_pages_use_the_shells_type_scale():
+    """"its too huge" — the legacy sheets were written at a 19px base and the
+    shell's ramp was brought down to 15px, so a re-skinned page put 19-28px
+    content inside 15px chrome. Scaled 15/19, mechanically, so the page's own
+    ramp between its sizes is preserved and only the base moves."""
+    import abex_reskin
+    import Restocker_web as RW
+    # The 19px BASE came from `body{}`, which is dropped as chrome — the page
+    # inherits the shell's 15px instead. What still needed scaling is the page's
+    # own ramp above that base: 21px table text, 25px group rows, 28px titles.
+    page_css = re.search(r"<style[^>]*>(.*?)</style>", RW._LEDGER_HTML,
+                         re.S).group(1)
+    before = set(re.findall(r"font-size:\s*([\d.]+)px", page_css))
+    scaled = abex_reskin._rescale_type(abex_reskin._scope_css(page_css))
+    after = set(re.findall(r"font-size:\s*([\d.]+)px", scaled))
+    big_before = {float(x) for x in before if float(x) > 16}
+    big_after = {float(x) for x in after if float(x) > 16}
+    assert big_before, "this test is pointless if the sheet had no large type"
+    assert max(big_after) < max(big_before), (
+        "largest type went %s -> %s" % (max(big_before), max(big_after)))
+    assert not any(float(x) > 11 and float(x) < 11.0 for x in after)
+
+
+def test_only_type_is_scaled_not_layout():
+    """Padding, widths and heights are the page's layout. Shrinking those is a
+    different change nobody asked for — the theme rescale did not touch them
+    either."""
+    import abex_reskin
+    css = ".x{font-size:20px;padding:14px 26px;width:120px;height:38px}"
+    out = abex_reskin._rescale_type(css)
+    assert "padding:14px 26px" in out
+    assert "width:120px" in out and "height:38px" in out
+    assert "font-size:15.8px" in out
+
+
+def test_fine_print_is_not_scaled_into_illegibility():
+    import abex_reskin
+    for small in ("font-size:10.5px", "font-size:11px"):
+        assert abex_reskin._rescale_type(small) == small
+    # and nothing is ever pushed below the floor
+    assert "font-size:11px" in abex_reskin._rescale_type("font-size:13px")
