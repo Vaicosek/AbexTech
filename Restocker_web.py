@@ -518,9 +518,16 @@ def _load_liabilities_data() -> dict:
     try:
         mkts = {}
         try:
-            mkts = (db.get_markets() or {}).get("markets", {}) or {}
-        except Exception:
-            pass
+            # get_markets() hands back the {market_id: row} mapping itself; there is no
+            # "markets" wrapper key to unwrap. Unwrapping one left mkts empty, so owner
+            # came out "", no row ever matched it, and the owner's own coins and shares
+            # were counted as money owed to other people — the one thing this page is
+            # supposed to keep separate. Same read as Restocker_main._outside_equity.
+            mkts = db.get_markets() or {}
+        except Exception as e:
+            # Do not fail quiet here: an empty mkts does not blank the page, it silently
+            # reports the owner's own balance as a third-party liability.
+            print(f"[liabilities] markets unavailable: {e}")
         owner = str((mkts.get("greyhames") or {}).get("owner_id") or "")
         out["owner_id"] = owner
 
@@ -1009,13 +1016,27 @@ def _load_inventory_data() -> dict:
             # What is missing is the BUNDLE: a shop sells "3456 for 9,192" and the page
             # only ever showed 2.66, so nobody could tell what they would actually be
             # asked to buy. Carry the listing qty and its total alongside.
+            # A price is only PER UNIT if the row also carries the listing qty. Rows
+            # written before per-unit normalisation have qty NULL and hold the RAW BULK
+            # TOTAL ("64 for 215" stored as 215); printed under "Price, c per piece" that
+            # reads ~64x high, and its size then evicts the real per-unit prices from the
+            # Sigma Avg group as outliers. Leave it unpriced so the catalog fallback below
+            # takes over — a fresh CSN stock scan heals the row.
             _sp, _sq = r.get("sell_price"), r.get("sell_qty")
-            if _sp is None or float(_sp or 0) <= 0:
+            if _sq is None or _sp is None or float(_sp or 0) <= 0:
                 _sp, _sq = r.get("buy_price"), r.get("buy_qty")
+            if _sq is None:
+                _sp, _sq = None, None
+            # Hold the EXACT per-unit quotient the DB stored; `price` below is only the
+            # 2-dp DISPLAY value. Rounding first and then multiplying by the listing qty
+            # scales the rounding error by the whole bundle: Stone (0.625 ea x 3456) read
+            # "sold as 3456 for 2,143" against a till that charges 2,160. Market valuation
+            # does the same thing for the same reason (it multiplies float(sell_price) raw).
             try:
-                price = round(float(_sp), 2) if _sp not in (None, "") and float(_sp) > 0 else 0
+                _unit = float(_sp) if _sp not in (None, "") and float(_sp) > 0 else 0.0
             except Exception:
-                price = 0
+                _unit = 0.0
+            price = round(_unit, 2)
             try:
                 pqty = int(_sq or 0)
             except Exception:
@@ -1026,7 +1047,9 @@ def _load_inventory_data() -> dict:
                 # Catalog fallback prices are already per-unit, so the bundle is 1.
                 price = round(float((cat.get(it) or {}).get("coin", 0) or 0), 2)
                 pqty = 1
-            lot = round(price * pqty, 2) if (price and pqty) else 0
+                _unit = price          # catalog coin is already an exact per-unit price
+            # Bundle total off the UNROUNDED unit — see `_unit` above.
+            lot = round(_unit * pqty, 2) if (price and pqty) else 0
             try:
                 disp = m._pretty_item_name(it)          # strips lore junk, adds curated effects
             except Exception:
@@ -1118,7 +1141,14 @@ def _load_teams_data(days: int = 0) -> dict:
     try:
         import Restocker_db as db
         from datetime import datetime, timedelta, timezone
-        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat() if days else None
+        # strftime, not isoformat: created_at is written by the column default datetime('now') —
+        # '2026-07-27 14:32:11', space separator, no fraction, no offset — and SQLite compares the
+        # cutoff against it as TEXT. An isoformat() cutoff carries a 'T' and a '+00:00', and 'T'
+        # sorts ABOVE ' ', so every row from the boundary day fell below the cutoff and a whole
+        # day of team work vanished from the window — on the live ledger days=7 returned 0 rows
+        # where 1 exists. Same spelling as db._utcnow_iso, which cuts the other datetime('now')
+        # columns.
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S") if days else None
         rows = db.get_all_team_perf(since)
     except Exception as e:
         print(f"[teams] DB unavailable: {e}")
@@ -1145,9 +1175,21 @@ def _load_teams_data(days: int = 0) -> dict:
             if _mid and _owners.get(_mid) == wid:
                 continue                       # owner self-credit — not team performance
         t = teams.setdefault(m, {"manager_id": m, "order_coins": 0.0, "sales_coins": 0.0,
-                                 "orders": 0, "futures_qty": 0, "workers": {}})
+                                 "orders": 0, "futures_qty": 0, "workers": {},
+                                 "_seen_orders": set()})
         if k == "order":
-            t["order_coins"] += c; t["orders"] += 1
+            # Count DISTINCT orders, not ledger rows. One order can carry several
+            # kind="order" rows sharing a detail: reassign_team_perf replaces a manager's
+            # single row with one row per worker, and the /admin backfill writes one per
+            # worker pair - so an order split three ways read as three orders here.
+            # `detail` ("order#123") is the order's identity everywhere else in the tree
+            # (team_perf_exists, the backfill's idempotency check, the worker-history
+            # GROUP BY detail); a row with no detail counts as its own order, or every
+            # blank legacy row would collapse into one.
+            t["order_coins"] += c
+            _oid = str(r["detail"] or "").strip() or f'row#{r["id"]}'
+            if _oid not in t["_seen_orders"]:
+                t["_seen_orders"].add(_oid); t["orders"] += 1
         elif k in ("sales", "project"):
             # "project" covers perpetual-project pay (hive harvesting, manager project pay) —
             # counted with chest-shop sales so it shows in the team totals.
@@ -1162,7 +1204,8 @@ def _load_teams_data(days: int = 0) -> dict:
         for mgr in db.get_all_team_managers():
             mgr = str(mgr)
             t = teams.setdefault(mgr, {"manager_id": mgr, "order_coins": 0.0, "sales_coins": 0.0,
-                                       "orders": 0, "futures_qty": 0, "workers": {}})
+                                       "orders": 0, "futures_qty": 0, "workers": {},
+                                       "_seen_orders": set()})
             for wid in db.get_team(mgr):
                 t["workers"].setdefault(str(wid), {"id": str(wid), "coins": 0.0})
     except Exception as e:
@@ -2070,7 +2113,12 @@ function renderCompanies(){
    +'<div class="kv"><span>Backing (cash / assets)</span><b>'+fmt(c.backing_cash)+'c / '+fmt(c.backing_assets)+'c</b></div>'
    +'<div class="kv"><span>Payable on wind-up</span><b>'+fmt(c.backing_cashable)+'c</b></div>'
    +'<div class="kv"><span>Bond face outstanding</span><b>'+fmt(c.bond_face)+'c</b></div>'
-   +'<div class="kv"><span>Item coverage of bonds</span><b class="'+(c.bond_coverage_pct>=80?'up':'down')+'">'+c.bond_coverage_pct+'%</b></div>'
+   // null here means no bonds outstanding, NOT zero coverage. Colouring that red
+   // told everyone a company that never borrowed was dangerously uncovered.
+   +'<div class="kv"><span>Item coverage of bonds</span>'
+   +(c.bond_coverage_pct==null?'<b class="faint">no bonds</b>'
+     :'<b class="'+(c.bond_coverage_pct>=80?'up':'down')+'">'+c.bond_coverage_pct+'%</b>')
+   +'</div>'
    +(c.last_dividend?('<div class="kv"><span>Last dividend</span><b>'+esc(c.last_dividend.month)+' &middot; '
       +(+c.last_dividend.per_share).toFixed(2)+'c/share</b></div>'):'<div class="kv"><span>Last dividend</span><b class="faint">none</b></div>')
    +'</div></div>';});
@@ -2101,7 +2149,7 @@ function renderVotes(){
   h+='<div style="padding:8px 0;border-bottom:1px solid var(--line)">'
    +'<div style="display:flex;justify-content:space-between;gap:8px"><b>#'+p.id+' '+esc(p.question)+'</b>'
    +'<span class="faint" style="font-size:11px">'+(p.status==='open'?('closes '+esc(p.closes_at||'-')):'closed')+'</span></div>'
-   +'<div class="faint" style="font-size:11px">'+esc(p.market_id)
+   +'<div class="faint" style="font-size:11px">'+esc(p.market_name||p.market_id)
    +(p.status==='open'&&D.logged_in?(' &middot; your weight <b>'+fmt(p.my_weight)+'</b>'):'')+'</div>';
   (p.options||[]).forEach(function(o,i){
    var w=(p.tally||[])[i]||0, pctv=Math.round(w/tot*100);
@@ -2533,7 +2581,7 @@ __NAV__
 <div class="chartwrap"><svg class="chart" id="chart" preserveAspectRatio="none"></svg><div class="tip" id="tip"></div></div>
 <div class="panel"><div class="ph"><span class="t">Monthly ledger</span></div>
 <div class="tblscroll"><table class="t"><thead><tr><th>Month</th><th>Income</th><th>Spent</th><th>Net</th><th>MoM</th><th>Income vs spent</th></tr></thead><tbody id="mt"></tbody></table></div></div>
-<div class="panel"><div class="ph rowh"><span class="t">Top items</span><select class="msel" id="msel"></select></div>
+<div class="panel"><div class="ph rowh"><span class="t">Top items</span><span class="msg faint" id="ihint"></span><select class="msel" id="msel"></select></div>
 <div class="tblscroll"><table class="t"><thead><tr id="ith"></tr></thead><tbody id="it"></tbody></table></div></div>
 </div>
 <script>
@@ -2576,7 +2624,10 @@ function render(){const m=MS[act]||{};const mo=m.months||[];
  // ── chart: income/spent bars (always) + selected-metric line ────────────────
  const el=document.getElementById('chart');const w=el.clientWidth||900,h=220,pad=14;
  el.setAttribute('viewBox','0 0 '+w+' '+h);
- const line=mo.map(x=>x[METRIC]||0);const v=line.length>1?line:[0,0];
+ // one month of history is real data, not missing data: pad with the real value
+ // twice, never [0,0] — zero-padding drew the line flat at zero and made the
+ // tooltip say 0c while the Monthly table right below showed the true figure
+ const line=mo.map(x=>x[METRIC]||0);const v=line.length>1?line:[line[0]||0,line[0]||0];
  const col=METRIC==='spent'?css('--down'):(v[v.length-1]>=0?css('--up'):css('--down'));
  let grid='';for(let i=0;i<5;i++){const y=pad+i/4*(h-2*pad);
   grid+='<line x1="'+pad+'" y1="'+y+'" x2="'+(w-pad)+'" y2="'+y+'" stroke="'+css('--line')+'" stroke-width="1"/>';}
@@ -2626,8 +2677,14 @@ function renderItems(){const m=MS[act]||{};const mo=m.months||[];
    {s:0,b:0,net:0,inc:0,exp:0,vel:0};
    e.s+=it.sold||0;e.b+=it.bought||0;e.net+=it.net||0;
    e.inc+=it.income||0;e.exp+=it.expense||0;e.vel+=it.tsold||0;}));
+ // Months imported before per-item income/expense/velocity existed carry 0 there —
+ // drop those columns (+ hint) rather than show a wall of zeros; they light up on re-scan.
+ const detail=src.some(x=>(x.items||[]).some(it=>(it.income||0)||(it.expense||0)||(it.tsold||0)||(it.tbought||0)));
+ const cols=detail?ICOLS:ICOLS.filter(c=>['item','s','b','net'].indexOf(c[0])>=0);
+ if(!cols.some(c=>c[0]===SORT.k)){SORT.k='net';SORT.dir=-1;}
+ document.getElementById('ihint').textContent=detail?'':'income · margin · velocity fill in after this market’s next scan';
  // header (sortable)
- document.getElementById('ith').innerHTML=ICOLS.map(([k,l,g])=>
+ document.getElementById('ith').innerHTML=cols.map(([k,l,g])=>
    '<th class="sort" data-k="'+k+'">'+l+(SORT.k===k?'<span class="ar">'+(SORT.dir<0?'▼':'▲')+'</span>':'')+'</th>').join('');
  document.querySelectorAll('#ith .sort').forEach(th=>th.onclick=()=>{const k=th.dataset.k;
    if(SORT.k===k)SORT.dir*=-1;else{SORT.k=k;SORT.dir=(k==='item')?1:-1;}renderItems();});
@@ -2636,18 +2693,27 @@ function renderItems(){const m=MS[act]||{};const mo=m.months||[];
  rows.sort((a,b)=>{if(SORT.k==='item')return SORT.dir*a[0].localeCompare(b[0]);
    return SORT.dir*((getv(a[1])||0)-(getv(b[1])||0));});
  rows=rows.slice(0,40);
+ const cell=(e,k)=>{
+  if(k==='s')return '<td class="num">'+fmt(e.s)+'</td>';
+  if(k==='b')return '<td class="num">'+fmt(e.b)+'</td>';
+  if(k==='inc')return '<td class="num">'+fmt(e.inc)+'</td>';
+  if(k==='exp')return '<td class="num" style="color:'+css('--down')+'">'+fmt(e.exp)+'</td>';
+  if(k==='net')return '<td class="num" style="color:'+(e.net>=0?css('--up'):css('--down'))+'">'+fmt(e.net)+'</td>';
+  if(k==='mgn')return mgnCell(e);
+  return '<td class="num muted">'+fmt(e.vel)+'</td>';};
  document.getElementById('it').innerHTML=rows.map(([k,e])=>
-   '<tr><td>'+esc(k)+'</td><td class="num">'+fmt(e.s)+'</td><td class="num">'+fmt(e.b)+'</td>'+
-   '<td class="num">'+fmt(e.inc)+'</td><td class="num" style="color:'+css('--down')+'">'+fmt(e.exp)+'</td>'+
-   '<td class="num" style="color:'+(e.net>=0?css('--up'):css('--down'))+'">'+fmt(e.net)+'</td>'+
-   mgnCell(e)+'<td class="num muted">'+fmt(e.vel)+'</td></tr>').join('')
-  ||'<tr><td colspan="8" class="faint" style="height:34px">No item data.</td></tr>';}
+   '<tr><td>'+esc(k)+'</td>'+cols.slice(1).map(c=>cell(e,c[0])).join('')+'</tr>').join('')
+  ||'<tr><td colspan="'+cols.length+'" class="faint" style="height:34px">No item data.</td></tr>';}
 chips();render();addEventListener('resize',render);
 </script></body></html>"""
 
 
 async def _handle_ledger_page(request):
-    ef = _cached("earnings_full", _load_earnings_full)
+    # Same opt-out as /api/earnings_full — this page is fed by the SAME loader but is
+    # served unauthenticated, so without the filter an opted-out market's whole P&L
+    # (chip, monthly income/spend/net and every item row) was embedded in the HTML for
+    # anonymous visitors while both API halves correctly omitted it.
+    ef = _strip_hidden(_cached("earnings_full", _load_earnings_full), request)
     return _legacy_page(request, _LEDGER_HTML, "markets.ledger",
                         "Ledger · Abex Tech",
                         {"__EARNFULL_JSON__": _jscript(ef)})
@@ -2788,8 +2854,13 @@ function chips(){document.getElementById('chips').innerHTML=MS.map((m,i)=>
  '<div class="chip'+(i===act?' on':'')+'" data-i="'+i+'">'+esc(m.name||m.market_id)+' · '+m.count+'</div>').join('');
  document.querySelectorAll('.chip').forEach(c=>c.onclick=()=>{act=+c.dataset.i;chips();render();});}
 function render(){const mk=MS[act]||{};const os=mk.orders||[];
- const open=os.length,units=os.reduce((a,o)=>a+(o.requested||0),0),
- done=os.reduce((a,o)=>a+Math.min(o.claimed||0,o.requested||0),0);
+ // os is active + the fulfilled history the loader appends behind it (orders = active + done).
+ // The stat row must run over the OPEN rows only: counting fulfilled work made 'Open orders'
+ // disagree with the market chip beside it and pinned Fill rate near 100%, because every
+ // fulfilled row is claimed in full. Same test as the loader's _ostatus_rank (rank 2).
+ const op=os.filter(o=>String(o.status||'open').toLowerCase()!=='fulfilled');
+ const open=op.length,units=op.reduce((a,o)=>a+(o.requested||0),0),
+ done=op.reduce((a,o)=>a+Math.min(o.claimed||0,o.requested||0),0);
  document.getElementById('stats').innerHTML=[['Open orders',open],['Units requested',fmt(units)],
   ['Units claimed',fmt(done)],['Fill rate',(units?Math.round(100*done/units):0)+'%']].map(s=>
   '<div class="stat"><div class="k">'+s[0]+'</div><div class="v">'+s[1]+'</div></div>').join('');
@@ -4206,6 +4277,20 @@ async def _handle_api_investor(request):
         print(f"⚠️  /api/investor: get_public_markets failed: {e!r}", file=sys.stderr)
         traceback.print_exc()
         _mkts = {}
+    # Rating is DERIVED, not stored: neither markets nor market_shares has a rating
+    # column, so reading listing/raw "rating" below left every company on /investor
+    # permanently at "-" while /exchange showed a real AAA/AA/A for the same market.
+    # The grade is computed once in _load_stock_data() (backing % against the house
+    # gates); take it from there so the two pages cannot disagree. Same cache entry
+    # /api/stock_data already fills, so this is normally free.
+    _ratings = {}
+    try:
+        for _s in ((_cached("stock_data", _load_stock_data) or {}).get("markets") or []):
+            if _s.get("rating"):
+                _ratings[_s.get("mid")] = _s["rating"]
+    except Exception as e:
+        import sys
+        print(f"⚠️  /api/investor: ratings unavailable, falling back to '-': {e!r}", file=sys.stderr)
     for mid in _mkts:
         # Per-market isolation: one malformed market must NOT 500 the whole tab.
         # Before this, any single exception below returned status=500 and the
@@ -4237,16 +4322,25 @@ async def _handle_api_investor(request):
             companies.append({
                 "mid": mid,
                 "name": raw.get("name") or mid,
-                "ticker": (core_tickers().get(mid) or "-"),
+                # market_tickers.yml only holds markets someone explicitly registered,
+                # so a bare lookup printed "-" here for a market that shows a real
+                # symbol on every other page. Derive it the way they do.
+                "ticker": _market_ticker(mid),
                 "price": price,
                 "shares_outstanding": out,
                 "market_cap": price * out,
                 "treasury": float(listing.get("treasury_coins") or 0),
-                "rating": listing.get("rating") or raw.get("rating") or "-",
+                "rating": _ratings.get(mid) or "-",
                 "backing_cash": int(back.get("cash", 0) or 0),
                 "backing_assets": int(back.get("assets", 0) or 0),
                 "backing_cashable": int(back.get("cashable", 0) or 0),
-                "bond_coverage_pct": (lambda v: round(v, 1) if v == v and v not in (float("inf"), float("-inf")) else 0.0)(float(cov_pct or 0)),
+                # No bonds outstanding is not 0% coverage. `_bond_coverage` returns inf
+                # when face is 0 because there is nothing to divide by, and flattening
+                # that to 0.0 printed a red "0%" on every company that never issued a
+                # bond — the alarm for "dangerously uncovered" shown for "nothing to
+                # cover". Same spelling as the coverage watchdog's cache in
+                # Restocker_main (`pct if face > 0 else None`); the page renders None.
+                "bond_coverage_pct": (round(float(cov_pct), 1) if cov_face > 0 else None),
                 "bond_face": int(cov_face or 0),
                 "last_dividend": (hist[0] if hist else None),
                 "dividend_12m": sum(float(h.get("per_share") or 0) for h in hist[:12]),
@@ -4303,6 +4397,10 @@ async def _handle_api_investor(request):
                     weight = 0.0
             proposals.append({
                 "id": p["id"], "market_id": p.get("market_id"),
+                # Same reason as holdings above: the raw id ("nether_market") is an
+                # internal handle, so a voter reading the subtitle never sees the
+                # market under the name it actually trades as.
+                "market_name": _market_display_name(p.get("market_id")),
                 "question": p.get("question"), "options": p.get("options") or [],
                 "status": p.get("status"), "closes_at": p.get("closes_at"),
                 "tally": [tally.get(i, 0.0) for i in range(len(p.get("options") or []))],
