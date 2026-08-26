@@ -47,22 +47,141 @@ log = logging.getLogger("abex_reskin")
 _DROP = ("body", "header.tshell", ".brand", ".rt", "*")
 
 
-def _strip_shell_css(css: str) -> str:
-    """Drop the rules that own the page chrome, keep the ones that style content.
+#: The wrapper the whole legacy body is hung inside, and every legacy rule is
+#: scoped to. See `_scope_css`.
+SCOPE = "legacypage"
 
-    A crude brace-walk rather than a CSS parser: this sheet is 3KB of flat rules
-    with no nesting beyond `@media`, and a dependency to read it would be worth
-    more than the job. Anything it cannot parse is KEPT — dropping a rule by
-    accident breaks a page silently, keeping one only risks a cosmetic clash.
+
+def _scope_css(css: str, scope: str = SCOPE) -> str:
+    """Confine a legacy stylesheet to `.legacypage`, and drop the page chrome.
+
+    TWO STYLESHEETS ON ONE PAGE MEANS TWO VOCABULARIES, and these two share ten
+    class names — `.bar`, `.chip`, `.btn`, `.tag`, `.fillbar`, `.up`, `.down`,
+    `.muted`, `.faint`, `.mono`. That is not a theoretical hazard. `.bar` is a
+    6px progress bar in the shell and a filter row on the inventory page; the
+    page's rule sets no height, so there was nothing to override the shell's
+    `height:6px`, and the row's chips were sliced in half by its `overflow:
+    hidden`. Two rows on every one of these pages, and it looked like a broken
+    font before anyone worked out it was a name.
+
+    Scoping is the fix rather than renaming, because renaming fixes one name and
+    leaves nine, and the eleventh appears the next time either side adds a rule.
+
+    `:root` is rewritten to the scope rather than dropped: it carries the
+    tokens the page's own rules read. Left global it would also overwrite the
+    SHELL's `--line` and `--accent` — the same values today, both being Warm
+    Feel, which is precisely the kind of accident that survives until somebody
+    retunes one of them.
+
+    Anything unparseable is KEPT and left global: dropping a rule by accident
+    breaks a page silently, keeping one only risks a cosmetic clash.
     """
-    out, i, n = [], 0, len(css)
+    out = []
+    for head, body, whole in _rules(css):
+        if head.startswith("@"):
+            if body is None:
+                out.append(whole)                    # @import, @charset
+            else:
+                out.append(head + "{" + _scope_css(body, scope) + "}")
+            continue
+        heads = []
+        for h in head.split(","):
+            h = h.strip()
+            if not h:
+                continue
+            bare = h.split(":")[0].split(" ")[0].strip()
+            if bare in _DROP:
+                # Chrome the shell owns: the old header bar, and `body`, whose
+                # 19px base would quietly undo the type scale on seven pages.
+                continue
+            if h in (":root", "html", "body", "*"):
+                heads.append("." + scope)
+            else:
+                heads.append(f".{scope} {h}")
+        if heads:
+            out.append(",".join(heads) + "{" + (body or "") + "}")
+    return "".join(out)
+
+
+
+#: Properties a colliding shell rule can use to wreck a legacy layout, and the
+#: value that means "as if the shell had never named this class". Deliberately a
+#: SHORT list of box-model and flow properties rather than `all:revert`, which
+#: would also strip inherited typography and leave buttons in the browser's
+#: system font.
+_NEUTRAL = ("height:auto;min-height:0;max-height:none;overflow:visible;"
+            "position:static;float:none;transform:none;inset:auto")
+
+
+def _simple_selectors(css: str) -> set:
+    """The bare class/element heads a stylesheet defines, for collision-finding."""
+    out = set()
+    for head, body, _whole in _rules(css):
+        if head.startswith("@"):
+            if body:
+                out |= _simple_selectors(body)
+            continue
+        for h in head.split(","):
+            h = h.strip()
+            if not h:
+                continue
+            first = h.split(">")[0].strip().split(" ")[0].strip()
+            first = first.split(":")[0].strip()
+            if first.startswith(".") and len(first) > 1:
+                out.add(first)
+    return out
+
+
+def _shell_css() -> str:
+    """Everything `hub_web.page` puts in front of a page's own stylesheet."""
+    parts = []
+    for mod, attr in (("vt_web_shell", "_LEGACY_CSS"), ("abex_theme", "THEME_CSS"),
+                      ("canvas_web", "CANVAS_CSS")):
+        try:
+            parts.append(getattr(__import__(mod), attr))
+        except Exception as exc:                      # pragma: no cover
+            log.warning("[reskin] %s.%s unreadable: %s", mod, attr, exc)
+    return "".join(parts)
+
+
+def _neutralise(page_css: str, scope: str = SCOPE) -> str:
+    """Undo the shell's rules for class names the legacy page also uses.
+
+    SCOPING THE PAGE'S OWN CSS IS NOT ENOUGH, and that is the whole lesson here.
+    `.legacypage .bar` outranks `.bar`, but only for properties it DECLARES —
+    and the page's `.bar` (a filter row) declares no height, so the shell's
+    `.bar{height:6px}` (a progress bar) went on applying and its `overflow:
+    hidden` sliced two rows of chips in half on every one of these pages.
+
+    So for each name both sides use, a neutralising rule is emitted at the same
+    specificity as the page's own scoped rules and BEFORE them: the shell's
+    layout is reverted, then the page re-states whatever it actually wants.
+    Only names that genuinely collide are touched, so nothing else moves.
+    """
+    theirs = _simple_selectors(_shell_css())
+    mine = _simple_selectors(page_css)
+    clash = sorted(theirs & mine)
+    if not clash:
+        return ""
+    heads = ",".join(f".{scope} {c}" for c in clash)
+    return (f"/* {len(clash)} class names are used by both stylesheets: "
+            f"{' '.join(clash)} */\n{heads}{{{_NEUTRAL}}}\n")
+
+
+def _rules(css: str):
+    """`(selector, body, whole)` per top-level rule. `body` is None if unbraced.
+
+    A brace-walk rather than a CSS parser: these sheets are flat rules and
+    `@media` blocks, and a dependency to read them would cost more than the job.
+    """
+    i, n = 0, len(css)
     while i < n:
         brace = css.find("{", i)
         if brace < 0:
-            out.append(css[i:])
-            break
-        selector = css[i:brace]
-        # Walk to the matching close, so `@media{...}` survives whole.
+            rest = css[i:].strip()
+            if rest:
+                yield rest, None, css[i:]
+            return
         depth, j = 0, brace
         while j < n:
             if css[j] == "{":
@@ -72,15 +191,14 @@ def _strip_shell_css(css: str) -> str:
                 if depth == 0:
                     break
             j += 1
-        rule = css[i:j + 1]
-        heads = [h.strip() for h in selector.split("\n")[-1].split(",")]
-        heads = [h for h in heads if h]
-        if heads and all(h.split(":")[0].split(" ")[0] in _DROP for h in heads):
-            pass                                  # chrome: the shell owns it
-        else:
-            out.append(rule)
+        head = _decomment(css[i:brace]).strip()
+        body = css[brace + 1:j]
+        yield head, body, css[i:j + 1]
         i = j + 1
-    return "".join(out)
+
+
+def _decomment(text: str) -> str:
+    return re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
 
 
 def _split(template: str) -> tuple[str, str, str]:
@@ -126,7 +244,10 @@ def render(template: str, *, active: str, title: str, user=None, snap=None,
     for key, value in (replacements or {}).items():
         html = html.replace(key, value)
     body, page_css, scripts = _split(html)
-    css = _strip_shell_css(RW._TERMINAL_CSS) + "\n" + _strip_shell_css(page_css)
+    css = (_neutralise(page_css)
+           + _scope_css(RW._TERMINAL_CSS) + "\n" + _scope_css(page_css))
+    # The body goes inside the scope it was just confined to.
+    body = f'<div class="{SCOPE}">{body}</div>' 
     if ownerinfo is not None:
         # `</script>` inside the JSON would close this tag early; `<` is escaped
         # so no value in a market name can break out of it.

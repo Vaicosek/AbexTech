@@ -167,9 +167,66 @@ def test_the_shell_owns_the_body_rule():
     that decision on seven pages at once."""
     import abex_reskin
     import Restocker_web as RW
-    css = abex_reskin._strip_shell_css(RW._TERMINAL_CSS)
+    css = abex_reskin._scope_css(RW._TERMINAL_CSS)
     assert not re.search(r"(^|\})\s*body\s*\{", css), css[:200]
     assert "--accent" in css, "the tokens themselves must survive"
+
+
+def test_the_legacy_tokens_do_not_leak_out_of_the_page():
+    """`:root` becomes the scope. Left global it would overwrite the SHELL's
+    `--line` and `--accent` — identical values today, both being Warm Feel,
+    which is exactly the kind of accident that survives until one is retuned."""
+    import abex_reskin
+    import Restocker_web as RW
+    css = abex_reskin._scope_css(RW._TERMINAL_CSS)
+    assert ":root" not in css
+    assert f".{abex_reskin.SCOPE}{{" in css.replace(" ", "")
+
+
+def test_a_class_name_both_sheets_use_is_neutralised():
+    """THE BUG THIS EXISTS FOR. `.bar` is a 6px progress bar in the shell and a
+    filter row on the inventory page. Scoping the page's own CSS was not enough:
+    `.legacypage .bar` outranks `.bar`, but only for properties it DECLARES, and
+    the page's filter row declares no height — so `height:6px` went on applying
+    and its `overflow:hidden` sliced two rows of chips in half on every page.
+    """
+    import abex_reskin
+    import Restocker_web as RW
+    page_css = re.search(r"<style[^>]*>(.*?)</style>", RW._INVENTORY_HTML,
+                         re.S).group(1)
+    neutral = abex_reskin._neutralise(page_css)
+    assert ".bar" in neutral, "the collision that caused this must be caught"
+    assert "height:auto" in neutral and "overflow:visible" in neutral
+    # It must come BEFORE the page restates what it wants, or it wipes it.
+    full = abex_reskin._neutralise(page_css) + abex_reskin._scope_css(page_css)
+    assert full.index("height:auto") < full.rindex(".bar")
+
+
+def test_only_real_collisions_are_touched():
+    """A blunt reset would move things nobody asked to move."""
+    import abex_reskin
+    neutral = abex_reskin._neutralise(".mine-only{color:red}")
+    assert neutral == "", neutral
+
+
+def test_the_neutraliser_keeps_typography_alone():
+    """Not `all:revert`, which strips inherited type and leaves buttons in the
+    browser's system font."""
+    import abex_reskin
+    assert "all:" not in abex_reskin._NEUTRAL
+    for prop in ("font", "color", "letter-spacing"):
+        assert prop not in abex_reskin._NEUTRAL
+
+
+def test_the_body_is_hung_inside_the_scope():
+    import abex_reskin
+    import Restocker_web as RW
+    html = abex_reskin.render(
+        RW._TEAMS_HTML, active="markets.teams", title="x", user=None, snap=None,
+        replacements={"__TERMINAL_CSS__": RW._TERMINAL_CSS,
+                      "__TEAMS_JSON__": RW._jscript({})},
+        ownerinfo={"logged_in": False})
+    assert f'<div class="{abex_reskin.SCOPE}">' in html
 
 
 def test_every_legacy_handler_goes_through_the_shell():
