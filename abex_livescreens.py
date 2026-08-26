@@ -456,6 +456,52 @@ def _item_block(market_id: str, listed: bool, owner: bool) -> dict | None:
     return {"h2": "What moves here", "c": cols, "r": rows, "n": note}
 
 
+def _grade_block(market_id: str, grade: str) -> dict | None:
+    """Why this market has this grade — the pillars, and the cap that binds.
+
+    Written because two markets read BBB with 0.79x and 1.03x backing and there
+    was no way to tell from the page whether that was the rating working or the
+    rating broken. It was both, and neither half was visible.
+
+    An UNMEASURED pillar reads "no data" and is out of the average, not a zero.
+    That distinction is the whole block: a feed that has never delivered a row
+    scored every market zero on a quarter of its composite, which is how eleven
+    markets ended up indistinguishable.
+    """
+    if abex_live is None:
+        return None
+    d = abex_live.grade_detail(market_id)
+    if d is None:
+        return None
+
+    rows = []
+    for r in d["rows"]:
+        if r["measured"]:
+            score = f"{r['score'] * 100:,.0f}%"
+            tone = "g|" if r["score"] >= 0.75 else ("w|" if r["score"] >= 0.4 else "l|")
+            weight = f"{r['weight'] * 100:,.0f}%"
+        else:
+            score, tone, weight = "no data", "m|", "m|out of the average"
+        rows.append([r["label"], (tone + score) if r["measured"] else "m|no data",
+                     weight, "m|" + r["note"]])
+
+    cap = d["backing_ratio"]
+    unmeasured = [r["label"] for r in d["rows"] if not r["measured"]]
+    note = (f"Composite {d['score'] * 100:,.0f}% of the pillars that could be "
+            f"measured. Backing is {cap:,.2f}x the target and CAPS the grade "
+            "whatever the composite says — collateral leads a rating here, so a "
+            "market cannot score its way past what it actually holds.")
+    if unmeasured:
+        one = len(unmeasured) == 1
+        note += (" " + " and ".join(unmeasured) +
+                 (" has no data feeding it, so it is" if one
+                  else " have no data feeding them, so they are") +
+                 " left out of the average rather than counted as zero.")
+    return {"h2": f"Why this market is {grade}",
+            "c": ["Pillar", "Score#", "Weight#", "What it measures"],
+            "r": rows, "n": note}
+
+
 # ── One stock ───────────────────────────────────────────────────────────────
 def stock(user_id: str = "", market_id: str = "", csrf: str = "") -> dict:
     """One market's page: the price, its shape, its months, its register.
@@ -586,8 +632,9 @@ def stock(user_id: str = "", market_id: str = "", csrf: str = "") -> dict:
                                                           "" if held == 1 else "s"))
                              if held else "You hold none of this market yet."}}
 
-    blocks = [b for b in (ticket, chart, months, items, price_block, register)
-              if b is not None]
+    grade_block = _grade_block(d["market_id"], d["grade"])
+    blocks = [b for b in (ticket, chart, months, items, grade_block, price_block,
+                          register) if b is not None]
     # Both halves, as everywhere else that serves a signed-out reader: the
     # detail call is passed no user id so nothing is looked up against an
     # account, AND the block is not built without one. Either alone is a bug

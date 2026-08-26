@@ -12852,6 +12852,7 @@ def _market_quality(market_id) -> dict:
     mid = str(market_id)
     # -- traffic (visitors/month from bound lands) --
     visitors_month = 0.0
+    bound: list = []
     try:
         bound = [k.split(":", 1)[1] for k, v in (_db.get_config_prefix("land_map:") or {}).items()
                  if str(v) == mid]
@@ -12870,11 +12871,29 @@ def _market_quality(market_id) -> dict:
     except Exception:
         pass
     traffic_score = min(1.0, visitors_month / QUALITY_TRAFFIC_TARGET) if QUALITY_TRAFFIC_TARGET else 0.0
+    # Measurable means a land is bound to this market AND that land has a fee
+    # record. Bound but never visited is a real zero and counts; nothing bound at
+    # all is a missing feed and does not.
+    traffic_measurable = False
+    try:
+        for land in bound:
+            if _db.get_land_fees(land):
+                traffic_measurable = True
+                break
+    except Exception:
+        traffic_measurable = False
     # -- order flow (trailing 30d) --
     order_value = 0.0
     orders_total = orders_done = 0
     try:
         from datetime import timedelta as _td
+        # `orders.coin_per_piece` IS NULL ON EVERY REAL ORDER — the rate is
+        # derived from the item book, not stored on the row. Reading it made
+        # `order_value` zero for every market that has ever posted work, which
+        # zeroed a quarter of the composite for all of them: GreyHames filled
+        # six orders in thirty days and scored 0.000 on order flow. Ask the same
+        # function the order card and the Work screen ask.
+        _items = _load_items()
         cutoff = (datetime.now(timezone.utc) - _td(days=30)).strftime("%Y-%m-%d")
         for o in _quality_orders_by_market().get(mid, []):
             ts = str(o.get("updated_at") or o.get("created_at") or "")
@@ -12882,7 +12901,10 @@ def _market_quality(market_id) -> dict:
                 continue
             orders_total += 1
             st = str(o.get("status") or "").lower()
-            cpp = float(o.get("coin_per_piece") or 0.0)
+            try:
+                cpp = float(_coin_rates_for_order(o, _items)[0] or 0.0)
+            except Exception:
+                cpp = float(o.get("coin_per_piece") or 0.0)
             if st == "fulfilled":
                 orders_done += 1
                 order_value += cpp * float(o.get("produced") or o.get("requested") or 0)
@@ -12908,9 +12930,25 @@ def _market_quality(market_id) -> dict:
         pass
     history_score = min(1.0, hist_months / QUALITY_HISTORY_TARGET) if QUALITY_HISTORY_TARGET else 0.0
     # -- composite --
-    _wsum = (QUALITY_W_BACKING + QUALITY_W_TRAFFIC + QUALITY_W_ORDERS + QUALITY_W_HISTORY) or 1.0
-    score = (QUALITY_W_BACKING * backing_score + QUALITY_W_TRAFFIC * traffic_score
-             + QUALITY_W_ORDERS * orders_score + QUALITY_W_HISTORY * history_score) / _wsum
+    # A PILLAR WITH NO SOURCE IS UNMEASURED, NOT FAILED, and its weight comes out
+    # of the denominator instead of dragging the score to zero.
+    #
+    # The traffic pillar reads teleport fees on lands bound to a market.
+    # `land_fees` is empty and the only `land_map:` bindings point at `main`, so
+    # every market scored 0.000 on a quarter of its composite for a feed that has
+    # never delivered a row. Combined with the order-flow bug above, half the
+    # composite was structurally zero: the ceiling was 0.50 of 1.00, which is a
+    # ratio of 0.83, which is why every listed market read BBB and the rating
+    # never discriminated between them.
+    #
+    # Scoring an absent feed as zero is the same mistake as printing 0c for a
+    # figure nobody has: it looks like a measurement and it is not one.
+    pillars = [(QUALITY_W_BACKING, backing_score, True),
+               (QUALITY_W_HISTORY, history_score, True),
+               (QUALITY_W_TRAFFIC, traffic_score, traffic_measurable),
+               (QUALITY_W_ORDERS, orders_score, orders_total > 0)]
+    _wsum = sum(w for w, _v, ok in pillars if ok) or 1.0
+    score = sum(w * v for w, v, ok in pillars if ok) / _wsum
     out = {"score": round(score, 4),
            "traffic_score": round(traffic_score, 4), "visitors_month": round(visitors_month),
            "orders_score": round(orders_score, 4), "order_value_30d": round(order_value),
@@ -12918,7 +12956,12 @@ def _market_quality(market_id) -> dict:
            "fulfil_rate": round(fulfil_rate, 3),
            "backing_score": round(backing_score, 4), "backed_pct": round(backed_pct, 1),
            "target_pct": round(target_pct, 1),
-           "history_score": round(history_score, 4), "history_months": hist_months}
+           "history_score": round(history_score, 4), "history_months": hist_months,
+           "traffic_measured": bool(traffic_measurable),
+           "orders_measured": bool(orders_total > 0),
+           "pillars_measured": [n for n, ok in (("backing", True), ("history", True),
+                                                ("traffic", traffic_measurable),
+                                                ("orders", orders_total > 0)) if ok]}
     try:
         import json as _json
         _db.set_config(f"quality:{mid}", _json.dumps(out))

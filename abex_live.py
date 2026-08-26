@@ -1385,3 +1385,83 @@ def filing_status() -> Optional[list[dict]]:
         })
     out.sort(key=lambda r: (-r["months_behind"], -(r["days_since"] or 0)))
     return out
+
+
+#: What each pillar weighs in the composite, and what full marks means. Mirrors
+#: `Restocker_main.QUALITY_W_*` / `QUALITY_*_TARGET`; read from core when it is
+#: importable so the page cannot drift from the engine.
+_PILLARS = (
+    ("backing", "Backing", "collateral against the 25% target"),
+    ("traffic", "Traffic", "teleport-fee visitors a month on bound lands"),
+    ("orders",  "Order flow", "fulfilled order value over 30 days"),
+    ("history", "Report history", "closed earnings months on record"),
+)
+
+
+def grade_detail(market_id: str) -> Optional[dict]:
+    """Why a market has the grade it has: the pillars, and the cap that binds.
+
+    Two markets reading BBB with 0.79x and 1.03x backing is not obviously a
+    rating at work — it looks like a rating that is not working. It was both:
+    half the composite was scoring zero for want of a data feed, and the backing
+    cap was binding underneath. Neither was visible anywhere, so the only way to
+    tell them apart was to read the engine.
+
+    The cached `quality:<mid>` blob has every pillar in it already. This reads
+    that and says which pillars were MEASURED — an absent feed is unmeasured and
+    out of the average, and saying so is the difference between "scored zero" and
+    "not scored".
+    """
+    try:
+        db = _db()
+    except Exception:                               # pragma: no cover
+        return None
+    mid = str(market_id or "")
+    try:
+        import json
+        raw = db.get_config(f"quality:{mid}")
+        q = json.loads(raw) if raw else None
+    except Exception as exc:
+        log.warning("[abex_live] quality for %s unreadable: %s", mid, exc)
+        q = None
+    if not q:
+        return None
+
+    try:
+        core = _core()
+        weights = {"backing": float(core.QUALITY_W_BACKING),
+                   "traffic": float(core.QUALITY_W_TRAFFIC),
+                   "orders": float(core.QUALITY_W_ORDERS),
+                   "history": float(core.QUALITY_W_HISTORY)}
+    except Exception:
+        weights = {"backing": 0.35, "traffic": 0.25, "orders": 0.25, "history": 0.15}
+
+    measured = set(q.get("pillars_measured") or [])
+    if not measured:
+        # A blob cached before the engine recorded measurability. Derive it the
+        # same way rather than assuming everything counted, which would show a
+        # zero for a feed that was never read.
+        measured = {"backing", "history"}
+        if q.get("traffic_measured") or float(q.get("visitors_month") or 0):
+            measured.add("traffic")
+        if int(q.get("orders_total_30d") or 0):
+            measured.add("orders")
+
+    rows = []
+    for key, label, note in _PILLARS:
+        rows.append({
+            "key": key, "label": label, "note": note,
+            "weight": weights.get(key, 0.0),
+            "score": float(q.get(f"{key}_score") or 0.0),
+            "measured": key in measured,
+        })
+    backed = float(q.get("backed_pct") or 0)
+    target = float(q.get("target_pct") or 0)
+    backing_ratio = (backed / target) if target else 0.0
+    score = float(q.get("score") or 0.0)
+    return {"rows": rows, "score": score, "ratio": score / 0.60 if score else 0.0,
+            "backed_pct": backed, "target_pct": target,
+            "backing_ratio": backing_ratio,
+            "history_months": int(q.get("history_months") or 0),
+            "order_value_30d": float(q.get("order_value_30d") or 0),
+            "visitors_month": float(q.get("visitors_month") or 0)}
