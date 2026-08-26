@@ -504,18 +504,41 @@ def _grade_block(market_id: str, grade: str) -> dict | None:
         rows.append([r["label"], (tone + score) if r["measured"] else "m|no data",
                      weight, "m|" + r["note"]])
 
-    cap = d["backing_ratio"]
-    unmeasured = [r["label"] for r in d["rows"] if not r["measured"]]
+    # NAME THE CONSTRAINT THAT ACTUALLY BINDS. Three can: the composite's own
+    # band, the backing cap, and vault arrears. The note used to blame the cap
+    # every time, which is how Amazonia came to show four pillars adding up to
+    # AA over a grade reading BBB with an explanation that fitted neither.
+    ratio = d["backing_ratio"]
+    band, cap = d.get("band", ""), d.get("cap", "")
     note = (f"Composite {d['score'] * 100:,.0f}% of the pillars that could be "
-            f"measured. Backing is {cap:,.2f}x the target and CAPS the grade "
-            "whatever the composite says — collateral leads a rating here, so a "
-            "market cannot score its way past what it actually holds.")
+            f"measured, which is {band} on its own.")
+    if d.get("vault_binds"):
+        note += (f" It reads {grade} because {d['vault_arrears']:,.0f}c of "
+                 "retained earnings are owed to the vault, and a market in "
+                 "arrears cannot rate above BBB whatever else it has. Pay the "
+                 "vault first.")
+    elif cap and band and cap != band and _GRADE_RANK.get(cap, 9) < _GRADE_RANK.get(band, 0):
+        note += (f" Backing of {ratio:,.2f}x the target allows {cap} at most — "
+                 "collateral gates the top two bands, so a market cannot score "
+                 "its way into AA or AAA without the chests.")
+    else:
+        note += (f" Backing of {ratio:,.2f}x the target allows up to {cap}, so "
+                 "nothing is holding it back.")
+
+    unmeasured = [r["label"] for r in d["rows"] if not r["measured"]]
     if unmeasured:
         one = len(unmeasured) == 1
         note += (" " + " and ".join(unmeasured) +
                  (" has no data feeding it, so it is" if one
                   else " have no data feeding them, so they are") +
                  " left out of the average rather than counted as zero.")
+    if d.get("vault_arrears", 0) > 1:
+        rows.append(["Vault arrears",
+                     ("l|" if d.get("vault_binds") else "w|")
+                     + f"{d['vault_arrears']:,.0f}c",
+                     "m|caps at BBB",
+                     "m|10% of each closed month, retained; unpaid here"])
+
     return {"h2": f"Why this market is {grade}",
             "c": ["Pillar", "Score#", "Weight#", "What it measures"],
             "r": rows, "n": note}

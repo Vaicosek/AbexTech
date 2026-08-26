@@ -1435,6 +1435,17 @@ def filing_status() -> Optional[list[dict]]:
     return out
 
 
+#: The grade ladder, in one place. Mirrors `Restocker_main._backing_rating`; a
+#: page that computed its own would eventually disagree with the engine about
+#: what a market is.
+_RANK = {"C": 0, "BB": 1, "BBB": 2, "A": 3, "AA": 4, "AAA": 5}
+
+
+def _band_for(ratio: float) -> str:
+    return ("AAA" if ratio >= 1.5 else "AA" if ratio >= 1.0 else "A" if ratio >= 0.75
+            else "BBB" if ratio >= 0.5 else "BB" if ratio >= 0.25 else "C")
+
+
 #: What each pillar weighs in the composite, and what full marks means. Mirrors
 #: `Restocker_main.QUALITY_W_*` / `QUALITY_*_TARGET`; read from core when it is
 #: importable so the page cannot drift from the engine.
@@ -1507,9 +1518,30 @@ def grade_detail(market_id: str) -> Optional[dict]:
     target = float(q.get("target_pct") or 0)
     backing_ratio = (backed / target) if target else 0.0
     score = float(q.get("score") or 0.0)
+
+    # VAULT ARREARS ARE A THIRD CONSTRAINT AND THE PAGE NEVER MENTIONED THEM.
+    # Amazonia scores AA on composite and is allowed A by its 1.03x backing, and
+    # reads BBB — because it owes 140,542c of retained earnings to the vault and
+    # `_backing_rating` clamps an arrears market at BBB. With that invisible, the
+    # page contradicted itself: pillars that add up to A over a grade that says
+    # BBB, and a note blaming a cap that was not the thing binding.
+    due = bal = 0.0
+    try:
+        due = float(db.get_config(f"vault_due:{mid}") or 0)
+        bal = float(db.get_config(f"vault_bal:{mid}") or 0)
+    except Exception:
+        pass
+    arrears = max(0.0, due - bal)
+
+    band = _band_for(score / 0.60 if score else 0.0)
+    cap = "AAA" if backing_ratio >= 1.6 else "AA" if backing_ratio >= 1.2 else "A"
     return {"rows": rows, "score": score, "ratio": score / 0.60 if score else 0.0,
             "backed_pct": backed, "target_pct": target,
             "backing_ratio": backing_ratio,
+            "band": band, "cap": cap,
+            "vault_due": due, "vault_bal": bal, "vault_arrears": arrears,
+            "vault_binds": bool(arrears > 1 and _RANK.get(band, 0) > 2
+                                and _RANK.get(cap, 0) > 2),
             "history_months": int(q.get("history_months") or 0),
             "order_value_30d": float(q.get("order_value_30d") or 0),
             "visitors_month": float(q.get("visitors_month") or 0)}

@@ -121,10 +121,11 @@ def test_the_block_says_no_data_not_zero():
     assert "0%" not in traffic[1], "an absent feed was rendered as a score"
 
 
-def test_the_block_names_the_cap_that_binds():
+def test_the_block_names_the_backing_ratio():
+    """The cap wording moved — it now names the band backing allows, and only
+    when the cap is the thing binding. The ratio is stated either way."""
     blk = _block_with(CACHED)
     assert "0.79x the target" in blk["n"], blk["n"]
-    assert "CAPS the grade" in blk["n"]
 
 
 def test_the_note_agrees_with_itself_on_number():
@@ -215,3 +216,97 @@ def test_a_market_with_no_chests_at_all_can_reach_a_and_no_further():
     zero_backed = (0.25 + 0.25 + 0.15) / 1.0        # backing scores 0
     assert _graded(zero_backed, 0.0) == "A"
     assert _graded(zero_backed, 1.3) == "AA"
+
+
+# ── the constraint that actually binds ─────────────────────────────────────
+#
+# Amazonia scored AA on composite, was allowed A by its 1.03x backing, and read
+# BBB. The third constraint is vault arrears — 140,542c of retained earnings
+# owed — and the page never mentioned it: four pillars adding up to AA over a
+# grade saying BBB, under a note blaming a cap that was not the thing binding.
+# That is a rating that looks broken while working exactly as specified.
+
+ARREARS = dict(CACHED, score=0.775, backing_score=1.0, history_score=0.25,
+               backed_pct=51.7, target_pct=50.0, history_months=3,
+               orders_score=0.0, orders_total_30d=0,
+               pillars_measured=["backing", "history"])
+
+
+def _detail(blob, mid="amazonia", due=0.0, bal=0.0):
+    import json as _json
+    real = L._db
+
+    class _Db:
+        @staticmethod
+        def get_config(key):
+            if key == f"quality:{mid}":
+                return _json.dumps(blob)
+            if key == f"vault_due:{mid}":
+                return str(due)
+            if key == f"vault_bal:{mid}":
+                return str(bal)
+            return None
+
+    L._db = lambda: _Db
+    try:
+        return L.grade_detail(mid)
+    finally:
+        L._db = real
+
+
+def _note(blob, grade, **kw):
+    d = _detail(blob, **kw)
+    real = L.grade_detail
+    L.grade_detail = lambda m: d
+    try:
+        return LS._grade_block(kw.get("mid", "amazonia"), grade)
+    finally:
+        L.grade_detail = real
+
+
+def test_arrears_are_reported_as_a_constraint():
+    d = _detail(ARREARS, due=140541.962)
+    assert d["band"] == "AA", d["band"]
+    assert d["cap"] == "A", d["cap"]
+    assert round(d["vault_arrears"]) == 140542
+    assert d["vault_binds"] is True
+
+
+def test_a_paid_vault_does_not_bind():
+    d = _detail(ARREARS, due=6611402.0, bal=10000000.0, mid="amazonia")
+    assert d["vault_arrears"] == 0
+    assert d["vault_binds"] is False
+
+
+def test_the_note_names_arrears_when_arrears_are_what_bind():
+    blk = _note(ARREARS, "BBB", due=140541.962)
+    assert "owed to the vault" in blk["n"], blk["n"]
+    assert "cannot rate above BBB" in blk["n"]
+    assert "CAPS the grade" not in blk["n"], "still blaming the backing cap"
+
+
+def test_the_note_names_the_cap_when_the_cap_is_what_binds():
+    """Composite AAA, backing 1.0x — the cap allows A and nothing else binds."""
+    blob = dict(CACHED, score=1.0, backed_pct=50.0, target_pct=50.0)
+    blk = _note(blob, "A", due=0.0)
+    assert "allows A at most" in blk["n"], blk["n"]
+    assert "vault" not in blk["n"].lower()
+
+
+def test_the_note_says_so_when_nothing_binds():
+    blob = dict(CACHED, score=0.40, backed_pct=100.0, target_pct=50.0)
+    blk = _note(blob, "BBB", due=0.0)
+    assert "nothing is holding it back" in blk["n"], blk["n"]
+
+
+def test_arrears_appear_as_a_row_not_only_a_sentence():
+    blk = _note(ARREARS, "BBB", due=140541.962)
+    row = [r for r in blk["r"] if r[0] == "Vault arrears"]
+    assert row, [r[0] for r in blk["r"]]
+    assert "140,542c" in row[0][1]
+    assert "caps at BBB" in row[0][2]
+
+
+def test_no_arrears_row_when_the_vault_is_square():
+    blk = _note(CACHED, "A", due=0.0)
+    assert not [r for r in blk["r"] if r[0] == "Vault arrears"]
