@@ -271,8 +271,8 @@ def markets(user_id: str = "") -> dict:
     low_total = sum(1 for v in levels.values()
                     if v.get("pct") is not None and v["pct"] <= 20)
 
-    all_rows = []
-    for ticker, name, _owner, grade, backing, last_net, _weight, last_report in rows:
+    listed_rows, other_rows = [], []
+    for ticker, name, owner, grade, backing, last_net, _weight, last_report in rows:
         L = listings.get(name)
         mid = ids.get(name)
         lv = levels.get(str(mid)) if mid else None
@@ -281,27 +281,43 @@ def markets(user_id: str = "") -> dict:
         # two look the same.
         fill = (f"F|{lv['pct']:.1f}" if lv and lv.get("pct") is not None
                 else "m|not scanned")
-        all_rows.append([
-            (f"A|/hub/stocks/{mid}|{name}" if mid else name),
-            "G|" + grade, backing, last_net,
-            fill,
-            (f"{lv['lines']:,}" if lv and lv.get("lines") else DASH),
-            L[5] if L else DASH,                    # share price
-            held.get(name, DASH),                   # you hold
-            "Listed" if L else "m|Private",
-        ])
-    table = {"h2": "All markets", "ac": 1,
-             "c": ["Market", "Grade", "Backing#", "Last net#", "Stocked",
-                   "Lines#", "Share price#", "You hold#", "Disclosure"],
-             "r": all_rows,
-             "n": ("Stocked is total stock over total capacity across every "
-                   "scanned line — not the average of the per-item bars, which "
-                   "would weight a rare item the same as the staple nobody can "
-                   "buy. Open a market to see the shelf by shelf. Share price "
-                   "exists only for a listed market; a private one discloses "
-                   "nothing but its grade."
-                   + (f" {low_total} market{'' if low_total == 1 else 's'} at "
-                      f"20% or below." if low_total else ""))}
+        lines = f"{lv['lines']:,}" if lv and lv.get("lines") else DASH
+        market_cell = f"A|/hub/stocks/{mid}|{name}" if mid else name
+        if L:
+            listed_rows.append([
+                market_cell, "G|" + grade, backing, fill, lines,
+                L[5],                                # share price
+                L[4],                                # holders
+                held.get(name, DASH),                # you hold
+                last_net, last_report,
+            ])
+        else:
+            other_rows.append([
+                market_cell, owner, "G|" + grade, fill, lines,
+                last_net, last_report,
+            ])
+
+    stocked_note = ("Stocked is total stock over total capacity across every "
+                     "scanned line — not the average of the per-item bars, which "
+                     "would weight a rare item the same as the staple nobody can "
+                     "buy. Open a market to see the shelf by shelf."
+                     + (f" {low_total} market{'' if low_total == 1 else 's'} at "
+                        f"20% or below." if low_total else ""))
+
+    listed_table = {"h2": "Listed markets", "ac": 1,
+                     "c": ["Market", "Grade", "Backing#", "Stocked", "Lines#",
+                           "Share price#", "Holders#", "You hold#",
+                           "Last net#", "Last filed"],
+                     "r": listed_rows,
+                     "n": (stocked_note + " Backing is the ratio of what backs "
+                           "the market to what its listing requires — it only "
+                           "applies once a market is listed and rated.")}
+    other_table = {"h2": "All other markets", "ac": 1,
+                    "c": ["Market", "Owner", "Grade", "Stocked", "Lines#",
+                          "Last net#", "Last filed"],
+                    "r": other_rows,
+                    "n": ("Not listed, so no share price and no backing ratio — "
+                          "grade reads \"not rated\" until it lists. " + stocked_note)}
     # NO "WAITING ON A FILING" PANEL. It named markets that were a month behind
     # at the top of the public Markets screen, and the answer to what it was for
     # is: nothing this product does. Nothing in the engine penalises a late
@@ -313,7 +329,7 @@ def markets(user_id: str = "") -> dict:
     # An owner is still told about HIS OWN market: `_your_filings_due` puts it in
     # the Hub's waiting-on-you queue, where it is a thing he can act on rather
     # than a thing everyone else reads about him.
-    blocks = [table]
+    blocks = [listed_table, other_table]
     return _shell("markets", f"{len(rows)} markets, {len(listings)} of them listed.",
                   band, blocks)
 
