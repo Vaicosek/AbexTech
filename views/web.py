@@ -1,4 +1,5 @@
 """Web-order / futures / payout UI (extracted from Restocker_main)."""
+import re as _re_mod
 import sys
 import discord
 from discord import app_commands, Embed
@@ -982,3 +983,207 @@ class InvestorWithdrawApprovalView(discord.ui.View):
         except Exception:
             pass
 
+
+
+class CsnShopLinkView(discord.ui.View):
+    """One-click bind of a CSN `# SHOP,<ign>` stamp to the market's owner.
+
+    Lives here with PayoutReviewView because it is the same shape of thing: a
+    RESTART-PERSISTENT money-path card whose button a named human presses. The
+    stamp comes out of an editable CSV, so it is EVIDENCE, never proof — this
+    view does NOT auto-bind. It shows both sides plainly and routes the click
+    through `ign_links.confirm()`, the audited claim-first promotion path, with
+    the clicker recorded as the actor. `ign_registry` is never written directly.
+
+    Restart recovery: `bot.add_view(CsnShopLinkView())` means every field is
+    empty for cards posted by a previous process, so `_resolve()` parses the
+    IGN, the owner id and the observation's source_ref back out of the message
+    content it posted. Change the message wording and you must change the
+    regexes with it — they are the persistence.
+    """
+
+    _inflight: set = set()      # message ids being processed — blocks double-clicks
+
+    def __init__(self, ign: str = "", owner_id: int = 0, market_id: str = "",
+                 source_ref: str = ""):
+        super().__init__(timeout=None)
+        self.ign = str(ign or "")
+        self.owner_id = int(owner_id or 0)
+        self.market_id = str(market_id or "")
+        self.source_ref = str(source_ref or "")
+
+    # A Minecraft name is [A-Za-z0-9_]{1,16}. `_extract_shop_name`
+    # (Restocker_main.py) returns the `# SHOP,<...>` field VERBATIM — no charset
+    # filter, no length cap, no escaping — and this card's own text is what
+    # `_resolve()` reads back after a restart. So an unvalidated stamp could
+    # carry its own "owner <@id>" and be parsed back as the owner: the button
+    # would then hand a money-routing row to an id chosen inside an editable CSV.
+    # Anything that is not a real IGN is refused here, at both ends.
+    IGN_RE = _re_mod.compile(r"^[A-Za-z0-9_]{1,16}$")
+
+    @classmethod
+    def valid_ign(cls, ign) -> bool:
+        return bool(cls.IGN_RE.match(str(ign or "")))
+
+    # ── the message IS the state ────────────────────────────────────────────
+    @staticmethod
+    def build_content(ign: str, owner_id: int, market_id: str, source_ref: str) -> str:
+        """The card text. `_resolve()` parses this back — keep them in step.
+
+        Callers MUST have passed `valid_ign(ign)` first."""
+        return (
+            f"🔗 Shop `{ign}` is not linked to a Discord account yet — "
+            f"market **{market_id}**, owner <@{owner_id}>.\n"
+            f"Sales from this file **are recorded**; they just can't be credited or "
+            f"paid out until `{ign}` is linked.\n"
+            f"Evidence: `{source_ref}` — the shop stamp inside the uploaded file. "
+            f"It is editable, so nothing is bound until a human presses the button."
+        )
+
+    def _resolve(self, interaction: discord.Interaction):
+        """(ign, owner_id, source_ref) — live fields, else recovered.
+
+        THE OWNER IS NEVER TAKEN FROM THE MESSAGE TEXT. The market id is parsed
+        back (it is DB-derived, not attacker text) and the owner is re-read from
+        `markets` at click time. A mention injected into the shop stamp is
+        therefore inert: it can appear in the rendered card but it cannot become
+        the id that `confirm()` binds, and it cannot become the id the
+        permission gate compares against.
+        """
+        ign, ref = self.ign, self.source_ref
+        market_id = self.market_id
+        txt = (interaction.message.content if interaction.message else "") or ""
+        if not ign:
+            m = _re_mod.search(r"Shop `([^`\n]+)` is not linked", txt)
+            if m:
+                ign = m.group(1)
+        if not market_id:
+            m = _re_mod.search(r"market \*\*([^*\n]+)\*\*", txt)
+            if m:
+                market_id = m.group(1).strip()
+        if not ref:
+            m = _re_mod.search(r"Evidence: `([^`\n]*)`", txt)
+            if m:
+                ref = m.group(1)
+        # A stamp that is not a well-formed IGN is not an IGN. Refuse rather than
+        # bind whatever the file happened to contain.
+        if not self.valid_ign(ign):
+            return "", 0, ref
+        owner = int(self.owner_id or 0)
+        if not owner and market_id:
+            try:
+                m_row = core._get_market(market_id) or {}
+                owner = int(str(m_row.get("owner_id")
+                                or m_row.get("leader_discord_id") or "0") or 0)
+            except Exception as _oe:
+                log.warning("[csn] shop-link owner re-resolve failed for market %r: %s",
+                            market_id, _oe)
+                owner = 0
+        return ign, int(owner or 0), ref
+
+    @discord.ui.button(label="🔗 Link this shop to its owner",
+                       style=discord.ButtonStyle.green,
+                       custom_id="csn_shop_link:bind")
+    async def bind(self, interaction: discord.Interaction, button: Button):
+        # Ack first: the confirm() transaction plus the message edit exceeds 3s often enough.
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        ign, owner_id, source_ref = self._resolve(interaction)
+        if not ign or not owner_id:
+            return await interaction.followup.send(
+                "❌ Couldn't read the shop name / owner off this message — link it by hand "
+                "with the team tools.", ephemeral=True)
+
+        # Anyone who can see the channel can click. The owner may claim their own
+        # shop; otherwise it takes a manager (same is_manager used by PayoutReviewView).
+        if interaction.user.id != owner_id and not is_manager(interaction):
+            return await interaction.followup.send(
+                f"⛔ Only <@{owner_id}> or a manager can link this shop.", ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none())
+
+        # ANTI-SQUATTING, same rule as cogs/loyalty.py:256-266 — an IGN carrying
+        # unpaid harvest coins cannot be SELF-claimed, because those coins route
+        # to whoever gets bound first. `ign_links.confirm()` carries no such
+        # guard: over in /me the manager requirement WAS the guard, and a
+        # self-claim button here would walk straight around it.
+        if not is_manager(interaction):
+            # FAILS CLOSED. `ign_unpaid_value` is a read on a WAL database with
+            # concurrent writers, so "database is locked" is a normal outcome, not
+            # an impossible one. Treating that as zero would let a self-claimer
+            # simply re-press the button until the lookup happened to throw, which
+            # is the whole guard gone. On a money guard, "we cannot say" is not
+            # "it is fine" — it routes to a manager.
+            # (cogs/loyalty.py:256-266 has the same check but defaults to 0 on
+            # error; it predates this and is not changed here.)
+            try:
+                import Restocker_db as _db_sq
+                _pend = _db_sq.ign_unpaid_value(ign)
+            except Exception as _se:
+                log.warning("[csn] shop-link unpaid check failed for %r: %s — refusing "
+                            "the self-claim rather than assuming zero", ign, _se)
+                return await interaction.followup.send(
+                    f"⚠️ Couldn't check whether `{ign}` has unpaid harvest coins waiting, "
+                    f"so it can't be self-claimed right now. A manager can link it, or "
+                    f"try again in a moment.", ephemeral=True,
+                    allowed_mentions=discord.AllowedMentions.none())
+            if _pend > 0:
+                return await interaction.followup.send(
+                    f"⚠️ `{ign}` has **{int(_pend):,}** coins of unpaid harvests waiting, "
+                    f"so it can't be self-claimed. A manager has to link it "
+                    f"(they'll verify it's yours).", ephemeral=True,
+                    allowed_mentions=discord.AllowedMentions.none())
+
+        mid = int(interaction.message.id) if interaction.message else 0
+        if mid in type(self)._inflight:
+            return await interaction.followup.send(
+                "⏳ Already being processed.", ephemeral=True)
+        type(self)._inflight.add(mid)
+        try:
+            import ign_links as _ignl
+            chan_name = getattr(interaction.channel, "name", "?")
+            status = _ignl.confirm(
+                ign, owner_id, str(interaction.user.id),
+                reason=f"csn shop stamp, bound by {interaction.user} "
+                       f"({interaction.user.id}) in #{chan_name}",
+                source_ref=source_ref or None)
+
+            if status == "taken":
+                # REFUSAL. A different account already routes money for this IGN;
+                # re-pointing it is exactly the attack the manual step existed to stop.
+                log.warning("[csn] shop link refused: `%s` already held by another user "
+                            "(clicked by %s)", ign, interaction.user.id)
+                return await interaction.followup.send(
+                    f"⛔ **Refused** — `{ign}` is already linked to a *different* Discord "
+                    f"account. Nothing was changed. A manager must sort out who owns it "
+                    f"before wages can route.", ephemeral=True,
+                    allowed_mentions=discord.AllowedMentions.none())
+
+            if status == "exists":
+                note = f"ℹ️ `{ign}` was already linked to <@{owner_id}> — nothing to do."
+                done = f"\n✅ Already linked to <@{owner_id}>."
+            else:
+                note = f"✅ Linked `{ign}` → <@{owner_id}>. Their sales can be credited now."
+                done = (f"\n✅ Linked to <@{owner_id}> by <@{interaction.user.id}>.")
+                log.info("[csn] shop `%s` bound to %s by %s", ign, owner_id, interaction.user.id)
+
+            await interaction.followup.send(note, ephemeral=True,
+                                            allowed_mentions=discord.AllowedMentions.none())
+            # Retire the card either way — the decision has been made.
+            try:
+                for _c in self.children:
+                    _c.disabled = True
+                if interaction.message:
+                    await interaction.message.edit(
+                        content=(interaction.message.content or "") + done, view=self,
+                        allowed_mentions=discord.AllowedMentions.none())
+            except Exception as _ee:
+                log.warning("[csn] shop-link card edit failed: %s", _ee)
+        except Exception as _be:
+            # Never swallow silently on a path that decides where money lands.
+            log.exception("[csn] shop link failed for `%s`: %s", ign, _be)
+            try:
+                await interaction.followup.send(
+                    "❌ Linking failed — nothing was changed. Check the logs.", ephemeral=True)
+            except Exception:
+                pass
+        finally:
+            type(self)._inflight.discard(mid)

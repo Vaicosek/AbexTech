@@ -5262,6 +5262,13 @@ async def _process_csn_attachment(attachment: discord.Attachment, report_channel
     # Unattributed uploads fall into the TEST market, never the real Greyhames one,
     # so a failed/mis-configured export can't pollute live market history.
     effective_market_id = _ensure_fallback_market()
+    # HOW the market was established, set at the SAME statement as every
+    # effective_market_id assignment so the two can never drift:
+    #   "fallback" — nothing attributed this file (the TEST market)
+    #   "bound"    — the channel is bound; proves only "could post here"
+    #   "code"     — a market CODE verified; a secret was proven
+    # Read by the csn_autolink gate below; a text stamp alone never earns "code".
+    market_trust = "fallback"
     market_warning = ""
 
     bound_market = None
@@ -5274,6 +5281,7 @@ async def _process_csn_attachment(attachment: discord.Attachment, report_channel
 
     if bound_market:
         effective_market_id = bound_market.get("market_id", DEFAULT_MARKET_ID)
+        market_trust = "bound"
         if csv_market_id and csv_market_id != effective_market_id:
             # HARDENED: a declared-market mismatch in a bound channel is always REJECTED.
             # "Valid code overrides the binding" let anyone who lifted a market code from
@@ -5335,6 +5343,7 @@ async def _process_csn_attachment(attachment: discord.Attachment, report_channel
                     pass
                 return
             effective_market_id = csv_market_id
+            market_trust = "code"
             # Accepted on a code-verified file — but NO auto-bind. Auto-binding let a
             # lifted code re-route a market's report delivery to an attacker-chosen
             # channel (exfiltration + denial of delivery). Binding stays a deliberate
@@ -5677,6 +5686,237 @@ async def _process_csn_attachment(attachment: discord.Attachment, report_channel
             except Exception as _ie:
                 # Attribution is advisory; it must never cost an ingest.
                 log.warning("[csn] attribution check skipped: %s", _ie)
+        # ── Auto-link the shop stamp to the market owner ─────────────────
+        # The owner asked for auto-binding. This is the safest true version: it
+        # binds ONLY on evidence a text editor cannot forge, and never when a
+        # wrong bind would move money that already exists.
+        #
+        # `csn_autolink`:  "off"   never auto-bind (card only)
+        #                  "code"  only when a market CODE verified (a SECRET was
+        #                          proven — market_trust == "code")   ← DEFAULT
+        #                  "bound" also when the market came from a channel binding
+        # Unset or unknown behaves as "code" (fail safe). Channel binding proves
+        # only "someone could post in this channel"; the code proves possession of
+        # a secret, which is why they are separate settings.
+        #
+        # Every exclusion below falls THROUGH to the existing card — auto-bind is a
+        # fast path in front of the human path, never a replacement for it. The
+        # whole block is logged-and-swallowed: it must never cost an ingest.
+        _autolinked = False
+        if _shop:
+            try:
+                import Restocker_db as _db_auto
+                import ign_links as _ignl_auto
+                # DEFAULT OFF, and this is not timidity — it is a fixed defect.
+                #
+                # This gate originally defaulted to "code" on the premise that a
+                # verified market code proves the uploader is the market owner. It
+                # does not. The code is a MARKET-scoped secret that every shopkeeper
+                # scanning into that market must hold in their own mod config, so
+                # possession of it says nothing about whose name is in `# SHOP`.
+                # The two facts are unrelated, which makes binding a PERSON-scoped
+                # ign_registry row off the back of it a category error:
+                #   • honest case — a market with several shops (which is the whole
+                #     reason the `# SHOP` stamp exists, see the comment above at the
+                #     month-source rollup) auto-binds every shopkeeper's IGN to the
+                #     MARKET OWNER, silently, the first time they upload;
+                #   • hostile case — a market owner edits one CSV header line and
+                #     binds any unbound IGN to themselves, no human in the loop.
+                # Neither exclusion below catches it: check_attribution can only
+                # return 'foreign' for an ALREADY-bound IGN, so on this path (unbound
+                # only) it is dead code, and ign_unpaid_value guards hive_harvests,
+                # a different money stream from the CSN sales this bind routes.
+                #
+                # Turning this on needs positive evidence the CSV author cannot
+                # choose — not a market secret they legitimately hold.
+                _mode = (_db_auto.get_config("csn_autolink") or "").strip().lower()
+                if _mode not in ("off", "code", "bound"):
+                    if _mode:
+                        log.warning("[csn] csn_autolink=%r is not off/code/bound — "
+                                    "treating as 'off'", _mode[:32])
+                    _mode = "off"
+                _allowed_trust = ("code",) if _mode == "code" else \
+                                 (("code", "bound") if _mode == "bound" else ())
+                _skip = ""
+                if _mode == "off":
+                    _skip = "disabled"
+                elif not CsnShopLinkView.valid_ign(_shop):
+                    # Same gate the card uses: a stamp that is not a Minecraft name
+                    # is not an IGN, and this one would be binding money routing.
+                    _skip = "stamp is not a valid IGN"
+                elif market_trust == "fallback":
+                    # An unattributed upload lands in the TEST market. There is no
+                    # owner to bind to and no evidence at all. Never.
+                    _skip = "market is the fallback (unattributed upload)"
+                elif market_trust not in _allowed_trust:
+                    _skip = f"market_trust={market_trust} not allowed by csn_autolink={_mode}"
+                if not _skip:
+                    _auto_owner = 0
+                    try:
+                        _auto_owner = int(_market_owner_id(effective_market_id) or 0)
+                        if not _auto_owner and source_channel_id:
+                            _arow = _db_auto.get_market_by_channel(source_channel_id) or {}
+                            _auto_owner = int(_arow.get("owner_id")
+                                              or _arow.get("leader_discord_id") or 0)
+                    except Exception as _aoe:
+                        log.warning("[csn] auto-link owner lookup failed for `%s`: %s",
+                                    _shop, _aoe)
+                        _auto_owner = 0
+                    if not _auto_owner:
+                        _skip = "no owner resolves for the market"
+                if not _skip:
+                    # 'foreign' means this IGN is already attributed to somebody who
+                    # is neither the owner nor a manager — exactly the case a bind
+                    # must not resolve silently. 'unknown' is the normal new-shop
+                    # case and is acceptable.
+                    try:
+                        _averdict = (_ignl_auto.check_attribution(
+                            effective_market_id, _shop) or {}).get("verdict")
+                    except Exception as _ae:
+                        # FAIL CLOSED: a check that cannot answer is not a pass.
+                        log.warning("[csn] auto-link attribution check failed for `%s`: %s",
+                                    _shop, _ae)
+                        _averdict = "foreign"
+                    if _averdict == "foreign":
+                        _skip = "attribution verdict is 'foreign'"
+                if not _skip:
+                    # Anti-squatting, and the reason auto-binding is bounded at all:
+                    # an IGN already carrying unpaid harvest coins would have that
+                    # money handed to whoever the stamp names. That stays a human
+                    # decision. FAIL CLOSED — a lookup that raises skips the bind.
+                    try:
+                        _unpaid = float(_db_auto.ign_unpaid_value(_shop) or 0.0)
+                    except Exception as _ue2:
+                        log.warning("[csn] auto-link unpaid-value lookup failed for "
+                                    "`%s` — skipping auto-bind: %s", _shop, _ue2)
+                        _unpaid = -1.0
+                    if _unpaid != 0.0:
+                        _skip = ("unpaid harvest value on the IGN"
+                                 if _unpaid > 0 else "unpaid-value lookup failed")
+                if not _skip and _db_auto.get_user_id_by_ign(_shop) is not None:
+                    # Should be impossible here, but confirm() is the authority and
+                    # a race is cheaper to skip than to explain.
+                    _skip = "already bound"
+                if _skip:
+                    log.info("[csn] auto-link skipped for `%s` (%s) — falling through "
+                             "to the manual card", str(_shop)[:32], _skip)
+                else:
+                    _auto_ref = source_key or f"channel:{source_channel_id}"
+                    _reason = (f"csn auto-link: market={effective_market_id} "
+                               f"trust={market_trust} mode={_mode} "
+                               f"source_ref={_auto_ref} channel={source_channel_id} "
+                               f"month={month_key}")
+                    # ign_links.confirm() is the ONLY promotion path: claim-first on
+                    # the ign_registry primary key, registry + evidence decision +
+                    # audit row in one transaction. Never write that table here.
+                    _res = _ignl_auto.confirm(_shop, _auto_owner, actor="csn:auto",
+                                              reason=_reason, source_ref=_auto_ref)
+                    if _res == "bound":
+                        _autolinked = True
+                        log.info("[csn] auto-linked `%s` -> %s (market=%s trust=%s "
+                                 "mode=%s ref=%s)", _shop, _auto_owner,
+                                 effective_market_id, market_trust, _mode, _auto_ref)
+                        try:
+                            await report_channel.send(
+                                f"🔗 Linked `{_shop}` to <@{_auto_owner}> automatically — "
+                                f"market **{effective_market_id}** "
+                                f"(evidence: verified market {market_trust}, `{_auto_ref}`).\n"
+                                f"Sales from this shop can now be credited and paid out. "
+                                f"A manager can undo this in `/my market`.",
+                                allowed_mentions=discord.AllowedMentions(
+                                    everyone=False, roles=False,
+                                    users=[discord.Object(id=_auto_owner)]))
+                        except Exception as _pe2:
+                            log.warning("[csn] auto-link confirmation post failed: %s", _pe2)
+                    elif _res == "exists":
+                        # Already this owner's — nothing happened, say nothing.
+                        _autolinked = True
+                    else:
+                        # 'taken': a DIFFERENT user holds the IGN. Nothing was
+                        # changed and no success is claimed — a human sees the card.
+                        log.warning("[csn] auto-link REFUSED for `%s`: held by another "
+                                    "user (market=%s trust=%s ref=%s)", _shop,
+                                    effective_market_id, market_trust, _auto_ref)
+            except Exception as _ale:
+                # Auto-link is advisory plumbing; it must never cost an ingest.
+                _autolinked = False
+                log.warning("[csn] auto-link skipped (error): %s", _ale)
+        # ── Unlinked shop → one-click owner bind ─────────────────────────
+        # The `# SHOP` stamp names a real shop, but that IGN may never have been
+        # linked to a Discord account. Sales still record fine; they just can't be
+        # credited/paid out yet. Posted once per shop per 24h so a re-upload does not
+        # repost.
+        #
+        # The old text nagged the PLAYER to run `/me`. But if the channel is bound to
+        # a market we ALREADY know who should hold this IGN (markets.owner_id, else
+        # leader_discord_id), so that nag is work handed to the wrong person: name
+        # both sides and let the owner — or a manager — confirm in one click. The
+        # click goes through ign_links.confirm(), the audited claim-first path, so
+        # this is still a human promotion and NOT an auto-bind off an editable CSV.
+        # When no owner resolves (unbound channel, fresh-download case) the original
+        # player-facing wording is kept exactly as it was.
+        #
+        # Nothing here writes ign_registry — it only reads get_user_id_by_ign and
+        # writes an unrelated config cooldown key. Must never cost an ingest.
+        #
+        # `_autolinked` suppresses the card only when the bind it asks for has just
+        # happened. Every auto-link skip, and 'taken', leaves it False so the human
+        # path still runs.
+        if _shop and not _autolinked:
+            try:
+                import Restocker_db as _db_link
+                if _db_link.get_user_id_by_ign(_shop) is None:
+                    _unlinked_key = f"csn_unlinked_warned:{_shop.lower()}"
+                    _now_unlinked = int(time.time())
+                    _prev_unlinked = _db_link.get_config(_unlinked_key)
+                    if not _prev_unlinked or (_now_unlinked - int(_prev_unlinked)) >= 86400:
+                        _owner_id = 0
+                        try:
+                            _owner_id = int(_market_owner_id(effective_market_id) or 0)
+                            if not _owner_id:
+                                _mrow = _db_link.get_market_by_channel(source_channel_id) or {}
+                                _owner_id = int(_mrow.get("owner_id")
+                                                or _mrow.get("leader_discord_id") or 0)
+                        except Exception as _oe:
+                            log.warning("[csn] owner lookup for shop `%s` failed: %s", _shop, _oe)
+                            _owner_id = 0
+                        # A stamp that is not a well-formed Minecraft name is not an
+                        # IGN. `_extract_shop_name` returns the CSV field verbatim, and
+                        # the card's own text is what the button parses back after a
+                        # restart — so a stamp carrying its own markup must never render
+                        # a card at all. Fall through to the plain player-facing line.
+                        if _owner_id and not CsnShopLinkView.valid_ign(_shop):
+                            log.warning("[csn] shop stamp %r is not a valid IGN — posting "
+                                        "the plain notice, no bind button", _shop[:64])
+                            _owner_id = 0
+                        try:
+                            if _owner_id:
+                                # The observation's own source_ref, so pressing the button
+                                # marks THAT evidence row decided.
+                                _ref = source_key or f"channel:{source_channel_id}"
+                                await report_channel.send(
+                                    CsnShopLinkView.build_content(
+                                        _shop, _owner_id, effective_market_id, _ref),
+                                    view=CsnShopLinkView(_shop, _owner_id,
+                                                         effective_market_id, _ref),
+                                    # Ping the owner, but an @everyone smuggled into a
+                                    # scraped shop name stays inert.
+                                    allowed_mentions=discord.AllowedMentions(
+                                        everyone=False, roles=False,
+                                        users=[discord.Object(id=_owner_id)]))
+                            else:
+                                await report_channel.send(
+                                    f"⚠️ `{_shop[:32]}` isn't linked to a Discord account yet — sales "
+                                    f"are being recorded but can't be credited or paid out until "
+                                    f"linked. Run `/me` → **Link in-game name** to connect.",
+                                    allowed_mentions=discord.AllowedMentions.none())
+                        except Exception as _pe:
+                            # Never except/pass a path that decides where money routes.
+                            log.warning("[csn] unlinked-shop notice post failed: %s", _pe)
+                        _db_link.set_config(_unlinked_key, _now_unlinked)
+            except Exception as _ue:
+                # Advisory only; it must never cost an ingest.
+                log.warning("[csn] unlinked-shop notice skipped: %s", _ue)
         try:
             import Restocker_db as _db_src
             if _shop:
@@ -6058,6 +6298,7 @@ async def on_ready():
         bot.add_view(StockPanelView())
         bot.add_view(StockAlarmView())
         bot.add_view(PayoutReviewView())   # withdrawal Approve/Reject must survive restarts
+        bot.add_view(CsnShopLinkView())    # CSN shop->owner bind; re-resolves from the message
         print("🧩 Persistent views registered.")
     except Exception as e:
         print(f"⚠️ Persistent view registration failed: {e}")
@@ -20781,7 +21022,7 @@ async def _main():
 from views.hive import HiveAccessModal, JoinHarvesterView, HivePickupView
 from views.orders import ClaimPartModal, ManagerReviewView, OrderView, OrdersBrowser, PartialFulfillModal, CoinPriceModal, CoinPriceSearchModal, EscalateModal, EscalatePickView, ItemPricePickerView, ManagerPanelView, RemindByIdModal, FillMissingPricesModal, ReleaseClaimModal, RemindModal, WorkerView, CloseTicketView
 from views.stock import StockTradeModal, StockPanelView, StockAlarmView
-from views.web import FuturesOrderView, WebOrderView, PayoutReviewView, InvestorWithdrawApprovalView, FuturesBulkView
+from views.web import FuturesOrderView, WebOrderView, PayoutReviewView, InvestorWithdrawApprovalView, FuturesBulkView, CsnShopLinkView
 # __VIEW_IMPORTS__
 
 # ── Event-loop watchdog ──────────────────────────────────────────────────────
