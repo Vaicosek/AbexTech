@@ -10,7 +10,12 @@ from __future__ import annotations
 
 from abex_theme import DOMAINS, GAIN, LOSS
 
-TEXT, DIM, FAINT = "#F4F4F4", "#B4B4B4", "#6A6A6A"
+# THESE ARE THE THEME'S TOKENS, NOT COPIES OF THEM. They used to be literal hexes
+# -- #F4F4F4 / #B4B4B4 / #6A6A6A -- which are none of the three tones the theme
+# actually ships (#efece5 / #aaa59b / #6f6c66). So a figure painted "TEXT" was a
+# colder, brighter white than the sentence beside it, ten times over on a page,
+# and no palette change could ever reach them.
+TEXT, DIM, FAINT = "var(--text)", "var(--dim)", "var(--faint)"
 
 #: Sticky-header summary — label, value, colour.
 # Money direction only. A section hue on a figure said "this number belongs to
@@ -113,7 +118,7 @@ BORROW = [
     ("Shares you hold",     "21,084c", TEXT),
     ("Land you hold",       "8,400c",  TEXT),
     ("Lending limit, 60%",  "17,690c", TEXT),
-    ("Already borrowed",    "−9,400c", "#FF4D4D"),
+    ("Already borrowed",    "−9,400c", LOSS),
     ("You can borrow",      "8,290c",  GAIN),
 ]
 #: NOTE — the mockup's banking tiers (Gold/Silver/Bronze/Watch, keyed on savings balance)

@@ -13,39 +13,57 @@ import abex_data as D
 from abex_theme import DOMAINS, GAIN, HELD, INERT, LOSS, WARN, money_tone
 
 
+#: The per-section hues, so a figure can never be painted with one. See `_stats`.
+_SECTION_HUES = frozenset(DOMAINS.values())
+
+
 def _e(x):
     return _h.escape(str(x))
 
 
-def _band(tiles, cls="four"):
-    """Render a band of tiles: `(label, value, note)` or `(label, value, note, colour)`.
+def _stats(items):
+    """A page's figures as a definition list: label left, figure right, one ruled line.
 
-    A three-item tile takes its colour from `money_tone(label)` -- the one rule, shared
-    with the bot and the mockup. Every tile here used to carry a hand-picked colour,
-    which is how a section hue ended up marking money on two of them (`abex_theme` says
-    the domain hues are "never a fill and never carry meaning about money") and how
-    three others carried `#F4F4F4`, a literal from the other skin that is not a token
-    in this one.
+    This replaces the band of stat tiles. Items keep the tiles' shape -- `(label, value,
+    note)` or `(label, value, note, colour)` -- because the data still ships that way,
+    but the note was a caption under the figure and the design carries no captions, so
+    it is not rendered.
 
-    A fourth item still wins, exactly as an explicit cell tone beats the label rule in
-    the mockup. Use it where the label is outside the rule and the meaning is not in
-    doubt -- not to re-decide a label the rule already covers.
+    A three-item entry takes its colour from `money_tone(label)` -- the one rule, shared
+    with the bot and the mockup. A fourth item still wins, exactly as an explicit cell
+    tone beats the label rule in the mockup. Use it where the label is outside the rule
+    and the meaning is not in doubt -- not to re-decide a label the rule already covers.
     """
     out = []
-    for tile in tiles:
-        k, v, n = tile[0], tile[1], tile[2]
-        colour = tile[3] if len(tile) > 3 else money_tone(k)
+    for item in items:
+        k, v = item[0], item[1]
+        colour = item[3] if len(item) > 3 else money_tone(k)
+        # A SECTION hue is not a money colour. `abex_theme` says the domain hues are
+        # "never a fill and never carry meaning about money", and the banking figures
+        # still arrive painted with the banking hue -- which is also the blue the
+        # palette no longer has. An explicit tone still wins; a section hue does not.
+        if colour in _SECTION_HUES:
+            colour = money_tone(k)
         # No tone means the default text colour -- not an empty `color:` declaration.
         style = f' style="color:{colour}"' if colour else ""
-        out.append(f'<div class="tile"><span class="k">{_e(k)}</span>'
-                   f'<span class="v"{style}>{_e(v)}</span>'
-                   f'<span class="n">{_e(n)}</span></div>')
-    return f'<div class="band {cls}">' + "".join(out) + "</div>"
+        out.append(f'<tr><td>{_e(k)}</td>'
+                   f'<td class="num"{style}>{_e(v)}</td></tr>')
+    return ('<div class="panel"><div class="tablewrap"><table><tbody>'
+            + "".join(out) + "</tbody></table></div></div>")
 
 
-def _head(title, sub="", figure=""):
-    s = f'<div class="sub">{sub}</div>' if sub else ""
-    return (f'<div class="pagehead"><div><h1>{_e(title)}</h1>{s}</div>{figure}</div>')
+def _head(title, figure=""):
+    return f'<div class="pagehead"><div><h1>{_e(title)}</h1></div>{figure}</div>'
+
+
+def _how(label, href):
+    """A plain-word link to the page that carries the rule.
+
+    Rules used to be written into a sentence under the heading or a footnote under the
+    table. The rule itself is not deleted -- it moves to its own page, and the screen
+    keeps one link to it.
+    """
+    return f'<p class="meta"><a href="{href}">{_e(label)}</a></p>'
 
 
 def _tabs(items, active, status=""):
@@ -76,9 +94,6 @@ def markets(rows=None, last_col: str = "Next report") -> str:
     knows — the month each market last filed — rather than a due date the system
     does not store.
     """
-    legend = " ".join(
-        f'{grade_chip(g)} <span class="faint">{_e(req)}</span>'
-        for g, req in D.GRADE_LEGEND)
     body_rows = "".join(
         f'<tr class="clickable" onclick="location.href=\'/markets/{t.lower()}\'">'
         f'<td><strong>{_e(name)}</strong></td>'
@@ -89,17 +104,12 @@ def markets(rows=None, last_col: str = "Next report") -> str:
         f'<td class="num">{_e(weight)}</td><td class="num faint">{_e(nxt)}</td></tr>'
         for t, name, owner, grade, backing, net, weight, nxt in (rows or D.MARKETS))
     return (
-        _head("Markets",
-              "The businesses, not the shopfront. Goods change hands in-game; this records "
-              "what each market sold, kept and holds in collateral. Grade is led by "
-              "backing &mdash; composite quality alone cannot reach the top bands.") +
-        f'<div class="panel"><div class="h2">What a grade requires</div>'
-        f'<div style="display:flex;gap:18px;flex-wrap:wrap;align-items:center">{legend}</div></div>' +
+        _head("Markets") +
+        _how("How grades work", "/help/grades") +
         '<div class="panel accented">' +
         _table([("Market", ""), ("Ticker", ""), ("Owner", ""), ("Grade", ""), ("Backing", "num"),
                 ("Last net", "num"), ("Index weight", "num"), (last_col, "num")],
-               body_rows,
-               f"Showing all {len(rows or D.MARKETS)} markets, best grade first.") +
+               body_rows) +
         "</div>")
 
 
@@ -113,16 +123,20 @@ def exchange(listings=None, tiles=None) -> str:
         f'<td class="num">{_e(hold)}</td><td class="num">{_e(px)}</td>'
         f'<td class="num faint">{_e(flt)}</td></tr>'
         for t, name, grade, sh, hold, px, flt in (listings or D.EXCHANGE))
-    return (_head("Exchange", "The share side. Every listed market, what it has out and "
-                              "who holds it.") +
-            _band(tiles or D.EXCHANGE_TILES) +
+    # The number of listed markets belongs in ONE place: the table's own summary
+    # line. A figure reading "Markets listed 13" above a table of eight rows is two
+    # answers to the same question, and the tile was the one that was wrong.
+    figures = [t for t in (tiles or D.EXCHANGE_TILES)
+               if "listed" not in str(t[0]).lower()]
+    return (_head("Exchange") +
+            _stats(figures) +
             '<div class="panel accented">' +
             _table([("Market", ""), ("Grade", ""), ("Shares out", "num"),
                     ("Holders", "num"), ("Last settled", "num"), ("Free float", "num")],
                    rows,
                    f"{len(listings or D.EXCHANGE)} listed "
-                   f"{'market' if len(listings or D.EXCHANGE) == 1 else 'markets'}, "
-                   "largest register first.") + "</div>")
+                   f"{'market' if len(listings or D.EXCHANGE) == 1 else 'markets'}"
+                   ) + "</div>")
 
 
 # ── Stocks ──────────────────────────────────────────────────────────────────
@@ -136,7 +150,7 @@ def stocks(holdings=None, formula=None, market: str = "GreyHames",
     """
     rows = ""
     for t, name, grade, sh, avg, px, val, pl, up, div, nxt in (holdings or D.HOLDINGS):
-        arrow = "&#9650;" if up else "&#9660;"
+        arrow = ""          # the sign and the colour already say it
         col = GAIN if up else LOSS
         rows += (f'<tr class="clickable" onclick="location.href=\'/exchange/{t.lower()}\'">'
                  f'<td><strong>{_e(name)}</strong></td>'
@@ -149,13 +163,14 @@ def stocks(holdings=None, formula=None, market: str = "GreyHames",
     formula = "".join(
         f'<tr><td>{_e(k)}</td><td class="num" style="color:{c}">{_e(v)}</td></tr>'
         for k, v, c in (formula or D.PRICE_FORMULA))
-    return (_head("Stocks", "What you own, and what the next report will settle it at.") +
+    n = len(holdings or D.HOLDINGS)
+    return (_head("Stocks") +
             '<div class="panel accented">' +
             _table([("Market", ""), ("Grade", ""), ("Shares", "num"), ("Avg cost", "num"),
                     ("Price", "num"), ("Value", "num"), ("Profit or loss", "num")]
                    + ([("Dividend", "num")] if show_dividend else [])
                    + [(last_col, "num")], rows,
-                   note or "Five positions. Prices settle when each market files.")
+                   note or f"{n} {'position' if n == 1 else 'positions'}")
             + "</div>" +
             '<div class="panel"><div class="h2">How the price is set &mdash; '
             f'{_e(market)}</div>'
@@ -186,8 +201,8 @@ def banking_accounts() -> str:
             _e(r[1]))
         for r in _gex_rows)
     return (_head("Banking") + _tabs(_BANK_TABS, "banking.accounts",
-                                     "Veteran &middot; 0.8% a month on savings") +
-            _band(D.BANK_TILES) +
+                                     "Veteran · 0.8% a month on savings") +
+            _stats(D.BANK_TILES) +
             '<div class="panel accented"><div class="h2">GEX absorption</div>'
             f'<div class="tablewrap"><table style="min-width:0"><tbody>{gex}</tbody></table></div>'
             '<div class="tfoot">Your GEX shares were cancelled and reissued as a debt claim. '
@@ -202,15 +217,14 @@ def banking_loans() -> str:
         f'<tr><td style="color:{c}">{_e(t)}</td><td class="num">{_e(r)}</td>'
         f'<td class="faint">{_e(n)}</td></tr>' for t, r, n, c in D.TIERS)
     return (_head("Banking") + _tabs(_BANK_TABS, "banking.loans",
-                                     "Veteran &middot; 18% a year on loans") +
-            _band([("Borrowed", "9,400c", "across 2 loans"),
-                   ("Due this cycle", "1,200c", "paid before dividends"),
-                   ("Headroom", "8,290c", "you can borrow", GAIN)], "three") +
+                                     "Veteran · 18% a year on loans") +
+            _stats([("Borrowed", "9,400c", ""),
+                    ("Due this cycle", "1,200c", ""),
+                    ("Headroom", "8,290c", "", GAIN)]) +
             '<div class="grid two">'
             '<div class="panel accented"><div class="h2">What you can borrow</div>'
             f'<div class="tablewrap"><table style="min-width:0"><tbody>{borrow}</tbody></table></div>'
-            '<div class="tfoot">Missed payments take the collateral, they do not touch '
-            'your wallet.</div></div>'
+            + _how("How borrowing works", "/help/borrowing") + "</div>"
             '<div class="panel"><div class="h2">Rate by tier</div>' +
             _table([("Tier", ""), ("Rate", "num"), ("How you get there", "")], tiers) +
             "</div></div>")
@@ -230,14 +244,14 @@ def banking_bonds() -> str:
         f'<td class="faint">{_e(back)}</td></tr>'
         for t, i, g, term, cp, left, back in D.BONDS_OFFERED)
     return (_head("Banking") + _tabs(_BANK_TABS, "banking.bonds") +
-            _band(D.BOND_TILES + [("Next maturity", "in 2 cycles", "6,000c returned")], "three") +
+            _stats(D.BOND_TILES + [("Next maturity", "in 2 cycles", "")]) +
             '<div class="panel accented"><div class="h2">Bonds you hold</div>' +
             _table([("Bond", ""), ("Term", ""), ("Face", "num"), ("Coupon", "num"),
                     ("Paid so far", "num"), ("Matures", "num")], held) + "</div>"
             '<div class="panel"><div class="h2">On offer</div>' +
             _table([("Bond", ""), ("Grade", ""), ("Term", ""), ("Coupon", "num"),
-                    ("Left to fill", "num"), ("What backs it", "")], offered,
-                   "Coupons are paid out of net before dividends.") + "</div>")
+                    ("Left to fill", "num"), ("What backs it", "")], offered) +
+            _how("How bonds work", "/help/bonds") + "</div>")
 
 
 # ── Work / Orders ───────────────────────────────────────────────────────────
@@ -256,12 +270,13 @@ def work(rows_data=None, note: str = "") -> str:
                  f'<td class="num faint">{_e(pts)}</td>'
                  f'<td class="num">{win}</td>'
                  f'<td class="num"><button class="btn">Claim</button></td></tr>')
-    return (_head("Work", "Claim a production order, deliver it, get paid. Pay is per piece "
-                          "unless the order says per stack &mdash; a stack is 64.") +
+    n = len(rows_data or D.ORDERS)
+    return (_head("Work") +
+            _how("How pay works", "/help/pay") +
             '<div class="panel accented">' +
             _table([("Item", ""), ("Market", ""), ("Pay", "num"), ("Total", "num"),
                     ("Points", "num"), ("Window", "num"), ("", "num")], rows,
-                   note or f"{len(D.ORDERS)} open orders across all markets.")
+                   note or f"{n} open {'order' if n == 1 else 'orders'}")
             + "</div>")
 
 
@@ -286,13 +301,10 @@ def lands(rows_data=None, note: str = "") -> str:
                 ("Status", ""), ("Size", "")] if rows_data else
                [("Parcel", ""), ("Owner", ""), ("Tenant", ""), ("Rent", "num"),
                 ("State", ""), ("Term", "")])
-    sub = ("Parcels for sale, and what they went for." if rows_data else
-           "Parcels, who holds them and what the rent is.")
-    return (_head("Lands", sub) +
+    return (_head("Claims") +
+            _how("How claims work", "/help/claims") +
             '<div class="panel accented">' +
-            _table(headers, rows,
-                   note or "A lapsed lease returns the parcel to the market at its "
-                           "listed price.") +
+            _table(headers, rows, note) +
             "</div>")
 
 
@@ -303,16 +315,21 @@ def investor(rows_data=None, tiles=None, pool_pct: float = 10.0) -> str:
         f'<tr><td><strong>{_e(n)}</strong></td>'
         f'<td class="num">{_e(net)}</td><td class="num">{_e(share)}</td></tr>'
         for t, n, net, share in (rows_data or D.POOL))
-    return (_head("Investor", "GEX.PR preferred. A separate class from common shares "
-                              "&mdash; common holders take no cut of this pool.") +
-            _band(tiles or
-                  [("Your stake", "45 / 500", "9.0% of the pool", HELD),
-                   ("Pool, July", "11,400c", "10% of group net"),
-                   ("Your share", "+1,026c", "paid 09:16", GAIN)], "three") +
+    figures = list(tiles or
+                   [("Your stake", "45 / 500", "", HELD),
+                    ("Pool, July", "11,400c", ""),
+                    ("Your share", "+1,026c", "", GAIN),
+                    ("Paid", "Sat 29 Aug 09:16", "", "")])
+    # The pool's cut of net was a caption under one figure and a sentence under the
+    # table. It is a figure, so it is a line in the list once; the rule that goes with
+    # it is on the linked page.
+    figures.append(("Pool share of net", f"{pool_pct:,.0f}%", "", ""))
+    return (_head("Investor") +
+            _how("How the preferred pool works", "/help/preferred") +
+            _stats(figures) +
             '<div class="panel accented"><div class="h2">Where the pool came from</div>' +
-            _table([("Market", ""), ("Net", "num"), ("Share of pool", "num")], rows,
-                   f"{pool_pct:,.0f}% of each market's monthly net feeds the preferred "
-                   "pool. A market that lost money contributes nothing.") + "</div>")
+            _table([("Market", ""), ("Net", "num"), ("Share of pool", "num")], rows) +
+            "</div>")
 
 
 # ── Earnings reports ────────────────────────────────────────────────────────
@@ -325,10 +342,9 @@ def filings(rows_data=None, note: str = "") -> str:
                  f'<td>{_e(month)}</td><td class="num"{style}>{_e(net)}</td>'
                  f'<td class="num">{_e(ps)}</td><td class="num"{style}>{_e(div)}</td>'
                  f'<td>{grade_chip(grade)}</td></tr>')
-    return (_head("Earnings reports", "Every filing across the exchange.") +
+    return (_head("Earnings reports") +
+            _how("How filings work", "/help/filings") +
             '<div class="panel accented">' +
             _table([("Market", ""), ("Month", ""), ("Net", "num"), ("Per share", "num"),
-                    ("Dividend", "num"), ("Grade after", "")], rows,
-                   note or ("Showing the most recent filings. A missed filing keeps "
-                            "the last price, pays no dividend and drops a band."))
+                    ("Dividend", "num"), ("Grade after", "")], rows, note)
             + "</div>")

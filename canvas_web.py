@@ -106,14 +106,17 @@ _CSS = """/* The block vocabulary the canvas uses and this theme did not have ye
 
 /* Action block: a sentence and up to a few buttons. Three kinds, no others. */
 .actionblock .act{margin:0 0 12px;color:var(--dim)}
-.btnrow{display:flex;gap:10px;flex-wrap:wrap}
-.btn{font:inherit;font-size:.95em;padding:8px 16px;border-radius:2px;cursor:pointer;
-  background:none;border:1px solid var(--line-up);color:var(--text)}
-.btn.p{background:var(--accent);border-color:var(--accent);color:#1b1d20;font-weight:700}
-.btn.s{border-color:var(--line-up);color:var(--text)}
-.btn.d{border-color:var(--loss);color:var(--loss)}
-.btn:hover{border-color:var(--accent)}
-.btn.p:hover{filter:brightness(1.08)}
+.btnrow{display:flex;gap:18px;flex-wrap:wrap;align-items:baseline}
+/* THIS SHEET LOADS LAST, so anything it says about `.btn` beats abex_theme. It used to
+   say "outlined slab", which is why the SAME Claim markup rendered as a gold slab
+   through `abex_shell.render` and as an outlined box through `hub_web.page` - one
+   control, two looks, decided by which entry point drew the page. Actions are words
+   now, defined once in abex_theme; the `.p`/`.s`/`.d` variants map onto its
+   plain/quiet/danger tones rather than re-introducing a surface. */
+.btn.p{color:var(--accent)}
+.btn.s{color:var(--dim);text-decoration-color:var(--line)}
+.btn.s:hover{color:var(--text)}
+.btn.d{color:var(--loss);text-decoration-color:rgba(216,122,106,.45)}
 
 /* "Your position" wash. Deliberately weak: it is a flag on a minority of rows,
    and at any strength that reads as a zebra stripe it has stopped being one. */
@@ -202,6 +205,41 @@ svg.spark{display:block;width:100%;height:64px}
 .sklegend .skdim{color:var(--faint)}
 svg.spark{cursor:crosshair}
 
+/* SMALL MULTIPLES. Twelve markets on one screen, each its own cell: the grid is
+   `auto-fill` rather than a fixed column count so the same block reads on a
+   phone and on a wide desktop without a breakpoint per size. A cell is a shape
+   plus a figure — the shape is scaled to its OWN market (they are three orders
+   of magnitude apart) and the figure carries the level the shape cannot. */
+.smgrid{display:grid;gap:30px 30px;margin:6px 0 2px;
+  grid-template-columns:repeat(auto-fill,minmax(196px,1fr))}
+/* A CELL IS A FIXED STACK OF ROWS, not a free-flowing column. The chart row is
+   the one that must land on the same baseline across the whole board — that is
+   what makes twelve small charts comparable rather than twelve small charts.
+   Naming the rows here pins the head, the figure and the line, and lets the
+   caption and meta take whatever they need underneath. */
+.smcell{min-width:0;display:grid;
+  grid-template-rows:auto auto 38px auto auto;align-content:start}
+.smhead{display:flex;align-items:baseline;gap:8px;margin-bottom:2px}
+.smname{color:var(--accent);text-decoration:none;font-size:13.5px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.smname:hover{text-decoration:underline}
+.smname.smflat{color:var(--text)}
+.smgrade{margin-left:auto;font-size:10.5px;color:var(--faint);
+  white-space:nowrap;font-weight:600}
+.smlast{display:block;font-size:17px;font-variant-numeric:tabular-nums;
+  margin-bottom:5px}
+svg.smspark{display:block;width:100%;height:38px}
+.smcap{margin-top:6px;font-size:11px;font-variant-numeric:tabular-nums;
+  line-height:1.35}
+/* The label sits on its own line under the figure rather than wrapping mid
+   phrase, so a long market's caption is two tidy lines and not four ragged. */
+.smcap .smon{display:block;color:var(--faint);font-size:10px}
+.smmeta{margin-top:2px;font-size:10.5px;color:var(--faint)}
+/* One filed month is a fact, not a chart. The box keeps the grid's rhythm so a
+   cell without a line does not pull its neighbours up. */
+.smone{height:38px;display:flex;align-items:center;font-size:10.5px;
+  color:var(--faint);line-height:1.3}
+
 /* The sticky-bottom draft bar. Only present on a screen with work in progress. */
 .dockbar{position:sticky;bottom:0;display:flex;align-items:baseline;gap:14px;
   padding:12px 0;border-top:1px solid var(--accent);background:var(--ground);
@@ -212,9 +250,49 @@ svg.spark{cursor:crosshair}
 .dockbar .dn{color:var(--faint)}
 .dockbar .dspace{flex:1 1 auto}
 
+/* TWO-UP SPLITS MUST BE ABLE TO COLLAPSE. The theme sets
+   `.grid.two{grid-template-columns:repeat(auto-fit,minmax(660px,1fr))}`. A hard
+   660px floor is wider than a 380px phone, so `banking_loans` laid out a 680px
+   document inside a 380px viewport and the WHOLE PAGE scrolled sideways — the
+   worst kind, because the nav and the footer go with it. `min(660px,100%)` keeps
+   the desktop behaviour exactly (660 is still the split threshold) and lets the
+   track fall to the container width below that. One change, every two-up page.
+   Belongs in abex_theme next to the original rule; it is here because this sheet
+   is the last one concatenated and this file is the one that could be edited. */
+.grid.two{grid-template-columns:repeat(auto-fit,minmax(min(660px,100%),1fr))}
+
 @media (max-width:900px){
   .block>h2{font-size:18px}
   .dockbar{gap:8px}
+
+  /* A MONEY TABLE SCROLLS; IT DOES NOT CRUSH. The legacy shell removed the
+     floor with this note, at `vt_web_shell.py` in its own 820px query:
+
+       "`min-width:640px` was the floor that forced a narrow viewport to scroll
+        sideways, and it outranked the theme's `width:auto` besides. A table that
+        does not fit drops columns (see the theme's 720px rules); it does not put
+        the reader on a horizontal scrollbar."
+
+     The premise did not hold. Nothing drops the columns — the theme's rules only
+     hide cells already carrying `.hide-sm`, and the money tables carry none — so
+     instead of dropping, the columns CRUSHED. Measured at 380px: `stocks` renders
+     prices as "11.2", "6.3", "13.9" under a header reading "Pri"; `banking_bonds`
+     stacks "Left to f" over "unlimite". A truncated figure on a money page does
+     not read as "there is more, scroll me", it reads as a wrong number, and a
+     wrong number is the one thing this site cannot show.
+     So the floor is back, scoped to narrow viewports only. Desktop keeps
+     `width:auto` untouched — the dead-air problem the floor was blamed for was
+     `width:100%`, which is gone, and the shell owner is fixing the measure
+     properly. A table that genuinely wants to stay narrow still can: an inline
+     `style="min-width:0"` (abex_hub, abex_screens use it) outranks this. */
+  .tablewrap table{min-width:640px}
+
+  /* The drop-a-column utility, at this file's breakpoint. The legacy shell
+     declares the same pair at 820px; this is the 900px twin so a column marked
+     for dropping goes at the width the tables actually start to hurt. WHICH
+     columns carry it is a markup decision in the page modules, not a CSS one —
+     identity and money never carry it. */
+  th.hide-sm, td.hide-sm{display:none}
 }
 """
 
@@ -816,7 +894,8 @@ CANVAS_JS = r"""
     var pctv = first ? (ch / first * 100) : 0;
     var flat = Math.abs(pctv) < FLAT * 100;
     var tone = flat ? "var(--dim)" : (ch > 0 ? "var(--gain)" : "var(--loss)");
-    var arrow = flat ? "=" : (ch > 0 ? "▲" : "▼");
+    /* Server-rendered captions carry no glyph; this redraw must not put one back. */
+    var arrow = flat ? "=" : "";
     line.setAttribute("points", out.join(" "));
     line.setAttribute("stroke", tone);
     /* Markers are redrawn with the line: a refresh that kept stale dots would

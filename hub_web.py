@@ -50,9 +50,10 @@ DATA HONESTY
 ------------
 Where the mockups show a figure with no real source, the panel is left out
 rather than filled in. Concretely, as of this file: there is no savings table
-and no loans table anywhere in Restocker's schema, so the strip's "Savings" and
-"Net position" segments DO NOT RENDER until Abex Bank registers a provider
-via `register_money_provider`. `available` and `held` are real, from ledger_v2.
+and no loans table anywhere in Restocker's schema, so savings and net position
+are not in the strip at all — a permanent em-dash is a placeholder, and empty
+states stay empty. `available` and `held` are real, from ledger_v2, and they are
+the only two figures the strip carries.
 """
 
 from __future__ import annotations
@@ -140,7 +141,6 @@ _ICONS = {
     "hub": '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>',
 }
 
-_CHEVRON = '<path d="M6 9l6 6 6-6"/>'
 
 _SECTIONS: list[dict] = []
 
@@ -176,8 +176,9 @@ def sections() -> list[dict]:
 # ══════════════════════════════════════════════════════════════════════════
 # Money providers. Core (available/held) is always present. Savings and debt
 # belong to Abex Bank, which owns no table in this schema yet — so until
-# Osentar registers, those segments do not render. An absent figure is honest;
-# a placeholder is not.
+# Osentar registers, `money_snapshot` reports them as None and no caller may
+# draw them. An absent figure is honest; a placeholder is not, which is why the
+# strip dropped the two permanent em-dashes rather than keeping the slots.
 # ══════════════════════════════════════════════════════════════════════════
 
 _MONEY_PROVIDERS: dict[str, Callable[[str], Optional[dict]]] = {}
@@ -191,9 +192,12 @@ def register_money_provider(name: str, fn: Callable[[str], Optional[dict]]) -> N
         savings_note str  — one short line, e.g. "3.2% APR"
         debt         int  — outstanding principal owed by the user
 
-    Net position is `available + held + savings - debt` and renders ONLY when
-    every term it names is available. A net figure with a silently-missing term
-    is a wrong number, and this strip is on every page.
+    `money_snapshot` still computes net position as
+    `available + held + savings - debt`, and only when every term it names has a
+    real source — a net figure with a silently-missing term is a wrong number.
+    The persistent strip no longer carries savings or net at all: it is one line
+    of wallet available and held. A section's own figures belong on that
+    section's page.
     """
     _MONEY_PROVIDERS[name] = fn
 
@@ -699,34 +703,57 @@ THEME_CSS = r"""
   color:inherit}
 .hub-card:hover{background:var(--panel2)}
 .hub-card-h{display:flex;align-items:center;justify-content:space-between;gap:10px;
-  font-size:28px;font-weight:400;color:var(--text)}
+  font-size:23px;font-weight:400;color:var(--text)}
 .hub-card-h svg{display:none}
-.hub-card-b{font-size:20px;color:var(--text-body);text-wrap:pretty}
-.hub-card-go{font-size:19px;color:var(--accent);text-decoration:underline;
+.hub-card-b{font-size:18px;color:var(--text-body);text-wrap:pretty}
+.hub-card-go{font-size:18px;color:var(--accent);text-decoration:underline;
   text-underline-offset:3px;text-decoration-color:rgba(201,179,122,.45)}
+/* ---------- the money strip: one line ---------- */
+/* The strip's own rules live in `vt_web_shell._LEGACY_CSS`, which loads BEFORE
+   this sheet, so these override without touching a file another owner is in.
+   `.anontog` comes from `canvas_web.CANVAS_CSS`, which loads AFTER this one —
+   hence the `.strip` prefix, which outranks it on specificity rather than order.
+   A bordered "Hidden" badge is a pill and the brief bans pills; the control has
+   to stay (it is the only way to change the leaderboard setting), so it is a
+   plain underlined word instead. */
+.strip-wrap .strip{padding:16px 60px}
+.strip .seg{flex-direction:row;align-items:baseline;gap:9px;padding:0 34px 0 0}
+.strip .seg .lab{font-size:16px;margin-bottom:0}
+.strip .seg .val{font-size:18px}
+.strip .user-tag{font-size:18px}
+.strip .anontog{border:none;border-radius:0;padding:0;margin-right:12px;
+  font-size:16px;color:var(--faint);text-decoration:underline;
+  text-underline-offset:3px}
+.strip .anontog:hover{color:var(--text);border-color:transparent}
+.strip .anontog[data-anon="0"]{color:var(--accent);border-color:transparent}
 .strip-note{font-size:18px;color:var(--faint);padding:0 60px 14px;text-wrap:pretty}
 .errbox{border:none;border-left:3px solid var(--red);background:none;
-  padding:2px 0 2px 14px;margin-bottom:20px;font-size:19px;color:var(--text-body)}
+  padding:2px 0 2px 14px;margin-bottom:20px;font-size:18px;color:var(--text-body)}
 .login-card{max-width:60ch;margin:60px auto;padding:0}
 .login-card h1{margin-bottom:10px}
-.login-card p{color:var(--text-body);font-size:21px;margin-bottom:20px;text-wrap:pretty}
-.login-card code{font-family:var(--font-data);font-size:19px;color:var(--text)}
+.login-card p{color:var(--text-body);font-size:18px;margin-bottom:20px;text-wrap:pretty}
+.login-card code{font-family:var(--font-data);font-size:18px;color:var(--text)}
 /* Choosing a side is a choice, not a chip row: plain labels, the chosen one
    in the accent, underlined. */
 .side-pick{display:flex;gap:22px;flex-wrap:wrap;margin-bottom:20px}
 .side-pick label{display:inline-flex;align-items:center;gap:8px;cursor:pointer;
-  color:var(--text-body);font-size:21px}
+  color:var(--text-body);font-size:18px}
 .side-pick input{accent-color:var(--accent)}
 .side-pick input:checked + span{color:var(--accent);text-decoration:underline;
   text-underline-offset:3px}
 .subtabs{display:flex;gap:24px;flex-wrap:wrap;border-bottom:1px solid var(--border);
   margin-bottom:24px}
-.subtabs a{padding:8px 0;margin-bottom:-1px;font-size:21px;color:var(--text-body);
+.subtabs a{padding:8px 0;margin-bottom:-1px;font-size:18px;color:var(--text-body);
   text-decoration:none;border-bottom:2px solid transparent}
 .subtabs a[aria-current="true"]{color:var(--text);border-bottom-color:var(--accent)}
 @media (max-width:820px){
   .hub-grid{grid-template-columns:1fr;gap:24px}
   .strip-note{padding:0 20px 12px}
+  /* The legacy sheet's narrow-viewport padding is `.strip` (0,1,0); the rule
+     above is (0,2,0) and would keep the 60px gutter on a phone. Restated here
+     at the same weight so it does not. */
+  .strip-wrap .strip{padding:14px 20px;row-gap:10px}
+  .strip .seg{padding:0 22px 0 0}
 }
 """
 
@@ -764,10 +791,18 @@ _STRIP_JS = """
 
 
 def money_strip_html(snap: dict, who: str = "") -> str:
-    """The persistent strip. Rendered from `money_snapshot`, server-side, on
-    every page — including the drawer that NAMES what is holding the coins.
+    """The persistent strip: ONE line — wallet available, held, and who is
+    signed in flush right.
 
-    Segments whose source does not exist are omitted, not zeroed.
+    It had grown from a single 60px row to about 185px: two caption lines, a
+    status pill, a chevron, and two slots that could only ever render an
+    em-dash. Empty states stay empty, so the slots with no source are gone
+    rather than placeheld, and the "needs Abex Bank" sentence went with them —
+    a site-wide band is not the place for one section's connection status.
+
+    The figures are drawn in `--text`. They were painted `--money-available`
+    (the semantic UP colour), which drew a balance that had not moved as if it
+    had just gone up. A money colour means a signed CHANGE.
     """
     if not snap.get("ledger_ok"):
         return ('<div class="strip-wrap"><div class="strip">'
@@ -781,35 +816,14 @@ def money_strip_html(snap: dict, who: str = "") -> str:
     avail = int(snap.get("available") or 0)
 
     segs = [
-        '<div class="seg"><div class="lab">Wallet · available</div>'
-        f'<div class="val v-avail num">{cn(avail)}</div>'
-        '<div class="sub">spendable right now</div></div>'
-    ]
-
-    held_sub = (f"reserved by {len(holds)} thing{'s' if len(holds) != 1 else ''}"
-                if holds else "nothing reserved")
-    chev = _svg(_CHEVRON, "")
-    segs.append(
+        '<div class="seg"><div class="lab">Wallet available</div>'
+        f'<div class="val num">{cn(avail)}</div></div>',
+        # Held still opens the drawer that NAMES what is holding the coins; the
+        # chevron is gone, so the label itself carries the affordance.
         '<button class="seg held-seg" id="heldSeg" aria-expanded="false" aria-controls="heldDrawer">'
-        f'<div class="lab">Held <span class="chev">{chev}</span></div>'
-        f'<div class="val v-held num">{cn(held)}</div>'
-        f'<div class="sub">{esc(held_sub)}</div></button>'
-    )
-
-    # Savings and net render only when every term they name has a real source.
-    if snap.get("savings") is not None:
-        note = snap.get("savings_note") or ""
-        segs.append('<div class="seg"><div class="lab">Savings · Abex Bank</div>'
-                    f'<div class="val v-save num">{cn(snap["savings"])}</div>'
-                    f'<div class="sub">{esc(note)}</div></div>')
-
-    net_html = ""
-    if snap.get("net") is not None:
-        net_html = ('<div class="spacer"></div>'
-                    '<div class="seg net-seg"><div class="lab">Net position</div>'
-                    f'<div class="val v-net num">{cn(snap["net"])}</div>'
-                    '<div class="net-note">available + held + savings &minus; loan · '
-                    'bonds &amp; land excluded</div></div>')
+        '<div class="lab">Held</div>'
+        f'<div class="val num">{cn(held)}</div></button>',
+    ]
 
     rows = []
     for h in holds:
@@ -835,11 +849,6 @@ def money_strip_html(snap: dict, who: str = "") -> str:
         f'<span>Total held <b>{n(held)}</b></span></div></div></div>'
     )
 
-    note = ""
-    if snap.get("savings") is None or snap.get("debt") is None:
-        note = ('<div class="strip-note">Savings and net position need Abex Bank — '
-                'not connected.</div>')
-
     frozen = ""
     if snap.get("frozen"):
         frozen = ('<div class="strip-note" style="color:var(--red)">Wallet frozen — '
@@ -849,8 +858,8 @@ def money_strip_html(snap: dict, who: str = "") -> str:
     # separate logo bar it used to sit in has moved into the sidebar.
     who_html = f'<div class="header-right">{who}</div>' if who else ""
     return ('<div class="strip-wrap" id="stripWrap"><div class="strip">'
-            + "".join(segs) + net_html + who_html + '</div>'
-            + frozen + note + drawer + '</div>')
+            + "".join(segs) + '<div class="spacer"></div>' + who_html + '</div>'
+            + frozen + drawer + '</div>')
 
 
 def _is_staff_user(user: Optional[dict]) -> bool:
@@ -908,22 +917,19 @@ SECTION_CHILDREN = {
         ("markets.liabilities", "Liabilities", "/liabilities"),
         ("markets.investor",    "Investor",    "/investor"),
     ],
-    # SOME OF THESE BELONG UNDER BOTH, and that is not duplication for its own
-    # sake. Every one of these pages is organised BY MARKET — it opens with a
-    # market picker — so it answers two different questions depending on who is
-    # asking. "How stocked is the economy" is a Markets question; "how stocked
-    # is MY shop" is the same page, reached from where an owner already is.
-    # Making him go up to Markets to look at his own stock is the same mistake
-    # as making him leave a page to act on it.
+    # MY MARKET LISTS ONLY WHAT IS ACTUALLY HIS. It used to repeat Inventory,
+    # Ledger, Orders, Teams and Liabilities here on the argument that an owner
+    # should reach his own stock from where he already is. That argument only
+    # works if the page he lands on is HIS — and it is not. Every one of those
+    # routes serves the same unscoped, economy-wide page as the Markets copy,
+    # with `active` hardcoded to `markets.*`, so clicking Orders under My market
+    # collapsed this section and opened Markets instead. Two entries, one page,
+    # and the nav visibly threw you to the other parent: a duplicate that could
+    # only ever read as a bug.
     #
-    # Investor is the one that is not both: it is a view of the economy for
-    # somebody holding shares in it, not a thing an owner does to his shop.
+    # If these are ever scoped to the owner's own market they earn their place
+    # back here. Until then Markets owns them, because Markets is what they show.
     "mine": [
-        ("mine.inventory",   "Inventory",   "/inventory"),
-        ("mine.ledger",      "Ledger",      "/ledger"),
-        ("mine.orders",      "Orders",      "/orders"),
-        ("mine.teams",       "Teams",       "/teams"),
-        ("mine.liabilities", "Liabilities", "/liabilities"),
         ("mine.report",      "Report",      "/hub/filing"),
     ],
 }
@@ -1530,7 +1536,7 @@ def _markets_body(uid: str) -> str:
     if lead:
         spark = _sparkline(lead["history"])
         if spark:
-            arrow = "&#9650;" if lead["pct"] >= 0 else "&#9660;"
+            arrow = ""      # the sign and the colour already say it
             cls = "good" if lead["pct"] >= 0 else "crit"
             out.append(
                 '<div class="bento"><div class="tile s12"><div class="tile-h">'

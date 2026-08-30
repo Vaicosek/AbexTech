@@ -127,7 +127,7 @@ def test_a_legacy_page_comes_back_with_one_nav_and_no_second_header():
     import Restocker_web as RW
     _registered()
     html = abex_reskin.render(
-        RW._INVENTORY_HTML, active="mine.inventory", title="Inventory",
+        RW._INVENTORY_HTML, active="markets.inventory", title="Inventory",
         user=None, snap=None,
         replacements={"__TERMINAL_CSS__": RW._TERMINAL_CSS,
                       "__INVENTORY_JSON__": RW._jscript({"markets": []})},

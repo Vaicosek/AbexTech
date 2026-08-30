@@ -194,7 +194,7 @@ def hub(user_id: str) -> dict:
     if not data:
         return _empty("hub", "The exchange is not reachable right now.")
 
-    band = [(t[0], t[1], t[2]) for t in data["tiles"]]
+    band = [(t[0], t[1]) for t in data["tiles"]]
 
     # "Today" — the waiting-on-you queue. The design also lists unread messages,
     # which has no source here and is not faked. A due REPORT does have one now:
@@ -226,7 +226,7 @@ def hub(user_id: str) -> dict:
     dividends = {"h2": "Dividends",
                  "bal": [["Confirmed, last cycle", data["dividends"][0], ""],
                          ["Estimated, next cycle", data["dividends"][1], ""]]}
-    return _shell("hub", data.get("sub", ""), band, [today, by_grade, dividends])
+    return _shell("hub", "", band, [today, by_grade, dividends])
 
 
 # ── Markets ─────────────────────────────────────────────────────────────────
@@ -248,11 +248,10 @@ def markets(user_id: str = "") -> dict:
         held[row[1]] = row[3]         # NAME -> shares; row[0] is the ticker
 
     graded = sum(1 for m in rows if m[3] in ("AAA", "AA", "A", "BBB"))
-    band = [("Markets", str(len(rows)),
-             f"{len(listings)} listed, {len(rows) - len(listings)} private"),
-            ("Investment grade", f"{graded} of {len(rows)}", "BBB or better"),
-            ("Listed", str(len(listings)), "shares you can trade"),
-            ("Your positions", str(len(held)), "markets you hold")]
+    band = [("Markets", str(len(rows))),
+            ("Investment grade", f"{graded} of {len(rows)}"),
+            ("Listed", str(len(listings))),
+            ("Your positions", str(len(held)))]
 
     # Every market gets a page, listed or not: a private one's page says it is
     # private and shows its grade, which is exactly what §6.7 says it discloses.
@@ -297,10 +296,7 @@ def markets(user_id: str = "") -> dict:
                 last_net, last_report,
             ])
 
-    stocked_note = ("Stocked is total stock over total capacity across every "
-                     "scanned line — not the average of the per-item bars, which "
-                     "would weight a rare item the same as the staple nobody can "
-                     "buy. Open a market to see the shelf by shelf."
+    stocked_note = ("Stocked is total stock over total capacity."
                      + (f" {low_total} market{'' if low_total == 1 else 's'} at "
                         f"20% or below." if low_total else ""))
 
@@ -309,15 +305,12 @@ def markets(user_id: str = "") -> dict:
                            "Share price#", "Holders#", "You hold#",
                            "Last net#", "Last filed"],
                      "r": listed_rows,
-                     "n": (stocked_note + " Backing is the ratio of what backs "
-                           "the market to what its listing requires — it only "
-                           "applies once a market is listed and rated.")}
+                     "n": stocked_note}
     other_table = {"h2": "All other markets", "ac": 1,
                     "c": ["Market", "Owner", "Grade", "Stocked", "Lines#",
                           "Last net#", "Last filed"],
                     "r": other_rows,
-                    "n": ("Not listed, so no share price and no backing ratio — "
-                          "grade reads \"not rated\" until it lists. " + stocked_note)}
+                    "n": stocked_note}
     # NO "WAITING ON A FILING" PANEL. It named markets that were a month behind
     # at the top of the public Markets screen, and the answer to what it was for
     # is: nothing this product does. Nothing in the engine penalises a late
@@ -330,8 +323,7 @@ def markets(user_id: str = "") -> dict:
     # the Hub's waiting-on-you queue, where it is a thing he can act on rather
     # than a thing everyone else reads about him.
     blocks = [listed_table, other_table]
-    return _shell("markets", f"{len(rows)} markets, {len(listings)} of them listed.",
-                  band, blocks)
+    return _shell("markets", "", band, blocks)
 
 
 # ── Stocks ──────────────────────────────────────────────────────────────────
@@ -372,12 +364,11 @@ def stocks(user_id: str = "", csrf: str = "") -> dict:
     cost = sum(h["avg"] * h["shares"] for h in held.values())
     unrealised = value - cost
 
-    band = [("Your holdings", f"{value:,.0f}c",
-             f"across {len(held)} market{'' if len(held) == 1 else 's'}"),
-            ("Unrealised", f"{unrealised:+,.0f}c", "value less what you paid",
+    band = [("Your holdings", f"{value:,.0f}c"),
+            ("Unrealised", f"{unrealised:+,.0f}c", "",
              "g" if unrealised >= 0 else "l"),
-            ("Listed", str(len(listings)), "markets you can trade"),
-            ("Dividends", "none paid yet", "no market has declared one")]
+            ("Listed", str(len(listings))),
+            ("Dividends", "none paid yet")]
 
     blocks = []
     for mid, listing in sorted(listings.items(),
@@ -406,8 +397,7 @@ def stocks(user_id: str = "", csrf: str = "") -> dict:
                          f"{mine['avg']:,.2f}c a share on average"]],
                 "tot": ["Unrealised", tone + f"{mine['profit']:+,.0f}c"]})
         else:
-            blocks.append({"bal": [["You hold", "nothing", ""]],
-                           "n": "Nothing is committed until you place an order."})
+            blocks.append({"bal": [["You hold", "nothing", ""]]})
 
         if user_id and csrf and price > 0:
             hold = mine["shares"] if mine else 0.0
@@ -418,18 +408,13 @@ def stocks(user_id: str = "", csrf: str = "") -> dict:
                                     if hold else "You hold none of this market yet.")}})
 
         blocks.append({"act": "", "btns": [["Everything about " + name, "s",
-                                            f"/hub/stocks/{mid}"]],
-                       "n": "Months filed, the grade and its pillars, the register, "
-                            "and what moves through the shop."})
+                                            f"/hub/stocks/{mid}"]]})
 
     if not blocks:
         return _shell("stocks", "No market is listed yet.", band,
-                      [{"h2": "Nothing to trade", "c": [], "r": [],
-                        "n": "A market appears here when its owner lists it."}])
+                      [{"h2": "Nothing to trade", "c": [], "r": []}])
 
-    asof = (f"{len(listings)} market{'' if len(listings) == 1 else 's'} listed. "
-            "Prices refresh every minute.")
-    return _shell("stocks", asof, band, blocks)
+    return _shell("stocks", "", band, blocks)
 
 
 def _item_block(market_id: str, listed: bool, owner: bool) -> dict | None:
@@ -474,9 +459,8 @@ def _item_block(market_id: str, listed: bool, owner: bool) -> dict | None:
     more = ("" if shown >= total
             else f" {total - shown} further item"
                  f"{'' if total - shown == 1 else 's'} moved less and are not listed.")
-    note = (f"{shown} of {total} items, most moved first. OUT is what the shop "
-            f"sold to players; IN is what it bought from them — opposite trades, "
-            f"so they are opposite columns. Net is coins across the window.{more}")
+    note = (f"{shown} of {total} items, most moved first. OUT is sold to "
+            f"players, IN is bought from them.{more}")
     if not listed:
         note += (" This market is private: only you can see this.")
     return {"h2": "What moves here", "c": cols, "r": rows, "n": note}
@@ -524,14 +508,11 @@ def _grade_block(market_id: str, grade: str) -> dict | None:
     note = (f"Composite {d['score'] * 100:,.0f}% of the pillars that could be "
             f"measured, which is {band} on its own.")
     if d.get("vault_binds"):
-        note += (f" It reads {grade} because {d['vault_arrears']:,.0f}c of "
-                 "retained earnings are owed to the vault, and a market in "
-                 "arrears cannot rate above BBB whatever else it has. Pay the "
-                 "vault first.")
+        note += (f" It reads {grade} because {d['vault_arrears']:,.0f}c is owed "
+                 "to the vault, and arrears cannot rate above BBB whatever else "
+                 "it has.")
     elif cap and band and cap != band and _GRADE_RANK.get(cap, 9) < _GRADE_RANK.get(band, 0):
-        note += (f" Backing of {ratio:,.2f}x the target allows {cap} at most — "
-                 "collateral gates the top two bands, so a market cannot score "
-                 "its way into AA or AAA without the chests.")
+        note += f" Backing of {ratio:,.2f}x the target allows {cap} at most."
     else:
         note += (f" Backing of {ratio:,.2f}x the target allows up to {cap}, so "
                  "nothing is holding it back.")
@@ -540,9 +521,9 @@ def _grade_block(market_id: str, grade: str) -> dict | None:
     if unmeasured:
         one = len(unmeasured) == 1
         note += (" " + " and ".join(unmeasured) +
-                 (" has no data feeding it, so it is" if one
-                  else " have no data feeding them, so they are") +
-                 " left out of the average rather than counted as zero.")
+                 (" has no data feeding it and is" if one
+                  else " have no data feeding them and are") +
+                 " left out of the average, not counted as zero.")
     # The backing pillar is one number made of six. When it is the thing holding
     # a grade down, "79%" is not an answer a market owner can act on.
     for label, pct, coins in (d.get("backing_parts") or []):
@@ -598,10 +579,7 @@ def _shop_blocks(market_id: str, name: str, listed: bool, owner: bool) -> list:
                     "c": ["Item", "Stocked", "In stock#", "Capacity#",
                           "Sells at#", "Buys at#", "Backing"],
                     "r": [],
-                    "n": ("No stocked line has ever been recorded for this shop. "
-                          "Inventory comes from a stock scan — until one runs, "
-                          "there is nothing here to back the shares, and the "
-                          "rating sees the same nothing."
+                    "n": ("No stock scan has ever recorded a line for this shop."
                           if not sh["scanned"] else
                           "The last stock scan (" + sh["scanned"].replace("T", " ")
                           + ") found no stocked lines.")})
@@ -665,7 +643,7 @@ def _shop_blocks(market_id: str, name: str, listed: bool, owner: bool) -> list:
         out.append({"h2": "Liabilities",
                     "c": ["Item", "Held by", "Amount#", "Note"],
                     "r": [[a, b, c, "m|" + d] for a, b, c, d in side["liabilities"]],
-                    "n": "Serviced out of net before dividends."})
+                    })
     return out
 
 
@@ -701,11 +679,10 @@ def stock(user_id: str = "", market_id: str = "", csrf: str = "") -> dict:
         except Exception:
             owner = False
 
-    grade_sub = (f"{d['backing']:,.2f}× backed" if d["backing"] else "not scored")
     if not d["listed"]:
-        band = [("Grade", d["grade"], grade_sub),
-                ("Listed", "no", "shares are not traded"),
-                ("Discloses", "grade only", "a private market publishes nothing else")]
+        band = [("Grade", d["grade"]),
+                ("Listed", "no"),
+                ("Discloses", "grade only")]
         note = {"h2": "Private market", "ac": 1,
                 "act": (f"{d['name']} is not listed on the exchange. A private "
                         "market discloses its grade and nothing else — no ledger, "
@@ -729,19 +706,15 @@ def stock(user_id: str = "", market_id: str = "", csrf: str = "") -> dict:
 
     price, shares = d["price"], d["shares_out"]
     mcap = price * shares
-    band = [("Share price", f"{price:,.2f}c",
-             (f"priced from {abex_live._month_name(d['last_priced_month'])}"
-              if d.get("last_priced_month") else "not priced yet")),
-            ("Grade", d["grade"], grade_sub),
-            ("Growth P/E", f"{d['pe']:,.2f}×", "multiple applied to trailing net"),
-            ("Shares listed", f"{shares:,.0f}",
-             f"{d['holders']} holder{'' if d['holders'] == 1 else 's'}")]
+    band = [("Share price", f"{price:,.2f}c"),
+            ("Grade", d["grade"]),
+            ("Growth P/E", f"{d['pe']:,.2f}×"),
+            ("Shares listed", f"{shares:,.0f}")]
 
     chart = _spark_block(
         f"{d['name']} · share price", d.get("series"),
         src=f"/api/series/market/{d['market_id']}?days=90",
-        note=("Every point is a price the exchange recorded. The series is "
-              "sampled, never averaged, so no point drawn is a price nobody saw."))
+        note="Sampled, never averaged.")
 
     # ── the months ──────────────────────────────────────────────────────────
     nets = d.get("nets") or {}
@@ -760,19 +733,15 @@ def stock(user_id: str = "", market_id: str = "", csrf: str = "") -> dict:
     months = {"h2": "Month by month", "ac": 1,
               "c": ["Month", "Revenue#", "Costs#", "Net#", "Change#", "Change %#"],
               "r": rows,
-              "n": (f"{len(rows)} of {nets.get('months', len(rows))} filed months, "
-                    "each against the one before it. Net is the FILED "
-                    "figure — what stands on the record, which is what the share "
-                    "price is derived from, not what the shop has taken since."
-                    if rows else "Nothing filed yet.")}
+              "n": (f"{len(rows)} of {nets.get('months', len(rows))} filed "
+                    "months. Net is the filed figure."
+                    if rows else "")}
 
     price_block = {"h2": "How the price is set",
                    "bal": [[label, value, ""] for label, value, _t in d["price_rows"]],
-                   "n": ("From the pricing function the bot itself quotes, so this "
-                         "page and /stock price cannot disagree."
-                         if d["price_rows"] else
-                         "The pricing function is not reachable from this process. "
-                         "It is not being estimated here.")}
+                   "n": ("" if d["price_rows"] else
+                         "The pricing function is not reachable from this "
+                         "process.")}
 
     float_pct = (d["free_float"] / shares * 100.0) if shares else 0.0
     register = {"h2": "The register",
@@ -784,10 +753,7 @@ def stock(user_id: str = "", market_id: str = "", csrf: str = "") -> dict:
                         ["Holder accounts", f"{d['holders']:,.0f}", ""],
                         ["Market capitalisation", f"{mcap:,.0f}c",
                          "price × shares outstanding"]],
-                "n": ("How many accounts hold this and how much of it is in "
-                      "someone else's hands are facts about the security. Who "
-                      "holds which shares is a fact about a person, and nothing "
-                      "asks him to publish it.")}
+                }
 
     if chart is not None:
         # The live price rides on the chart here too, so the market page and the
@@ -803,8 +769,7 @@ def stock(user_id: str = "", market_id: str = "", csrf: str = "") -> dict:
     if nets.get("points"):
         net_chart = _spark_block(
             "Net, every filed month", nets,
-            note=("What the market earned, per month, as filed. A month closes "
-                  "once, so this line does not move between filings."))
+            note="")
 
     items = _item_block(d["market_id"], d["listed"], owner)
 
@@ -835,11 +800,9 @@ def stock(user_id: str = "", market_id: str = "", csrf: str = "") -> dict:
                                ["At the current price",
                                 f"{d['your_shares'] * price:,.0f}c",
                                 "what the register says it is worth today"]],
-                       "n": "Value at the quoted price. What you paid is on Stocks."})
+                       "n": "Value at the quoted price."})
 
-    asof = (f"{d['name']} · {d['grade']} · {shares:,.0f} shares listed, "
-            f"{d['holders']} holder{'' if d['holders'] == 1 else 's'}.")
-    out = _shell("stocks", asof, band, blocks)
+    out = _shell("stocks", "", band, blocks)
     out["title"] = d["name"]
     return out
 
@@ -856,24 +819,22 @@ def work(user_id: str = "") -> dict:
     for item, market, _owner, qty, detail, unit, per, total, _pts, prio, window in rows:
         out.append([f"{item} for {market}", detail or qty, f"{unit} {per}", total,
                     ("l|" if prio else "g|") + (window or "Open to all"), "k|Claim"])
-    band = [("Open jobs", str(len(rows)), "claimable right now"),
-            ("Markets hiring", str(len({r[1] for r in rows})), "posting work"),
-            ("Employee-priority", str(sum(1 for r in rows if r[9])),
-             "first 45 minutes"),
-            ("Open to all", str(sum(1 for r in rows if not r[9])), "anyone may claim")]
+    band = [("Open jobs", str(len(rows))),
+            ("Markets hiring", str(len({r[1] for r in rows}))),
+            ("Employee-priority", str(sum(1 for r in rows if r[9]))),
+            ("Open to all", str(sum(1 for r in rows if not r[9])))]
     table = {"h2": "Open jobs", "ac": 1,
              "c": ["Job", "Quantity", "Pay#", "Total#", "Who can act", "#"],
              "r": out,
-             "n": ("A new job is employee-only for its first 45 minutes, then "
-                   "open to all." if out else "No open jobs.")}
+             "n": ("A new job is employee-only for its first 45 minutes."
+                   if out else "")}
     # Work and Orders are ONE PAGE. Same table, two sides of it: what can I
     # claim, and what did I commit. The design already says so - Orders hangs off
     # Work as a child, not a sibling - and as two pages you scrolled one list to
     # size a job and another to see who took it. These blocks carry `own:1`, so
     # a worker who posts nothing sees the page he saw before.
     blocks = [table] + _order_blocks(user_id)
-    return _shell("work", f"{len(rows)} open job{'' if len(rows) == 1 else 's'}.",
-                  band, blocks)
+    return _shell("work", "", band, blocks)
 
 
 # ── Claims — the LAND auction ───────────────────────────────────────────────
@@ -894,23 +855,19 @@ def lands(user_id: str = "", csrf: str = "") -> dict:
     out = [[name, owner or DASH, price, state, note or ""]
            for name, owner, _tenant, price, state, note in rows]
     live = sum(1 for r in rows if str(r[4]).lower() in ("active", "open"))
-    band = [("Land lots", str(len(rows)), "on the register"),
-            ("Live now", str(live), "open for bidding"),
-            ("Sellers", str(len({r[1] for r in rows})), "with land listed"),
-            ("Rent", "none", "a claim is bought outright")]
+    band = [("Land lots", str(len(rows))),
+            ("Live now", str(live)),
+            ("Sellers", str(len({r[1] for r in rows}))),
+            ("Rent", "none")]
     # "Chunks", not "Size": §4 size-scales the CHUNK COUNT column, and the
     # renderer keys that ramp off the heading. A column called something else is
     # a column that silently loses it.
     table = {"h2": "Land auctions", "ac": 1,
              "c": ["Claim", "Seller", "Price#", "State", "Chunks#"], "r": out,
-             "n": ("A claim is bought outright and transfers with whatever is "
-                   "built on it — there is no recurring rent. Items are auctioned "
-                   "separately, under Auctions."
-                   if out else "No land is listed. Items are auctioned separately, "
-                   "under Auctions.")}
+             "n": ("A claim is bought outright; there is no rent."
+                   if out else "")}
     blocks = [table] + _bid_blocks("lands", str(user_id), csrf)
-    return _shell("lands", f"{len(rows)} land lot{'' if len(rows) == 1 else 's'} "
-                  "on the register.", band, blocks)
+    return _shell("lands", "", band, blocks)
 
 
 # ── Exchange ────────────────────────────────────────────────────────────────
@@ -950,11 +907,10 @@ def exchange(user_id: str = "") -> dict:
                     holders, free, held.get(name, DASH)])
 
     listed = len(rows)
-    band = [("Listed markets", str(listed), "shares you can trade"),
-            ("Your positions", str(len(held)), "markets you hold"),
-            ("Holders", str(sum(int(str(r[4]).replace(",", "") or 0) for r in rows)),
-             "share accounts on the register"),
-            ("Dividends", "none paid yet", "no market has declared one")]
+    band = [("Listed markets", str(listed)),
+            ("Your positions", str(len(held))),
+            ("Holders", str(sum(int(str(r[4]).replace(",", "") or 0) for r in rows))),
+            ("Dividends", "none paid yet")]
     # §5: the rows this reader holds are flagged, and only while they are the
     # minority of the table - `_table` enforces that half. A wash on most of the
     # rows is a zebra stripe, not a flag.
@@ -962,19 +918,49 @@ def exchange(user_id: str = "") -> dict:
     index = _spark_block(
         "The index", abex_live.index_series(30),
         unit="", src="/api/series/index?days=30",
-        note=("The index is written every five minutes whether or not anything "
-              "moved, so a flat stretch is a real flat stretch — nothing traded "
-              "— and not a gap in the record."))
+        note="")
     table = {"h2": "Listed markets", "ac": 1,
              "c": ["Market", "Ticker", "Grade", "Share price#", "Shares out#",
                    "Holders#", "Free float#", "You hold#"],
              "r": out, "mine": held_rows,
-             "n": ("Free float counts shares in someone else's hands - the "
-                   "register minus the owner's own holding."
-                   if out else "No market is listed.")}
-    blocks = [b for b in (index, table) if b is not None]
-    return _shell("exchange", f"{listed} market{'' if listed == 1 else 's'} listed.",
-                  band, blocks)
+             "n": ("Free float is the register less the owner's own holding."
+                   if out else "")}
+    # THE BOARD — every market that has FILED, not every market that has listed.
+    # `data["rows"]` is the share register, so this page showed two markets out
+    # of nineteen and read as an economy with two participants in it. Listing is
+    # a financing decision; filing is what makes a market readable, and a market
+    # with filed months has a trajectory whether or not shares in it are for
+    # sale. Sorted by newest filed net, so the block is a ranking of who earns.
+    board = None
+    dev = abex_live.market_development(24)
+    if dev:
+        cells = []
+        for m in dev:
+            series = m["series"]
+            cells.append({
+                "name": m["name"],
+                # Only a LISTED market has a page to open. Linking an unlisted
+                # one sends the reader to a screen that is allowed to say
+                # nothing about it (§6.7), which is worse than no link.
+                "href": f"/hub/stocks/{m['mid']}" if m["listed"] else "",
+                "grade": m["grade"],
+                "unit": "c",
+                "points": series.get("points") or [],
+                "window": series.get("window") or "",
+                "meta": (f"{m['months']} filed month"
+                         f"{'' if m['months'] == 1 else 's'}"
+                         + (f" · {m['ticker']}" if m["ticker"] else "")),
+            })
+        board = {
+            "h2": "Every valuated market",
+            "sparks": cells,
+            "n": ("Filed net per month. Each line is scaled to its own "
+                  "market, and the change is against that market's previous "
+                  "filing."),
+        }
+
+    blocks = [b for b in (index, board, table) if b is not None]
+    return _shell("exchange", "", band, blocks)
 
 
 # ── My market, and the report it files ──────────────────────────────────────
@@ -1024,18 +1010,12 @@ def market(user_id: str = "") -> dict:
     residual = net - retention
 
     band = [
-        ("Grade", data["grade"],
-         (f"{data['backing']:,.2f}× backed" if data["backing"] else "not scored")),
-        (f"Net, {data['month_name']}", _coin(net),
-         (f"{_coin(data['prev_net'])} in {data['prev_month_name']}"
-          if data["prev_net"] else "no prior month on record"),
+        ("Grade", data["grade"]),
+        (f"Net, {data['month_name']}", _coin(net), "",
          "g" if net >= float(data["prev_net"] or 0) else "l"),
         ("Share price",
-         (f"{data['share_price']:,.2f}c" if data.get("share_price") else "not listed"),
-         (f"{data['shares_out']:,.0f} shares out" if data.get("shares_out")
-          else "no shares issued")),
-        ("Vault owed", _coin(vault_due),
-         f"{data['retention_pct']:,.0f}% of each closed month"),
+         (f"{data['share_price']:,.2f}c" if data.get("share_price") else "not listed")),
+        ("Vault owed", _coin(vault_due)),
     ]
 
     entries = data["ledger"]
@@ -1043,17 +1023,14 @@ def market(user_id: str = "") -> dict:
               "c": _cols("market", 1) or ["Date", "Entry", "Category", "In#", "Out#"],
               "r": [[d, e, c, ("g|" + i if i else DASH), ("l|" + o if o else DASH)]
                     for d, e, c, i, o in entries],
-              "n": (f"{len(entries)} most recent entries this month, newest first. "
-                    "Categories are the two this ledger records — a sale to a "
-                    "customer, and stock bought in."
-                    if entries else "No entries recorded this month.")}
+              "n": (f"{len(entries)} most recent entries this month, newest "
+                    "first." if entries else "")}
 
     month_bal = {"h2": f"{data['month_name'].split()[0]} so far",
                  "bal": [["Revenue", _coin(data["income"]), ""],
                          ["Less stock and costs", _coin(data["spent"]), ""]],
                  "tot": ["Net for the month", _coin(net)],
-                 "n": "Worker pay is not in this ledger — it is paid through the "
-                      "team log and is shown under Staff."}
+                 "n": "Worker pay is not in this ledger."}
 
     waterfall = {"h2": "Where the net goes", "own": 1,
                  "bal": [
@@ -1067,9 +1044,7 @@ def market(user_id: str = "") -> dict:
                      ["Less dividends to shareholders", "0c",
                       "no dividend has been declared"],
                  ],
-                 "tot": ["To the owner", _coin(residual)],
-                 "n": "The order is fixed: vault first, then debt and coupons, "
-                      "then dividends, then you."}
+                 "tot": ["To the owner", _coin(residual)]}
 
     liabilities = []
     if vault_due:
@@ -1079,10 +1054,7 @@ def market(user_id: str = "") -> dict:
     liab = {"h2": "Liabilities", "own": 1,
             "c": _cols("market", 4) or ["Item", "Held by", "Amount#", "Due", "Note"],
             "r": liabilities,
-            "n": ("The only liability on record. No bond has been issued against "
-                  "this market and no loan is drawn."
-                  if liabilities else "Nothing owed: no vault arrears, no bond, "
-                  "no loan.")}
+            "n": ("The only liability on record." if liabilities else "")}
 
     staff_rows = [[w, role, filled, paid, DASH]
                   for w, role, filled, paid in data["staff"]]
@@ -1090,14 +1062,9 @@ def market(user_id: str = "") -> dict:
              "c": _cols("market", 5) or ["Worker", "Role", "Orders filled#",
                                          "Paid this month#", "Owed#"],
              "r": staff_rows,
-             "n": ("Paid is what the team log recorded this month. Owed is blank "
-                   "because nothing in this schema records an unpaid worker "
-                   "balance — a figure here would be a guess about somebody's wages."
-                   if staff_rows else "No workers on your team.")}
+             "n": ("Paid is what the team log recorded this month."
+                   if staff_rows else "")}
 
-    asof = (f"{data['name']} · you are the owner · "
-            + (f"listed at {data['share_price']:,.2f}c a share"
-               if data.get("share_price") else "not listed on the exchange"))
     # THE CONSOLE IS A LANDING, NOT A PILE. Inventory and the shelves were
     # stacked on here for one commit and it was the wrong call: seven blocks in
     # one scroll is not an information architecture, and the nav could only show
@@ -1106,7 +1073,7 @@ def market(user_id: str = "") -> dict:
     # Market's children are real pages now (`hub_web.SECTION_CHILDREN`), so the
     # shelves live at /inventory where they always did. What stays here is the
     # owner's own summary — his month, his waterfall, what is waiting on him.
-    screen_d = _shell("market", asof, band,
+    screen_d = _shell("market", "", band,
                       [ledger, month_bal, waterfall, liab, staff])
     screen_d["title"] = data["name"]
     return screen_d
@@ -1135,14 +1102,11 @@ def filing(user_id: str = "") -> dict:
     residual = net - retention
     month_word = data["month_name"].split()[0]
 
-    band = [(f"Net for {month_word}", _coin(net),
-             "revenue less stock and costs"),
+    band = [(f"Net for {month_word}", _coin(net)),
             ("Share price",
              (f"{data['share_price']:,.2f}c" if data.get("share_price")
-              else "not listed"),
-             "the exchange's current price"),
-            ("Grade", data["grade"],
-             (f"{data['backing']:,.2f}× backed" if data["backing"] else "not scored"))]
+              else "not listed")),
+            ("Grade", data["grade"])]
 
     # A month can already have a filed figure while the sources have moved on —
     # a shop keeps trading after its owner files. Saying so is the point of the
@@ -1161,8 +1125,7 @@ def filing(user_id: str = "") -> dict:
                       "closes the month. Reports are filed from Discord — this "
                       "page shows what would be filed."),
               "btns": [],
-              "n": stands + " A missed filing keeps the last price, pays no "
-                   "dividend and drops a band."}
+              "n": stands}
 
     figures = {"h2": "The figures you are filing",
                "bal": [["Revenue", _coin(data["income"]), ""],
@@ -1172,11 +1135,8 @@ def filing(user_id: str = "") -> dict:
     price_rows = data.get("price_rows") or []
     price = {"h2": "How the price is set",
              "bal": [[label, value, ""] for label, value, _tone in price_rows],
-             "n": ("Straight from the pricing function the bot quotes, so this "
-                   "page and /stock price cannot disagree."
-                   if price_rows else
-                   "The pricing function is not reachable from this process, so "
-                   "no derivation is shown. It is not being estimated here.")}
+             "n": ("" if price_rows else
+                   "The pricing function is not reachable from this process.")}
 
     pays = {"h2": "What filing pays", "own": 1,
             "bal": [["Net for the month", _coin(net), ""],
@@ -1198,14 +1158,9 @@ def filing(user_id: str = "") -> dict:
                                            "Price after#", "Dividend a share#",
                                            "Grade"],
                "r": hist_rows,
-               "n": ("Net is the filed figure. Filing date, the price it set and "
-                     "the grade it scored are not kept per month — the price log "
-                     "records trades, not reports — so those cells are blank "
-                     "rather than reconstructed."
-                     if hist_rows else "Nothing filed yet.")}
+               "n": ("Net is the filed figure." if hist_rows else "")}
 
-    asof = f"{month_word} report · {data['name']}"
-    screen_d = _shell("filing", asof, band,
+    screen_d = _shell("filing", "", band,
                       [action, figures, price, pays, history])
     screen_d["title"] = f"{month_word} report, {data['name']}"
     return screen_d
@@ -1349,19 +1304,17 @@ def _order_blocks(user_id: str = "") -> list:
          "r": open_rows,
          "n": (f"{len(open_rows)} open, {committed:,.0f}c committed. Pay is per "
                "piece unless the order says per stack; a stack is 64."
-               if open_rows else "You have no open orders.")}
+               if open_rows else "")}
     b = {"h2": "Filled this week", "own": 1,
          "c": _cols("orders", 1) or ["Filled", "Item", "Market", "Worker",
                                      "Quantity", "Paid#"],
          "r": filled,
-         "n": ("Paid is the order's rate against the quantity claimed. What was "
-               "actually transferred is in History."
-               if filled else "Nothing filled on record.")}
+         "n": ("Paid is the order's rate against the quantity claimed."
+               if filled else "")}
     act = {"h2": "Posting work", "own": 1,
            "act": ("Orders are posted and approved from Discord. A new order is "
                    "employee-only for its first 45 minutes, then open to all."),
-           "btns": [],
-           "n": "Claims are approved on the order card, not here."}
+           "btns": []}
     return [a, b, act]
 
 
@@ -1485,29 +1438,25 @@ def auctions(user_id: str = "", csrf: str = "") -> dict:
                      (f"{yours:,.0f}c" if yours else DASH), str(len(bids)),
                      _closes(lot.get("ends_at")), position])
 
-    band = [("Item lots", str(len(rows)), "open for bidding"),
-            ("Held in bids", f"{held:,.0f}c", "released when a lot closes"),
-            ("Your bids", str(len(mine)), "lots you are in"),
-            ("Sellers", str(len({r[1] for r in rows})), "with a lot open")]
+    band = [("Item lots", str(len(rows))),
+            ("Held in bids", f"{held:,.0f}c"),
+            ("Your bids", str(len(mine))),
+            ("Sellers", str(len({r[1] for r in rows})))]
 
     table = {"h2": "Live lots", "ac": 1,
              "c": _cols("auctions", 0) or ["Lot", "Seller", "Current bid#",
                                            "Your bid#", "Bids#", "Closes",
                                            "Your position"],
              "r": rows, "mine": [i for i, r in enumerate(rows) if r[3] != DASH],
-             "n": ("A bid is held from your wallet until the lot closes — the "
-                   "coins stay yours until a lot settles. Land is auctioned "
-                   "separately, under Claims."
-                   if rows else "No item lots are open. Land is auctioned "
-                   "separately, under Claims.")}
+             "n": ("A bid is held from your wallet until the lot closes."
+                   if rows else "")}
     blocks = [table]
     if mine:
         blocks.append({"h2": "Your bids", "bal": mine,
                        "tot": ["Held in bids", f"{held:,.0f}c"],
                        "n": "Held, not spent."})
     blocks += _bid_blocks("auctions", str(user_id), csrf)
-    return _shell("auctions", f"{len(rows)} item lot"
-                  f"{'' if len(rows) == 1 else 's'} live.", band, blocks)
+    return _shell("auctions", "", band, blocks)
 
 
 # ── Messages ────────────────────────────────────────────────────────────────
@@ -1560,9 +1509,7 @@ def _reply_blocks(user_id: str, csrf: str, threads: list) -> list:
     shown = len(boxes)
     return [{"h2": "Reply", "reply": boxes,
              "n": (f"The {shown} most recent conversation"
-                   f"{'' if shown == 1 else 's'}, unread first. Sending happens "
-                   f"here — there is no second page to open, and no second copy "
-                   f"of what you are replying to.")}]
+                   f"{'' if shown == 1 else 's'}, unread first.")}]
 
 
 def messages(user_id: str = "", csrf: str = "") -> dict:
@@ -1599,17 +1546,15 @@ def messages(user_id: str = "", csrf: str = "") -> dict:
         row = [(f"A|/messages/t/{tid}|{who}" if tid else who), preview, when or DASH]
         (unread if int(t.get("unread") or 0) else earlier).append(row)
 
-    total_unread = sum(1 for t in threads if int(t.get("unread") or 0))
     a = {"h2": "Unread", "ac": 1,
          "c": _cols("messages", 0) or ["From", "Subject", "Received"], "r": unread,
-         "n": (f"{len(unread)} thread{'' if len(unread) == 1 else 's'} with "
-               "something you have not read, newest first. The subject is the "
-               "newest message — these are threads, not mail, and they carry no "
-               "subject line." if unread else "Nothing unread.")}
+         "n": (f"{len(unread)} thread{'' if len(unread) == 1 else 's'} unread, "
+               "newest first. The subject is the newest message."
+               if unread else "")}
     b = {"h2": "Earlier",
          "c": _cols("messages", 1) or ["From", "Subject", "Received"], "r": earlier,
          "n": (f"{len(earlier)} thread{'' if len(earlier) == 1 else 's'}, newest "
-               "first." if earlier else "No earlier threads.")}
+               "first." if earlier else "")}
     # REPLYING HAPPENS HERE. "Open the messenger" was the last button on the site
     # that answered a question by sending somebody somewhere else, and a second
     # page meant a second copy of the thread being answered.
@@ -1619,13 +1564,11 @@ def messages(user_id: str = "", csrf: str = "") -> dict:
                   "act": ("There is nothing to reply to yet. A conversation "
                           "starts when somebody writes to you, or from a player's "
                           "own page."),
-                  "btns": [],
-                  "n": "Replies are written on this page once a thread exists."}]
+                  "btns": []}]
     head = dict(reply[0])
     head["ac"] = 1
     reply[0] = head
-    asof = (f"{total_unread} unread." if total_unread else "Nothing unread.")
-    return _shell("messages", asof, None, reply + [a, b])
+    return _shell("messages", "", None, reply + [a, b])
 
 
 # ── History ─────────────────────────────────────────────────────────────────
@@ -1687,26 +1630,21 @@ def history(user_id: str = "") -> dict:
                      ("g|%s c" % f"{delta:,.2f}" if delta > 0 else DASH),
                      ("l|%s c" % f"{-delta:,.2f}" if delta < 0 else DASH)])
 
-    band = [("Entries, last 30 days", str(month_count),
-             f"{len(entries)} on record"),
-            ("Money in", f"{money_in:,.0f}c", "last 30 days", "g"),
-            ("Money out", f"{money_out:,.0f}c", "last 30 days", "l")]
+    band = [("Entries, last 30 days", str(month_count)),
+            ("Money in", f"{money_in:,.0f}c", "", "g"),
+            ("Money out", f"{money_out:,.0f}c", "", "l")]
     table = {"h2": "Recent", "ac": 1,
              "c": _cols("history", 0) or ["Date", "Entry", "Counterparty",
                                           "In#", "Out#"],
              "r": rows,
-             "n": (f"{len(rows)} of {len(entries)} entries, newest first. Balances "
-                   "are the figures the ledger stored, never recomputed here."
-                   if rows else "No wallet movements on record.")}
+             "n": (f"{len(rows)} of {len(entries)} entries, newest first."
+                   if rows else "")}
     act = {"h2": "The full record",
            "act": ("This is the wallet ledger. The full history also carries "
                    "exchange trades, dividends and settlements from their own "
                    "sources, each with the reason the bot stored."),
-           "btns": [["Open the full history", "s", "/history"]],
-           "n": "Nothing here is recomputed — every balance is the figure the "
-                "ledger wrote."}
-    return _shell("history", f"{month_count} entries in the last 30 days.",
-                  band, [table, act])
+           "btns": [["Open the full history", "s", "/history"]]}
+    return _shell("history", "", band, [table, act])
 
 
 # ── Banking ─────────────────────────────────────────────────────────────────
@@ -1858,9 +1796,8 @@ def _bond_blocks(user_id: str, csrf: str, acct: dict, available: float,
                        "c": ["Bond", "Face#", "Rate#", "Matures",
                              "Redeem early", "Value today#"],
                        "r": rows,
-                       "n": "Redeeming before maturity is allowed and the penalty "
-                            "is the figure on the row — the confirm screen shows "
-                            "what holding to maturity would have paid instead."})
+                       "n": "The early-redemption penalty is the figure on "
+                            "the row."})
 
     boxes = []
     for b in bonds:
@@ -1900,8 +1837,7 @@ def _bond_blocks(user_id: str, csrf: str, acct: dict, available: float,
                       "stuck": _in_flight_note("bond_buy", stuck) if stuck else ""})
     if boxes:
         blocks.append({"h2": "Bonds", "money": boxes,
-                       "n": "A bond locks its face value for the term. The rate is "
-                            "fixed when you buy."})
+                       "n": "The rate is fixed when you buy."})
     return blocks
 
 
@@ -1947,18 +1883,12 @@ def banking(user_id: str = "", csrf: str = "") -> dict:
     loan = acct.get("loan") or None
     limit = acct.get("limit") or {}
 
-    band = [("Available", f"{available:,.0f}c",
-             f"{held:,.0f}c held in orders and bids"),
-            ("Savings", (f"{principal:,.0f}c" if acct else "not deployed"),
-             (f"{float(savings.get('accrued_this_month') or 0):,.0f}c interest this month"
-              if acct else bank_note)),
+    band = [("Available", f"{available:,.0f}c"),
+            ("Savings", (f"{principal:,.0f}c" if acct else "not deployed")),
             ("Debt", (f"{float(loan['outstanding']):,.0f}c" if loan else
-                      ("nothing drawn" if acct else "not deployed")),
-             ("one open loan" if loan else "no loan outstanding")),
+                      ("nothing drawn" if acct else "not deployed"))),
             ("Available to borrow",
-             (f"{float(limit.get('headroom') or 0):,.0f}c" if limit else DASH),
-             (f"{float(limit.get('amount') or 0):,.0f}c limit" if limit
-              else "the bank sets this"))]
+             (f"{float(limit.get('headroom') or 0):,.0f}c" if limit else DASH))]
 
     due = []
     if loan and loan.get("due"):
@@ -1969,9 +1899,8 @@ def banking(user_id: str = "", csrf: str = "") -> dict:
     waiting = {"h2": "Waiting on you", "ac": 1,
                "c": _cols("banking", 0) or ["What is due", "Amount#", "Due", "Note"],
                "r": due,
-               "n": ("Missed payments take your savings and bond payouts after a "
-                     "three-day grace. Never your wallet, and never your shares "
-                     "or land." if due else "Nothing due.")}
+               "n": ("Missed payments take savings and bond payouts after a "
+                     "three-day grace, never your wallet." if due else "")}
 
     accounts = {"h2": "Accounts",
                 "bal": [["Wallet available", f"{available:,.0f}c", ""],
@@ -1980,10 +1909,19 @@ def banking(user_id: str = "", csrf: str = "") -> dict:
                         ["Savings principal",
                          (f"{principal:,.0f}c" if acct else "not deployed"), ""]],
                 "tot": ["Cash and savings", f"{balance + principal:,.0f}c"],
-                "n": "Held coins are still yours — a hold reserves, it does not "
-                     "debit."}
+                "n": "A hold reserves, it does not debit."}
 
-    blocks = [waiting, accounts]
+    # THE BANK'S ABSENCE BELONGS ON THE BANKING PAGE. This sentence used to run across
+    # a site-wide strip on every screen; it was taken off the strip (one section's
+    # status is not chrome for the whole site) and, for one round, put nowhere at all —
+    # the only surviving copy was a test asserting it was on the page. A status a reader
+    # needs in order to read an em-dash correctly cannot be deleted, only moved.
+    if bank_note:
+        blocks = [waiting, accounts,
+                  {"h2": "Savings and net position", "c": [], "r": [],
+                   "n": "Savings and net position need Abex Bank — not connected."}]
+    else:
+        blocks = [waiting, accounts]
     if loan:
         blocks.append({"h2": "Debt",
                        "c": _cols("banking", 3) or ["Loan", "Drawn#", "Rate#",
@@ -1994,8 +1932,8 @@ def banking(user_id: str = "", csrf: str = "") -> dict:
                               f"{float(loan.get('apr') or 0):,.2f}%",
                               f"{float(loan.get('payoff_today') or 0):,.0f}c",
                               str(loan.get("due") or "")[:10] or DASH, DASH]],
-                       "n": "Collections take savings and bond payouts, never the "
-                            "wallet, and there is no seizure of shares or land."})
+                       "n": "Collections take savings and bond payouts, never "
+                            "the wallet."})
     components = limit.get("components") or []
     if components:
         blocks.append({"h2": "Credit limit",
@@ -2011,17 +1949,14 @@ def banking(user_id: str = "", csrf: str = "") -> dict:
     boxes = _money_boxes(uid, csrf, acct, available, _keys, _flight)
     if boxes:
         blocks.append({"h2": "Moving money", "money": boxes,
-                       "n": "Each of these is priced by the bank when you press "
-                            "it, not when this page loaded, and you see those "
-                            "figures before anything moves."})
+                       "n": "Priced when you press, not when the page "
+                            "loaded."})
     elif acct:
         blocks.append({"h2": "Moving money",
                        "act": ("Sign-in could not be confirmed for a money "
                                "instruction, so no button is offered. Reload the "
                                "page rather than acting anywhere else."),
-                       "btns": [],
-                       "n": "No coin moves from a page that cannot prove who is "
-                            "asking."})
+                       "btns": []})
     else:
         blocks.append({"h2": "Moving money",
                        "act": ("The bank is not answering, so nothing can be "
@@ -2030,9 +1965,7 @@ def banking(user_id: str = "", csrf: str = "") -> dict:
                        "btns": [],
                        "n": bank_note or "The bank is not deployed."})
     blocks.extend(_bond_blocks(uid, csrf, acct, available, _keys, _flight))
-    asof = ("Interest is paid weekly." if acct else
-            "Your wallet is live. " + bank_note)
-    return _shell("banking", asof, band, blocks)
+    return _shell("banking", "", band, blocks)
 
 
 #: key -> builder. A screen absent here has no live source yet and keeps its

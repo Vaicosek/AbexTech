@@ -1680,6 +1680,94 @@ def net_series(market_id: str, months: int = 36) -> Optional[dict]:
     }
 
 
+def market_development(months: int = 24) -> Optional[list]:
+    """Every market that has ever FILED, with its net line — the whole board.
+
+    THE EXCHANGE SHOWED TWO MARKETS. `exchange()` reads `get_public_markets`,
+    which is the share register, so a market that has never listed shares was
+    absent from the exchange entirely — nineteen markets in the economy, two on
+    the page, and no way to see how any of the other seventeen were doing.
+
+    Listing is a financing decision, not an existence one. What makes a market
+    READABLE is that it has filed accounts: `csn_history` is the record of
+    months a market actually closed, and a market with filed months has a
+    trajectory whether or not anybody can buy a share of it.
+
+    So this is the other axis: sorted by the newest filed net, one entry per
+    market with at least one filed month, each carrying the same series shape
+    `net_series` returns so the renderer needs no second vocabulary.
+
+    `None` only when the registry itself is unreadable — distinct from an empty
+    list, which means nothing has ever been filed and is a fact worth showing.
+    """
+    try:
+        db = _db()
+    except Exception as exc:                        # pragma: no cover
+        log.warning("[abex_live] development unavailable: %s", exc)
+        return None
+    # THE GRADE IS THE OPTIONAL HALF. `_backing_rating` lives on the bot, and
+    # requiring it here made the whole board `None` in any process that is not
+    # the bot — a page that shows nothing because it could not colour a column.
+    # The net line is the point; a grade it cannot reach reads "not rated".
+    try:
+        core = _core()
+    except Exception as exc:
+        log.warning("[abex_live] grades unavailable, board is ungraded: %s", exc)
+        core = None
+    try:
+        registry = db.get_markets() or {}
+    except Exception as exc:
+        log.warning("[abex_live] registry unreadable: %s", exc)
+        return None
+    try:
+        filed = db._get_conn().execute(
+            "SELECT DISTINCT market_id FROM csn_history").fetchall()
+    except Exception as exc:
+        log.warning("[abex_live] filed history unreadable: %s", exc)
+        return None
+
+    try:
+        listed = set(db.get_public_markets() or {})
+    except Exception:
+        listed = set()
+
+    out = []
+    for (mid,) in filed:
+        mid = str(mid)
+        market = registry.get(mid) or {}
+        series = net_series(mid, months)
+        if not series or not series.get("points"):
+            # Filed rows exist but the window returned none. Nothing to draw and
+            # nothing true to say, so the market is left off rather than shown
+            # as a market that earned zero.
+            continue
+        pts = series["points"]
+        # An unlisted market has no market cap, so `_backing_rating` cannot
+        # grade it. "not rated" is the honest word for that and is NOT a bad
+        # grade — the loss tone is never spent on it.
+        grade = "not rated"
+        if core is not None:
+            try:
+                grade, _scale, _b, _t = core._backing_rating(mid)
+            except Exception:
+                grade = "not rated"
+        out.append({
+            "mid": mid,
+            "name": market.get("name") or mid,
+            "ticker": (_ticker_of(core, mid) if core is not None and mid in listed else ""),
+            "grade": str(grade),
+            "listed": mid in listed,
+            "last": pts[-1],
+            "first": pts[0],
+            "months": len(pts),
+            "series": series,
+        })
+    # Newest filed net, biggest first. The board reads as a ranking of who is
+    # earning, which is the question the page is for.
+    out.sort(key=lambda m: -float(m["last"] or 0))
+    return out
+
+
 def shelves(market_id: str, limit: int = 60) -> Optional[dict]:
     """What is on a market's shelves right now: stock, capacity and prices.
 

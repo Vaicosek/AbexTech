@@ -1703,7 +1703,7 @@ _TERMINAL_CSS = r"""
 --sans:Georgia,'Times New Roman',serif;
 --mono:Georgia,'Times New Roman',serif}
 *{box-sizing:border-box}
-body{margin:0;background:radial-gradient(#2e3136 1px,transparent 1px) 0 0/22px 22px,#1b1d20;
+body{margin:0;background:#1b1d20;
 color:var(--ink);font-family:var(--sans);font-size:19px;line-height:1.55;
 -webkit-font-smoothing:subpixel-antialiased}
 .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
@@ -3524,7 +3524,7 @@ _EXCHANGE_HTML = r"""<!DOCTYPE html>
 --sans:Georgia,'Times New Roman',serif;
 --mono:Georgia,'Times New Roman',serif}
 *{box-sizing:border-box}
-body{margin:0;background:radial-gradient(#2e3136 1px,transparent 1px) 0 0/22px 22px,var(--bg);color:var(--ink);font-family:var(--sans);font-size:19px;line-height:1.5;-webkit-font-smoothing:subpixel-antialiased}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:19px;line-height:1.5;-webkit-font-smoothing:subpixel-antialiased}
 .mono{font-family:var(--mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
 .up{color:var(--up)}.down{color:var(--down)}.muted{color:var(--muted)}.faint{color:var(--faint)}
 header{display:flex;align-items:center;gap:20px;height:44px;padding:0 16px;border-bottom:1px solid var(--line);background:var(--panel)}
@@ -3764,7 +3764,7 @@ function render(){const m=MK.find(x=>x.mid===cur);if(!m)return;
  document.getElementById('mTicker').textContent=m.ticker||m.mid;
  document.getElementById('mPrice').textContent=fmt(m.price)+'c';
  const c=document.getElementById('mChg');
- c.textContent=(up?'▲ ':'▼ ')+Math.abs(m.pct).toFixed(2)+'%';c.className='d '+(up?'up':'down');
+ c.textContent=(up?'+':'−')+Math.abs(m.pct).toFixed(2)+'%';c.className='d '+(up?'up':'down');
  const q=m.quality||{};
  const S=[['Mkt cap',fmt(m.mcap)+'c'],['P/E',(+m.pe).toFixed(1)+'x'],
   ['Backing',(m.backing_pct??0)+'%',(m.backing_pct||0)>=(m.backing_target||50)?'up':'down'],
@@ -5965,6 +5965,10 @@ async def start_webserver(port: int = 8080):
         # the balances, the instructions and the replies now live together.
         # /canvas is gone — it redirects here. There is one site.
         ("canvas_web",   "register_canvas_routes",   "Canvas screens"),
+        # The "How X works" pages. Registered after the screens because the
+        # screens are what link to them; a link to an unmounted route is a 404
+        # and that is exactly how these shipped for one round.
+        ("help_web",     "register_help_routes",     "Help pages"),
     ):
         try:
             _mod = __import__(_mod_name)

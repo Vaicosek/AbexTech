@@ -1,5 +1,5 @@
 """
-abex_shell.py — the Abex Tech page shell: sidebar hierarchy, sticky header, main column.
+abex_shell.py — the Abex Tech page shell: top bar, sticky header, main column.
 
 Every section page calls `render()` and passes only its own body. The nav, the header
 figures and the accent all come from here, so a new section is one NAV entry plus a
@@ -57,16 +57,22 @@ _FOOTER_HTML = ('<footer class="sitefoot"><p>' + _h.escape(_FOOTER_LINE)
                 + ' <a href="/terms">Terms</a>.</p></footer>')
 
 _FOOTER_CSS = """
-/* A masthead, not a badge: wordmark, hairline, tagline. The rule is the only
-   ornament and it is the same 1px the tables use, so the brand is set in the
-   product's own vocabulary rather than a second visual language bolted on top. */
-.brand .rule{display:block;height:1px;background:var(--line);
-  margin:9px 0 7px;width:150px;max-width:100%}
-@media (max-width:900px){.brand .rule{display:none}}
-.sitefoot{border-top:1px solid var(--line);margin:4rem 0 0;padding:1.1rem 0 2rem;
-  color:var(--inert);font-size:.82rem;line-height:1.5;max-width:78ch}
+/* The wordmark-over-hairline-over-tagline masthead was drawn for a 326px column
+   and there is no column any more. In a 40px bar it is a wordmark; the rule and
+   the tagline are gone rather than shrunk, and their CSS with them.
+
+   The footer had NO horizontal padding at all while `main` had 60px, so the one
+   line of small print sat 60px to the left of every other thing on the page —
+   the most visible misalignment on the site and the cheapest to fix. It takes
+   main's own gutter and main's own measure now, so its left edge and its right
+   edge are the page's. */
+.sitefoot{border-top:1px solid var(--line);margin:4rem auto 0;
+  padding:1.1rem var(--gutter) 2rem;
+  max-width:calc(var(--measure) + var(--gutter) * 2);width:100%;
+  color:var(--inert);font-size:15px;line-height:1.5}
 .sitefoot p{margin:0}
-.sitefoot a{color:var(--inert);text-decoration:none;border-bottom:1px solid var(--line)}
+.sitefoot a{color:var(--accent);text-decoration:underline;text-underline-offset:3px;
+  text-decoration-thickness:1px;text-decoration-color:rgba(201,179,122,.45)}
 .sitefoot a:hover{color:var(--dim)}
 """
 
@@ -138,17 +144,33 @@ def grade_chip(grade: str) -> str:
     Warm Feel, the only skin. Sub-investment grades take the loss tone, the only place
     that colour is allowed to appear outside money.
     """
-    # An unknown grade is not a bad grade. Falling back to C's colour painted
-    # "not rated" in the loss tone, which told fourteen unlisted markets they were
-    # junk. Anything off the ladder is muted text.
-    colour = GRADES.get(str(grade).upper(), "var(--faint)")
+    # A GRADE IS NOT A MONEY FIGURE, SO IT DOES NOT GET THE MONEY COLOURS. Green and
+    # red mean "up" and "down"; spending them on a static rating meant a page could
+    # carry a green/gold/red grade ramp, a coloured section rule and the gold link
+    # accent at once — four colour languages on a page whose brief allows one, and the
+    # money colours stopped meaning anything because they were everywhere.
+    # `abex_render._GRADE_RAMP` was flattened to `--text` for the live screens; this is
+    # the same decision for the static ones, which were rendering the old ramp and
+    # making one fact look different depending on which module drew the page.
+    # An unknown grade stays muted: "not rated" is not a bad grade, and painting it in
+    # the loss tone once told fourteen unlisted markets they were junk.
+    colour = "var(--faint)" if str(grade).upper() not in GRADES else "var(--text)"
     return (f'<span class="grade" style="color:{colour}">'
             f'{_h.escape(str(grade))}</span>')
 
 
-def _nav_html(active: str, staff: bool, available=None, prefix: str = "",
-              counts=None, paths=None, subs=None) -> str:
-    """The nav tree.
+def nav_parts(active: str, staff: bool, available=None, prefix: str = "",
+              counts=None, paths=None, subs=None) -> tuple[str, str]:
+    """`(top bar row, sub-section strip)` — two separate places on the page.
+
+    THE SUBS ARE NOT ROWS IN THE BAR. A sub-page is a section OF a record, and
+    every registry and brokerage that was looked at — Companies House, Nasdaq,
+    IBKR, Schwab, GOV.UK — puts those in a tab strip under the record's own
+    heading, not in the site nav. So this returns two strings and `render()`
+    puts each where it belongs. `_nav_html()` still joins them, because the
+    tests and the site's probes address this by `data-k` and both parts carry it.
+
+    The nav tree.
 
     `available`, when given, is the set of section keys this deployment actually
     mounted. The tree here is the structure and the order; what exists is a
@@ -177,7 +199,7 @@ def _nav_html(active: str, staff: bool, available=None, prefix: str = "",
     nav has not expanded anywhere since it was written.
     """
     root = active.split(".")[0]
-    out = []
+    out, sub_out = [], []
     groups = NAV + ([STAFF_NAV] if staff else [])
     for label, items in groups:
         if available is not None:
@@ -190,7 +212,7 @@ def _nav_html(active: str, staff: bool, available=None, prefix: str = "",
         # emits no heading at all. Named groups (the staff tree) keep theirs.
         head = f'<div class="glabel">{_h.escape(label)}</div>' if label else ""
         out.append(f'<div class="navgroup">{head}')
-        for key, text, href, _dom, meta, _subs in items:
+        for key, text, href, _dom, _meta, _subs in items:
             # `page` is the exact page you are on; `true` is the SECTION that
             # page belongs to. Standing on Markets > Inventory, the child is the
             # page and Markets is the section — without the second mark the
@@ -202,21 +224,23 @@ def _nav_html(active: str, staff: bool, available=None, prefix: str = "",
                 cur = ' aria-current="true"'
             else:
                 cur = ""
-            if counts is not None and key in counts:
-                # A count in a nav is a fact about the data. The tree's numbers are
-                # the design's; where the caller knows the real one it wins, and
-                # where nobody knows it the entry carries none rather than a stale
-                # one — the tree said 13 markets while the page listed 19.
-                meta = str(counts[key] or "")
+            # NO COUNTS IN THE NAV. The bar carried 13 / 7 / 3 / 2 next to
+            # Markets, Work, Auctions and Claims, and every one of those pages
+            # already states its own count in its own heading or band — so the
+            # number was said twice, and the nav's copy was the one nobody could
+            # see was stale. `counts=` is still accepted so no caller breaks;
+            # it is simply not rendered any more.
+            _ = counts
             if key == "messages":
-                # The unread count is live data, filled by the base script every
-                # 60s. A hardcoded number in a nav is decoration, and a wrong one
-                # is worse than none; this starts hidden and stays hidden for a
-                # reader with nothing unread.
+                # The one exception, and it is not a decoration: unread is LIVE,
+                # filled by the base script every 60s against
+                # /api/messages/unread, hidden while it is zero. Removing the
+                # element would silently blind that script and the messages
+                # probe that asserts on its id.
                 m = ('<span class="meta nav-badge" id="navUnread" '
                      'style="display:none"></span>')
             else:
-                m = f'<span class="meta">{_h.escape(meta)}</span>' if meta else ""
+                m = ""
             # data-k is how the rest of the site addresses a tab — page scripts and
             # the site's own probes both look for it. The old shell emitted it, and
             # dropping it in the collapse made every "is my tab there" check blind
@@ -238,12 +262,65 @@ def _nav_html(active: str, staff: bool, available=None, prefix: str = "",
                     shref = shref if str(shref).startswith("#") else \
                         (paths or {}).get(skey, shref)
                     scur = ' aria-current="page"' if skey == active else ""
-                    sm = f'<span class="meta">{_h.escape(smeta)}</span>' if smeta else ""
-                    out.append(f'<a class="navsub" data-k="{_h.escape(skey)}" '
-                               f'href="{prefix}{shref}"{scur}>'
-                               f'{_h.escape(stext)}{sm}</a>')
+                    # No meta here either, for the same reason as above.
+                    _ = smeta
+                    sub_out.append(
+                        f'<a class="navsub" data-k="{_h.escape(skey)}" '
+                        f'href="{prefix}{shref}"{scur}>'
+                        f'{_h.escape(stext)}</a>')
         out.append("</div>")
-    return "".join(out)
+    strip = ('<nav class="subnav" aria-label="Sections of this page">'
+             + "".join(sub_out) + "</nav>") if sub_out else ""
+    return "".join(out), strip
+
+
+def _nav_html(active: str, staff: bool, available=None, prefix: str = "",
+              counts=None, paths=None, subs=None) -> str:
+    """Both parts, concatenated. Kept because the whole site addresses the nav
+    by `data-k` and does not care which of the two elements carries it."""
+    row, strip = nav_parts(active, staff, available, prefix, counts, paths, subs)
+    return row + strip
+
+
+#: Where the sub-section strip goes. A page that wants to place it itself puts
+#: this comment in its body; everything else gets it directly under `.pagehead`,
+#: which every screen in the product opens with (`abex_screens.head()`,
+#: `abex_render`, `abex_web`, `abex_hub`). Under the H1 is the whole point — a
+#: strip above the heading is a second site nav, which is what it stopped being.
+SUBNAV_SLOT = "<!--SUBNAV-->"
+
+
+def _place_subnav(body: str, strip: str) -> str:
+    """Put `strip` after the body's opening `.pagehead` block.
+
+    The close is found by COUNTING `<div` against `</div>` from the opening tag,
+    not by looking for the next `</div>` — a pagehead contains two or three
+    nested divs (`<div><h1>..</h1><div class="sub">..</div></div>`) and the
+    naive search lands inside it, which puts a nav strip in the middle of a
+    heading. A body whose divs do not balance gets the strip prepended rather
+    than mangled: a strip in the wrong place is a design bug, a truncated body
+    is a broken page.
+    """
+    if not strip:
+        return body
+    if SUBNAV_SLOT in body:
+        return body.replace(SUBNAV_SLOT, strip, 1)
+    at = body.find('<div class="pagehead"')
+    if at < 0:
+        return strip + body
+    depth, i, n = 0, at, len(body)
+    while i < n:
+        if body.startswith("<div", i):
+            depth += 1
+            i += 4
+        elif body.startswith("</div>", i):
+            depth -= 1
+            i += 6
+            if depth == 0:
+                return body[:i] + strip + body[i:]
+        else:
+            i += 1
+    return strip + body
 
 
 def _stats_html(stats) -> str:
@@ -289,8 +366,14 @@ def render(active: str, body: str, *, title: str = "", who=None, stats=None,
     page_title = title or active.split(".")[0].title()
     # Built before the template: an f-string cannot nest one of its own quote
     # style, and Python 3.11 is what this runs on.
-    head_row = header or (f'<header class="top">{_stats_html(stats)}'
-                          f'<div class="right">{who_html}</div></header>')
+    # The viewer's name lives in the TOP BAR now, flush right, where every
+    # registry and brokerage puts it. The default header keeps its money strip
+    # and loses its right-hand block; a page that passes its own `header=`
+    # owns both sides of that row and is not touched here.
+    head_row = header or (f'<header class="top">{_stats_html(stats)}</header>'
+                          if stats else "")
+    nav_row, nav_strip = nav_parts(active, staff, available, prefix, counts,
+                                   paths, subs)
     css_extra = f"<style>{extra_css}</style>" if extra_css else ""
     dock_html = f'<div class="dock">{dock}</div>' if dock else ""
     return f"""<!DOCTYPE html>
@@ -303,22 +386,19 @@ def render(active: str, body: str, *, title: str = "", who=None, stats=None,
 <style>{_FOOTER_CSS}</style>
 {css_extra}
 </head><body data-domain="{dom}">
-<nav class="side" aria-label="Sections">
-  <a class="brand" href="{prefix or '/hub'}">
-    <span class="wordmark">Abex Tech</span>
-    <span class="rule"></span>
-    <span class="tag">One economy</span>
-  </a>
-  <button class="navtoggle" type="button" aria-expanded="false" aria-controls="navtree">
-    <span class="chev">&#9662;</span> {_h.escape(page_title)}
-  </button>
-  <div id="navtree" class="navtree">
-    {_nav_html(active, staff, available, prefix, counts, paths, subs)}
+<header class="topbar">
+  <div class="bar">
+    <a class="brand" href="{prefix or '/hub'}"><span class="wordmark">Abex Tech</span></a>
+    <button class="navtoggle" type="button" aria-expanded="false" aria-controls="navtree">
+      <span class="chev">&#9662;</span> {_h.escape(page_title)}
+    </button>
+    <nav id="navtree" class="navtree" aria-label="Sections">{nav_row}</nav>
+    {who_html}
   </div>
-</nav>
+</header>
 <div class="col">
   {head_row}
-  <main>{body}</main>
+  <main>{_place_subnav(body, nav_strip)}</main>
   {_FOOTER_HTML}
   {dock_html}
 </div>

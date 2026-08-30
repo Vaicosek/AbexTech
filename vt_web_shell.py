@@ -1614,14 +1614,22 @@ _LEGACY_CSS = r"""
   --border:var(--line);--border-strong:var(--line-up);
   --text-body:var(--dim);--muted:var(--dim);
   --green:var(--gain);--green-dim:#6f9a51;--red:var(--loss);--amber:var(--warn);
-  --blue:#26b1ff;--purple:#9b6b93;--nether:#e3dc7d;
+  --nether:#e3dc7d;
   --money-available:var(--gain);--money-held:var(--held);
   --money-debt:var(--loss);--money-save:var(--gain);
   --font-ui:var(--ui);--font-data:var(--mono);
 }
-.mono, td, .num, input, .pill, .tag, .val, .fv, .tick, .o-odds, .lot-bid, .hold-amt, .kfig, .big{font-family:var(--font-data);font-variant-numeric:tabular-nums}
-.strip-wrap{position:sticky;top:0;z-index:70;
-  background:radial-gradient(#2e3136 1px,transparent 1px) 0 0/22px 22px,#1b1d20;
+/* Everything below styles ONLY classes the legacy pages own. This sheet loads
+   AFTER abex_theme's, so anything here that named a bare element or a class the
+   theme owns silently beat the theme: h1 rendered 40px instead of 31px and every
+   td came out 21px and right-aligned, text columns included. Those rules are gone.
+   Do not re-add an element or theme-owned selector here — change abex_theme
+   instead, or the live site stops matching its own reference render. */
+input, .pill, .tag, .val, .fv, .tick, .o-odds, .lot-bid, .hold-amt, .kfig, .big{font-family:var(--font-data);font-variant-numeric:tabular-nums}
+/* The last dot-grid in the codebase. The brief bans grid texture; the two in
+   abex_theme went earlier and this one survived because it is a legacy class the
+   de-collision pass never looked at. Also hard-coded #1b1d20 rather than the token. */
+.strip-wrap{position:sticky;top:0;z-index:70;background:var(--ground);
   border-bottom:1px solid var(--border)}
 .strip{display:flex;align-items:center;flex-wrap:wrap;padding:30px 60px 24px}
 .seg{display:flex;flex-direction:column;justify-content:center;padding:0 30px 0 0;
@@ -1675,7 +1683,6 @@ _LEGACY_CSS = r"""
 .holdgap b, .drawer-foot b{color:var(--text);font-family:var(--font-data);
   font-variant-numeric:tabular-nums;font-weight:700}
 .page-head{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;margin-bottom:28px}
-h1{font-size:40px;font-weight:400;margin:0}
 .page-sub{color:var(--text-body);font-size:20px;margin-top:4px;text-wrap:pretty}
 .section-h{font-size:28px;font-weight:400;color:var(--text);margin:34px 0 10px;
   display:flex;align-items:center;gap:12px}
@@ -1715,7 +1722,7 @@ h1{font-size:40px;font-weight:400;margin:0}
 .kpi .k{color:var(--faint);font-size:18px}
 .kpi .kfig{font-size:33px;font-weight:600;margin-top:5px}
 .kpi .kt{font-size:18px;color:var(--faint);margin-top:3px}
-.pill, .chip{display:inline-flex;align-items:center;gap:6px;padding:0;font-size:inherit;
+.pill{display:inline-flex;align-items:center;gap:6px;padding:0;font-size:inherit;
   border:none;background:none;color:var(--text-body);white-space:nowrap}
 .pill.good{color:var(--green)}
 .pill.warn, .pill.crit{color:var(--red)}
@@ -1725,39 +1732,14 @@ h1{font-size:40px;font-weight:400;margin:0}
 .muted{color:var(--text-body)}
 .sec{color:var(--text-body)}
 .amb{color:var(--red)}
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;
-  background:var(--accent);color:var(--bg);border:1px solid var(--accent);
-  padding:7px 14px;font-family:var(--font-ui);font-size:19px;font-weight:700;
-  cursor:pointer;margin:0 10px 0 0}
-.btn:hover{background:#d8c48f;border-color:#d8c48f}
-.btn.ghost{background:none;border:1px solid var(--border);color:var(--text-body);
-  font-weight:400}
-.btn.ghost:hover{background:var(--panel2);border-color:var(--border-strong);color:var(--text)}
-.btn.danger{background:none;border-color:var(--red);color:var(--red);font-weight:400}
 .btn:disabled{opacity:.35;cursor:not-allowed}
 .btn.sm{padding:5px 10px;font-size:18px}
 .row{display:flex;align-items:center;gap:10px}
 .between{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .wrapf{flex-wrap:wrap}
 .right{text-align:right}
-/* NOT width:100%. This rule loads after the theme's and was overriding it,
-   so every table in the product stretched to its container: seven columns
-   across a 1520px content box puts 100px+ of dead air between each pair and
-   the eye cannot get from a label to its figure. A table is as wide as what
-   is in it and sits left. */
-table{width:auto;max-width:100%;border-collapse:collapse;background:none;border:none}
-th, td{padding:8px 14px 8px 0;text-align:right;border-bottom:1px solid var(--border);
-  font-size:21px}
-th:first-child, td:first-child{text-align:left}
-th{color:var(--faint);font-weight:400;font-family:var(--font-ui);font-size:21px;
-  cursor:pointer;user-select:none;white-space:nowrap}
-th:hover{color:var(--text)}
-tbody tr:hover{background:var(--panel2)}
-tr:last-child td{border-bottom:none}
 .tick{font-weight:700}
 .tname{font-size:18px;color:var(--faint);font-family:var(--font-ui)}
-.tablewrap{overflow-x:auto;scrollbar-width:thin;
-  scrollbar-color:var(--border-strong) var(--bg)}
 .bar{height:6px;background:var(--panel2);overflow:hidden;position:relative}
 .bar > i{display:block;height:100%;background:var(--green)}
 .outcome{display:grid;grid-template-columns:1fr auto;gap:4px 14px;align-items:center;
@@ -1803,10 +1785,6 @@ tr:last-child td{border-bottom:none}
 .amount-wrap .cn{position:absolute;left:16px;top:50%;transform:translateY(-50%);
   color:var(--faint);font-size:21px;font-family:var(--font-data)}
 .chips{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px}
-.chip{color:var(--accent);text-decoration:underline;text-underline-offset:3px;
-  text-decoration-color:rgba(201,179,122,.45);cursor:pointer;
-  font-family:var(--font-data);font-variant-numeric:tabular-nums}
-.chip:hover{text-decoration-color:var(--accent)}
 .err{color:var(--red);font-size:19px;min-height:22px}
 .kv{display:flex;justify-content:space-between;gap:16px;padding:5px 0;font-size:21px;
   border-bottom:none}
@@ -1827,7 +1805,6 @@ tr:last-child td{border-bottom:none}
 .big{font-size:33px;font-weight:600}
 .ref{font-family:var(--font-data);font-size:18px;color:var(--text-body)}
 .flash{animation:flash 1.4s ease-out}
-.empty{padding:6px 0;color:var(--faint);font-size:21px}
 .foot{color:var(--faint);font-size:18px;margin-top:12px;text-wrap:pretty}
 .hide{display:none !important}
 .bank-down{border:none;border-left:3px solid var(--red);background:none;
@@ -1945,7 +1922,7 @@ def _hold_colour(reason: str) -> str:
     if r.startswith("realestate:") or r.startswith("land:"):
         return "var(--nether)"
     if r.startswith("estates:market:") or r.startswith("bet:"):
-        return "var(--purple)"
+        return "var(--accent)"
     return "var(--amber)"
 
 

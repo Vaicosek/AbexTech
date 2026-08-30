@@ -8,13 +8,26 @@ to keep in step, and a token that is right in one and wrong in the other is a wr
 on a money page half the time. The old Dark Green port is in git history if it is ever
 wanted back.
 
-TYPE SCALE, 26 Aug 2026: the whole ramp came down ~18%, headings further. It had
-been sized from one screen read in isolation ("bigger and more readable", 15 ->
-18px base), and on the real pages — a market page is now a chart, three tables
-and a ticket — that read as shouting. Players were viewing the site at 80% browser zoom
-to cope, and that is the measurement: 100% was a fifth too big. Body is 15px,
-H1 26px, band figures 22px. If a page feels cramped the answer is space between
-blocks, not larger type.
+TYPE SCALE, FOUR SIZES, 30 Aug 2026: 15 / 18 / 23 / 28, and nothing else.
+Body 18, secondary 15 (labels, notes, metas, buttons, footers), H2 and every
+band or page figure 23, H1 28. `th`, `td`, `.sub`, `.meta`, `.empty` and the
+buttons are all set EXPLICITLY, because none of them inherits a size.
+
+The history is worth keeping, because the ramp has now been wrong in both
+directions. It was first sized from one screen read in isolation ("bigger and
+more readable", 15 -> 18px base) and on a real page — a chart, three tables and
+a ticket — that read as shouting; players coped by viewing
+the site at 80% browser zoom, which is a measurement and not an opinion. So it came down to a
+15px body and a 26px H1. That overshot the other way at the new density, and
+the ten-step ramp it left behind was the real problem in both versions: a
+stylesheet with ten sizes has no scale, it has ten decisions. Four does.
+
+The live page renders whatever loads LAST. `vt_web_shell._LEGACY_CSS` used to
+re-declare h1 at 40px and td at 21px right-aligned, over the top of this file —
+so measuring the site measured that sheet, not this one. Those overrides are
+being removed; the scale here is the one that is meant to win.
+
+If a page feels cramped the answer is space between blocks, not larger type.
 
 What Warm Feel is: a bank statement for a Minecraft economy. Flat ground, no panel fills,
 serif throughout, one gold accent for anything you can click. The class names never
@@ -31,7 +44,10 @@ What moved, and why it matters when reading a screen:
 * **A grade is text, not a chip.** `grade_chip()` in `abex_shell` renders coloured bold
   text. The filled pill is a Dark Green affordance and this product does not have one.
 * `--accent` (#c9b37a) is interactive: links, the active nav mark, primary buttons.
-  `--mark` is the section's own hue and appears as a 2px rule on one panel per screen and
+  `--mark` marks the LEAD panel on a screen. It is one neutral tone site-wide: it used
+  to be a hue per section (blue Exchange, teal Markets, orange Work), which is an
+  Overhaul-A-Ledger affordance the Warm Feel spec supersedes -- the accent changed as
+  you navigated and the site stopped reading as one thing. It appears as a 2px rule and
   nowhere else.
 
 USE
@@ -45,17 +61,17 @@ from __future__ import annotations
 #: Section hues, from the mockup's warm `WA()` set. These mark a section; they are
 #: never a fill and never carry meaning about money.
 DOMAINS: dict[str, str] = {
-    "hub":      "#eeeeee",
-    "banking":  "#26b1ff",
-    "exchange": "#81d2ff",
-    "markets":  "#18a07b",
-    "mymarket": "#52d9b4",
-    "stocks":   "#81d2ff",
-    "lands":    "#e3dc7d",
-    "auctions": "#edaf23",
-    "work":     "#c06117",
-    "messages": "#d0c2b8",
-    "history":  "#6a6a6a",
+    # ONE TONE. These were eleven hues -- blue Banking, sky Exchange, teal Markets,
+    # mint My market, orange Work, yellow Claims -- painted as a 2px rule on each
+    # screen's lead panel and handed to `abex_data` as literal cell colours. That is
+    # an Overhaul-A-Ledger affordance the Warm Feel spec supersedes: the accent
+    # changed as you navigated, so Banking read as a different app from Work and the
+    # site had no colour identity. The `[data-domain]` CSS overrides are already gone;
+    # the dict is kept, and flattened, so a caller that still asks for a section's
+    # colour gets the ordinary text tone instead of reintroducing a hue.
+    k: "var(--text)" for k in (
+        "hub", "banking", "exchange", "markets", "mymarket", "stocks",
+        "lands", "auctions", "work", "messages", "history")
 }
 
 #: The one interactive colour. Links, active nav mark, primary buttons.
@@ -159,31 +175,30 @@ THEME_CSS = r"""
   /* Warm Feel, from the mockup's own theme() block. */
   --ground:#1b1d20; --surface:transparent; --raised:rgba(239,236,229,.05);
   --line:#3b3e43; --line-up:#4a4e54; --line-hi:#4a4e54;
-  --text:#efece5; --dim:#aaa59b; --faint:#aaa59b; --inert:#6f6c66;
+  --text:#efece5; --dim:#aaa59b; --faint:#aaa59b; --inert:#8b8780;
   --gain:#8fbf6a; --loss:#d87a6a; --held:#c3bdb0; --warn:#d87a6a;
   --accent:#c9b37a;                 /* interactive: links, nav mark, buttons */
-  --mark:#eeeeee;                   /* the section's own hue, one rule per screen */
+  --mark:#6f6c66;                   /* the lead panel's rule. ONE tone, site-wide. */
   --ui:Georgia,'Times New Roman',serif;
   --mono:Georgia,'Times New Roman',serif;
+  /* ONE measure for the whole page. `main` used to be 1640px while `table` is
+     width:auto, so a short page drew three different right edges: the band rule
+     at 1640, a panel rule at 1640 and a table ending 700px short of both.
+     1180px is a broker's column — main, the top bar, the header strip, the
+     footer and the dock all resolve to this same content box, centred. */
+  --measure:1180px; --gutter:40px;
 }
-/* Only --mark changes per section. --accent never does: two interactive colours on
+/* --mark is not interactive and is deliberately NOT the accent: the accent means
+   "you can click this", and spending it on a decorative rule spends that meaning.
+   Nothing changes per section any more. Two interactive colours on
    one page means neither of them reads as "you can click this". */
-[data-domain="hub"]{--mark:#eeeeee}
-[data-domain="banking"]{--mark:#26b1ff}
-[data-domain="exchange"]{--mark:#81d2ff}
-[data-domain="markets"]{--mark:#18a07b}
-[data-domain="mymarket"]{--mark:#52d9b4}
-[data-domain="stocks"]{--mark:#81d2ff}
-[data-domain="lands"]{--mark:#e3dc7d}
-[data-domain="auctions"]{--mark:#edaf23}
-[data-domain="work"]{--mark:#c06117}
 
 *{box-sizing:border-box;margin:0;padding:0}
 html{color-scheme:dark;background:#1b1d20}
 body{
-  display:flex;min-height:100vh;
-  background:radial-gradient(#2e3136 1px,transparent 1px) 0 0/22px 22px,var(--ground);
-  color:var(--text);font-family:var(--ui);font-size:15px;line-height:1.55;
+  display:block;min-height:100vh;
+  background:var(--ground);
+  color:var(--text);font-family:var(--ui);font-size:18px;line-height:1.55;
   -webkit-font-smoothing:subpixel-antialiased;
 }
 a{color:var(--accent);text-decoration:underline;text-underline-offset:3px;
@@ -197,104 +212,122 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 .faint{color:var(--faint)} .dim{color:var(--dim)}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
-/* -- sidebar -------- */
-.side{width:326px;flex:0 0 326px;background:none;
-  border-right:1px solid var(--line);padding:30px 0 18px;position:sticky;top:0;
-  height:100vh;overflow-y:auto;scrollbar-width:thin;
-  scrollbar-color:var(--line-up) var(--ground)}
-/* ONE LEFT EDGE DOWN THE SIDEBAR. The brand was centred over a left-aligned
-   nav, which reads as two columns that missed each other — and the masthead he
-   picked was drawn left-aligned in the first place. 21px, not 18px, because a
-   `.navitem` carries an 18px padding INSIDE a 3px left border, so its text
-   starts three pixels further in than its box does. Matching the box would have
-   left the wordmark three pixels adrift, which is worse than centring: a near
-   miss reads as a mistake where a deliberate offset reads as a choice. */
-.brand{display:flex;flex-direction:column;align-items:flex-start;gap:8px;
-  padding:0 18px 20px 21px;text-align:left;text-decoration:none;color:inherit}
-.brand .wordmark{font-size:20px;font-weight:700;letter-spacing:.01em}
-.brand .tag{font-size:13px;color:var(--faint)}
-.navgroup{padding:14px 0 2px}
-.navgroup>.glabel{padding:0 18px 6px;font-size:13px;color:var(--faint);font-weight:400}
-.navitem{display:flex;align-items:center;gap:9px;width:100%;text-align:left;
-  padding:6px 18px;font-size:17px;color:var(--dim);text-decoration:none;
-  border-left:3px solid var(--inert);transition:color .14s ease,background .14s ease}
-.navitem:hover{color:var(--text);background:var(--raised);text-decoration:none}
-.navitem[aria-current="page"]{color:var(--text);background:none;
-  border-left-color:var(--accent)}
-/* The section you are inside, when the page itself is one of its children. Lit,
-   but not as loud as the child that is actually current. */
-.navitem[aria-current="true"]{color:var(--text);background:none;
-  border-left-color:var(--line)}
-.navitem .meta{margin-left:auto;padding-left:10px;font-family:var(--mono);
-  font-variant-numeric:tabular-nums;font-size:13px;color:var(--inert)}
-/* Sub-entries: the indent MUST live inside the button box, or the sidebar scrolls
-   sideways. Hairline is an inset shadow, not a border, for the same reason. */
-.navsub{display:flex;align-items:center;width:100%;text-align:left;
-  padding:4px 18px 4px 58px;font-size:14px;color:var(--faint);text-decoration:none;
-  box-shadow:inset 19px 0 0 -18px var(--line);transition:color .14s ease}
+/* -- top bar -------- */
+/* THE 326px RAIL IS GONE. Registries and brokerages — Companies House, Nasdaq,
+   Deutsche Boerse, IBKR, Schwab, Finviz, GOV.UK — put sections in a horizontal
+   top bar and per-record sub-sections in a tab strip under the record's own
+   heading. None of them spends a permanent quarter of the viewport on a list of
+   ten words that cannot fill it, and this list cannot either.
+
+   Gone with it: `border-left:3px solid var(--inert)` on every item and the
+   `box-shadow:inset 19px 0 0 -18px` fake strip on every sub. Ten strips down the
+   rail, one of which encoded state. A decoration that looks like a state marker
+   and is not one is worse than no marker.
+
+   What marks the current page now is a 2px accent rule UNDER THE LABEL — the
+   same mark `.tab` already uses, so the bar and the sub strip speak once. */
+.topbar{border-bottom:1px solid var(--line);padding:0 var(--gutter)}
+.topbar .bar{max-width:var(--measure);margin:0 auto;display:flex;
+  align-items:baseline;gap:34px;flex-wrap:wrap;padding:15px 0 13px}
+/* A wordmark, not a masthead: the hairline-and-tagline lockup was drawn for a
+   column 326px wide and has nowhere to sit in a 40px-tall bar. */
+.brand{display:flex;align-items:baseline;text-decoration:none;color:inherit}
+.brand .wordmark{font-size:23px;font-weight:600;letter-spacing:.01em}
+.topbar .navtree{display:flex;align-items:baseline;gap:26px;flex-wrap:wrap}
+.navgroup{display:flex;align-items:baseline;gap:26px;flex-wrap:wrap}
+.navgroup>.glabel{font-size:15px;color:var(--faint);font-weight:400}
+.navitem{display:inline-block;padding:2px 0;font-size:18px;color:var(--dim);
+  text-decoration:none;border-bottom:2px solid transparent;
+  transition:color .14s ease}
+.navitem:hover{color:var(--text);text-decoration:none}
+/* The page you are ON takes the accent rule. The SECTION you are inside, when
+   the page is one of its children, only lifts to full text colour — the child's
+   own tab in the strip below carries the accent, and two accent rules on one
+   screen means neither of them says "here". */
+.navitem[aria-current="page"]{color:var(--text);border-bottom-color:var(--accent)}
+.navitem[aria-current="true"]{color:var(--text)}
+.navitem .meta{margin-left:7px;font-variant-numeric:tabular-nums;
+  font-size:15px;color:var(--inert)}
+.topbar .who{margin-left:auto;font-size:15px;color:var(--dim)}
+
+/* -- sub-section strip -------- */
+/* Sub-pages are not rows in the bar. They are a tab strip the page prints under
+   its own H1, which is where a record's sub-sections live everywhere this was
+   researched. Same vocabulary as `.tabs`, because it is the same object. */
+.subnav{display:flex;align-items:center;gap:24px;border-bottom:1px solid var(--line);
+  margin:-12px 0 26px;flex-wrap:wrap;max-width:var(--measure)}
+.navsub{padding:8px 0;margin-bottom:-1px;font-size:18px;color:var(--dim);
+  text-decoration:none;border-bottom:2px solid transparent}
 .navsub:hover{color:var(--text);text-decoration:none}
-.navsub[aria-current="page"]{color:var(--text);box-shadow:inset 19px 0 0 -18px var(--accent)}
-.navsub .meta{margin-left:auto;padding-left:10px;font-family:var(--mono);
-  font-variant-numeric:tabular-nums;font-size:11.5px;color:var(--inert)}
+.navsub[aria-current="page"]{color:var(--text);border-bottom-color:var(--accent)}
+.navsub .meta{margin-left:7px;font-variant-numeric:tabular-nums;
+  font-size:15px;color:var(--inert)}
 
 /* -- main column -------- */
-.col{flex:1;min-width:0;display:flex;flex-direction:column}
+.col{min-width:0;display:flex;flex-direction:column}
 /* The header sits on the page ground, not on a blurred panel: there is no second
    surface in this skin to blur against. */
 .top{position:sticky;top:0;z-index:20;
-  background:radial-gradient(#2e3136 1px,transparent 1px) 0 0/22px 22px,var(--ground);
+  background:var(--ground);
   border-bottom:1px solid var(--line);
-  padding:30px 60px 24px;display:flex;align-items:center;gap:30px;flex-wrap:wrap}
+  max-width:calc(var(--measure) + var(--gutter) * 2);margin:0 auto;width:100%;
+  padding:26px var(--gutter) 22px;display:flex;align-items:center;gap:30px;
+  flex-wrap:wrap}
 .top .stat{display:flex;flex-direction:column;gap:1px}
-.top .stat .k{font-size:13px;color:var(--faint);font-weight:400}
+.top .stat .k{font-size:15px;color:var(--faint);font-weight:400}
 .top .stat .v{font-family:var(--mono);font-variant-numeric:tabular-nums;
-  font-size:15px;font-weight:600}
+  font-size:18px;font-weight:600}
 .top .right{margin-left:auto;display:flex;align-items:center;gap:14px}
-.who{font-size:13px;color:var(--dim);line-height:1.5}
-main{padding:40px 60px 80px;max-width:1640px;width:100%;margin:0 auto}
+.who{font-size:15px;color:var(--dim);line-height:1.5}
+main{padding:36px var(--gutter) 80px;
+  max-width:calc(var(--measure) + var(--gutter) * 2);width:100%;margin:0 auto}
 
 /* -- page head -------- */
 .pagehead{display:flex;align-items:flex-start;gap:20px;flex-wrap:wrap;margin-bottom:28px}
-h1{font-size:26px;font-weight:400;text-wrap:balance}
-.pagehead .sub{font-size:14px;color:var(--dim);margin-top:4px;max-width:78ch;
+h1{font-size:28px;font-weight:400;text-wrap:balance}
+.pagehead .sub{font-size:15px;color:var(--dim);margin-top:4px;max-width:78ch;
   text-wrap:pretty}
 /* A wrapping flex row with space-between drops this mid-row without the auto margin. */
 .pagehead .figure{margin-left:auto;text-align:right}
 .pagehead .figure .big{font-family:var(--mono);font-variant-numeric:tabular-nums;
-  font-size:24px;font-weight:600}
-.pagehead .figure .note{font-size:13px;color:var(--faint)}
+  font-size:23px;font-weight:600}
+.pagehead .figure .note{font-size:15px;color:var(--faint)}
 
 /* Sentence case, at heading size. This is the single loudest difference from the
    rejected version, and it costs nothing. */
-h2,.h2{font-size:19px;font-weight:400;color:var(--text);margin-bottom:10px}
+h2,.h2{font-size:23px;font-weight:400;color:var(--text);margin-bottom:10px}
 
 /* -- stat band: rule-separated, no fills -------- */
 .band{display:flex;flex-wrap:wrap;row-gap:20px;align-items:flex-start;
-  background:none;border:none;padding-bottom:22px;
+  background:none;border:none;padding-bottom:22px;max-width:var(--measure);
   border-bottom:1px solid var(--line);margin-bottom:34px}
 .band.four .tile,.band.three .tile{flex:1 1 200px}
 .band .tile{background:none;padding:0 26px;min-width:0;display:flex;
   flex-direction:column;gap:4px;border-right:1px solid var(--line)}
 .band .tile:first-child{padding-left:0}
 .band .tile:last-child{border-right:none}
-.band .k{font-size:13px;color:var(--faint);font-weight:400}
-.band .v{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:22px;
+.band .k{font-size:15px;color:var(--faint);font-weight:400}
+.band .v{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:23px;
   font-weight:600}
-.band .n{font-size:13px;color:var(--faint);text-wrap:pretty}
+.band .n{font-size:15px;color:var(--faint);text-wrap:pretty}
 
 /* -- panels -------- */
-.panel{background:none;border:none;padding:0;margin-bottom:34px}
+.panel{background:none;border:none;padding:0;margin-bottom:34px;
+  max-width:var(--measure)}
 .panel + .panel{border-top:1px solid var(--line);padding-top:20px}
 /* One panel per screen carries the section's hue. More than one and it stops
    meaning "this is the lead". */
 .panel.accented{box-shadow:inset 0 2px 0 var(--mark);padding-top:16px;border-top:none}
 .grid{display:grid;gap:34px}
 /* A table needs 640px before it will sit in a column without clipping, so a
-   two-up split only happens when both halves can actually hold one. */
+   two-up split only happens when both halves can actually hold one. Since the
+   measure came down to 1180px, two halves are ~573px and this NEVER splits any
+   more — deliberately. One measure means one column of tables; a page that
+   wants two things side by side wants two pages. */
 .grid.two{grid-template-columns:repeat(auto-fit,minmax(660px,1fr))}
 
 /* -- tables -------- */
-.tablewrap{overflow-x:auto;scrollbar-width:thin;
+.tablewrap{overflow-x:auto;max-width:var(--measure);scrollbar-width:thin;
   scrollbar-color:var(--line-up) var(--ground)}
 /* COLUMNS ARE SIZED TO CONTENT, NOT STRETCHED TO THE PAGE. `width:100%` inside a
    1640px main put a six-column table across ~1520px, which is 100px+ of dead air
@@ -304,7 +337,11 @@ h2,.h2{font-size:19px;font-weight:400;color:var(--text);margin-bottom:10px}
    what forced a narrow viewport to scroll sideways.
    Anchor: IBKR's commission schedule, a vertical stack of small content-width
    tables rather than one wide grid. */
-table{border-collapse:collapse;width:auto;max-width:100%;
+/* ONE MEASURE, HONOURED BY EVERYTHING. `width:auto` left an 8-column table ending
+   350px short of the rule drawn above it, so every short page had two right edges and
+   the eye read the gap as truncation -- the same fault as the empty sidebar, moved to
+   the other side. A rule and the content under it must end together. */
+table{border-collapse:collapse;width:100%;max-width:100%;
   /* Georgia serves OLD-STYLE figures by default in several renderers: 3, 4, 7 and
      9 hang below the baseline and 6, 8 rise above it. Mixed-height digits are
      half of why a numeric column reads as ragged even when it is aligned.
@@ -317,68 +354,97 @@ table{border-collapse:collapse;width:auto;max-width:100%;
    invisible air that widens the table for nothing. */
 th,td{padding-right:28px}
 th:last-child,td:last-child{padding-right:0}
-th{text-align:left;font-size:15px;font-weight:400;color:var(--faint);
+th{text-align:left;font-size:18px;font-weight:400;color:var(--faint);
   padding-top:8px;padding-bottom:8px;padding-left:0;
   border-bottom:1px solid var(--line);white-space:nowrap}
 td{padding-top:8px;padding-bottom:8px;padding-left:0;
-  border-bottom:1px solid var(--line);font-size:15px;line-height:1.3}
+  border-bottom:1px solid var(--line);font-size:18px;line-height:1.3}
 td.num,th.num{text-align:right;font-family:var(--mono);white-space:nowrap}
 tbody tr:hover td{background:var(--raised)}
 tr.clickable{cursor:pointer}
-.tfoot{padding:9px 0 0;font-size:13px;color:var(--faint)}
+.tfoot{padding:9px 0 0;font-size:15px;color:var(--faint)}
 
 /* -- grade -------- */
 /* Text, not a badge. The colour is the grade; the box was decoration. */
-.grade{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:15px;
-  font-weight:700;display:inline-block;white-space:nowrap}
+.grade{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:18px;
+  font-weight:600;display:inline-block;white-space:nowrap}
 
 /* -- tabs -------- */
 .tabs{display:flex;align-items:center;gap:24px;border-bottom:1px solid var(--line);
   margin-bottom:24px;flex-wrap:wrap}
-.tab{padding:8px 0;margin-bottom:-1px;font-size:15px;color:var(--dim);
+.tab{padding:8px 0;margin-bottom:-1px;font-size:18px;color:var(--dim);
   text-decoration:none;border-bottom:2px solid transparent}
 .tab:hover{color:var(--text);text-decoration:none}
 .tab[aria-current="page"]{color:var(--text);border-bottom-color:var(--accent)}
-.tabs .status{margin-left:auto;font-size:13px;color:var(--faint);padding:8px 0}
+.tabs .status{margin-left:auto;font-size:15px;color:var(--faint);padding:8px 0}
 
 /* -- filters -------- */
 /* Words you can click. A row of bordered pills is a chip row, and this skin
    does not have chips. */
-.chip{padding:0;border:none;font-size:15px;color:var(--dim);text-decoration:none}
+.chip{padding:0;border:none;font-size:18px;color:var(--dim);text-decoration:none}
 .chip:hover{color:var(--text)}
 .chip[aria-pressed="true"]{background:none;color:var(--accent);
   text-decoration:underline;text-underline-offset:3px}
 
-/* -- buttons -------- */
-.btn{padding:7px 14px;font-size:13px;font-weight:700;background:var(--accent);
-  color:var(--ground);border:1px solid var(--accent);text-decoration:none;
-  display:inline-block}
-.btn:hover{background:#d8c48f;border-color:#d8c48f;text-decoration:none}
-.btn.ghost{background:none;border:1px solid var(--line);color:var(--dim);font-weight:400}
-.btn.ghost:hover{border-color:var(--line-up);color:var(--text);background:none}
-.btn.danger{background:none;border:1px solid var(--loss);color:var(--loss);font-weight:400}
-.btn[disabled]{opacity:.45;cursor:not-allowed}
+/* -- actions -------- */
+/* AN ACTION IS A WORD, NOT A SLAB. The Hub already rendered "Claim" as a plain accent
+   word while Work rendered the same action as a filled gold block - the same control
+   styled two ways, which is the inspection-level giveaway. Gold as a SURFACE is also
+   the "gold on dark = casino" case; gold as INK is the sanctioned use, and the accent
+   has one job: this is a thing you can click.
+   `.btnlink` is that word, and it must work on a <button> as well as an <a>, because
+   half the site's actions post a form. So the button's own chrome is stripped back to
+   nothing and the text carries the affordance. */
+.btnlink{display:inline;padding:0;margin:0;border:none;background:none;
+  font:inherit;font-size:inherit;color:var(--accent);cursor:pointer;
+  text-decoration:underline;text-underline-offset:3px;
+  text-decoration-thickness:1px;text-decoration-color:rgba(201,179,122,.45)}
+.btnlink:hover{text-decoration-color:var(--accent)}
+.btnlink.quiet{color:var(--dim);text-decoration-color:var(--line)}
+.btnlink.quiet:hover{color:var(--text);text-decoration-color:var(--line-up)}
+.btnlink.danger{color:var(--loss);text-decoration-color:rgba(216,122,106,.45)}
+.btnlink.danger:hover{text-decoration-color:var(--loss)}
+/* Every state designed, not just hover: a bare <button> loses the browser's focus ring
+   the moment its border goes, and this is the only route to most actions. */
+.btnlink:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.btnlink[disabled]{opacity:.45;cursor:not-allowed;text-decoration:none}
+.btnlink+.btnlink{margin-left:18px}
+
+/* `.btn` is retired - kept only so an un-migrated caller degrades to the same word
+   rather than to an unstyled OS button on a dark page. */
+.btn{display:inline;padding:0;border:none;background:none;font:inherit;
+  color:var(--accent);cursor:pointer;text-decoration:underline;
+  text-underline-offset:3px;text-decoration-thickness:1px;
+  text-decoration-color:rgba(201,179,122,.45)}
+.btn:hover{text-decoration-color:var(--accent)}
+.btn.ghost{color:var(--dim);text-decoration-color:var(--line)}
+.btn.ghost:hover{color:var(--text)}
+.btn.danger{color:var(--loss);text-decoration-color:rgba(216,122,106,.45)}
+.btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.btn[disabled]{opacity:.45;cursor:not-allowed;text-decoration:none}
 
 /* -- docked draft bar -------- */
 .dock{position:sticky;bottom:0;z-index:15;background:var(--ground);
   border-top:1px solid var(--line);box-shadow:none;
-  padding:12px 60px;display:flex;align-items:center;gap:26px;flex-wrap:wrap}
+  max-width:calc(var(--measure) + var(--gutter) * 2);margin:0 auto;width:100%;
+  padding:12px var(--gutter);display:flex;align-items:center;gap:26px;
+  flex-wrap:wrap}
 .dock .kv{display:flex;flex-direction:column;gap:1px}
-.dock .kv .k{font-size:13px;color:var(--faint);font-weight:400}
-.dock .kv .v{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:15px;
+.dock .kv .k{font-size:15px;color:var(--faint);font-weight:400}
+.dock .kv .v{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:18px;
   font-weight:600}
 .dock .actions{margin-left:auto;display:flex;align-items:center;gap:9px}
 
 /* Empty is empty: one line, no placeholder rows. */
-.empty{padding:6px 0;color:var(--faint);font-size:15px}
+.empty{padding:6px 0;color:var(--faint);font-size:18px}
 
 /* The toggle exists only on a narrow viewport - on the desktop sidebar the tree
    is simply always there, which is what §2 describes. */
 .navtoggle{display:none}
 .navtree{display:block}
+.topbar .navtoggle{font-size:18px}
 
 @media(max-width:900px){
-  body{display:block}
   /* §2: below the breakpoint the sidebar becomes a single always-visible top bar
      with a "current screen" toggle that expands the full nav INLINE. Not a
      drawer and not an overlay - the design is explicit about that, and an
@@ -387,22 +453,25 @@ tr.clickable{cursor:pointer}
      The wall of tabs this used to become was worse than either: fourteen inline
      entries wrapped over four rows on a phone, so every page opened with a
      screenful of nav above the first number. */
-  .navtoggle{display:flex;align-items:center;gap:8px;width:calc(100% - 40px);
-    margin:4px 20px 0;padding:9px 12px;background:none;cursor:pointer;
-    border:1px solid var(--line);border-radius:2px;
-    color:var(--text);font:inherit;font-size:14px;text-align:left}
+  .navtoggle{display:flex;align-items:center;gap:8px;width:100%;
+    margin:2px 0 0;padding:8px 0;background:none;cursor:pointer;
+    border:none;border-radius:0;
+    color:var(--text);font:inherit;font-size:18px;text-align:left}
   .navtoggle .chev{color:var(--accent);transition:transform .12s ease}
   .navtoggle[aria-expanded="true"] .chev{transform:rotate(180deg)}
   .navtree{display:none;padding-top:6px}
   .navtree.open{display:block}
-  .navtree .navitem{display:flex;width:auto}
-  .side{position:static;width:auto;height:auto;flex:none;border-right:none;
-    border-bottom:1px solid var(--line);padding:14px 0}
-  .brand{padding:0 20px 10px}
-  .navgroup{padding:6px 0 0}
+  .topbar{padding:0 20px}
+  .topbar .bar{padding:12px 0 10px;gap:14px}
+  /* `.topbar .navtree{display:flex}` above is two classes deep, so the bare
+     `.navtree{display:none}` on the line above cannot switch it off — the tree
+     would simply always be open on a phone. Matched specificity, both ways. */
+  .topbar .navtree{display:none;width:100%}
+  .topbar .navtree.open{display:block}
+  .topbar .navtree .navgroup{flex-direction:column;align-items:stretch;gap:0}
+  .topbar .navtree .navitem{display:block;padding:7px 0}
+  .topbar .who{margin-left:0;width:100%}
   .navgroup>.glabel{display:none}
-  .navitem{font-size:15px;padding:7px 20px}
-  .navsub{padding-left:32px;font-size:13px}
   main{padding:22px 20px 60px}
   .top{padding:18px 20px;gap:22px;row-gap:12px}
   .dock{padding:12px 20px}

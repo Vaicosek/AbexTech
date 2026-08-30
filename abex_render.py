@@ -41,13 +41,18 @@ try:
 except Exception:                                   # pragma: no cover
     GRADES = {}
 
-#: Spec §1: the grade column is graduated through the money-tone family — best
-#: grades read as gain, worst as loss — rather than getting a hue of its own.
+#: GREEN AND RED MEAN UP AND DOWN, AND NOTHING ELSE. The ramp used to graduate
+#: the grade column through the money-tone family, which spent the two colours
+#: that carry direction on a letter that has none — and painted every row, so a
+#: real gain and a AAA read as the same kind of fact. The money tones are for
+#: signed change figures now; a grade is text, in the text colour. The ramp
+#: survives as a MEMBERSHIP TEST — a letter on the ladder is a grade, anything
+#: else is not rated — which is why it is still a mapping and not a set.
 _GRADE_RAMP = {
-    "AAA": "var(--gain)", "AA": "#a3c47a", "A": "var(--accent)",
-    "BBB": "var(--accent)", "BB": "#d1906a", "B": "#d1906a",
-    "CCC": "var(--loss)", "CC": "var(--loss)", "C": "var(--loss)",
-    "D": "var(--loss)",
+    "AAA": "var(--text)", "AA": "var(--text)", "A": "var(--text)",
+    "BBB": "var(--text)", "BB": "var(--text)", "B": "var(--text)",
+    "CCC": "var(--text)", "CC": "var(--text)", "C": "var(--text)",
+    "D": "var(--text)",
 }
 
 #: Inline tag → CSS colour. `k` is an action word (a link-alike), which is the
@@ -78,8 +83,13 @@ def _split_tag(cell: str) -> tuple[str, str]:
 
 
 def _grade_colour(text: str) -> str:
+    """`var(--text)` for a grade on the ladder, `var(--faint)` off it.
+
+    Off the ladder is "not rated", which is a missing fact rather than a bad
+    one — muted, never painted in the loss tone.
+    """
     g = text.strip().upper()
-    return _GRADE_RAMP.get(g, "")
+    return _GRADE_RAMP.get(g, "var(--faint)")
 
 
 def _backing_colour(text: str) -> str:
@@ -316,7 +326,15 @@ def _balance(block: dict) -> str:
 
 
 #: §5: three button kinds and no others.
-_BTN = {"p": "btn p", "s": "btn s", "d": "btn d"}
+#:
+#: GOLD IS A COLOUR FOR TEXT, NOT A SURFACE. `btn p` filled the accent behind
+#: black type, which put six of the brightest objects on the page on the Work
+#: board — and made the SAME action the Hub renders as plain accent text ("Claim")
+#: look like a different control. One action, one appearance: every kind now
+#: renders as a text link, distinguished by tone rather than by chrome.
+#: `btnlink` is the flat text-link control; `quiet` is the dim one and `danger`
+#: the loss-toned one. The old `p`/`s`/`d` modifiers are gone with the slab.
+_BTN = {"p": "btnlink", "s": "btnlink quiet", "d": "btnlink danger"}
 
 
 #: A move smaller than this reads as unchanged: the y-window is never tighter
@@ -385,13 +403,18 @@ def _spark(block: dict) -> str:
     # one. Under the flat band it reads unchanged — §1's rule that flat is never
     # a gain, applied to the other end: flat is not a loss either. A red line
     # for -0.03% tells a holder something is wrong when nothing is.
+    # NO TRIANGLE, BUT KEEP THE FLAT MARK. A signed number in the up or down colour
+    # carries the direction twice already, so ▲/▼ said it a third time and went. `=`
+    # is not the same thing: a flat line has no sign to read and `+0.00` does not say
+    # "this did not move" the way `=` does. Removing it too was over-cutting — the
+    # only case where the glyph is the whole message.
     if abs(pct) < _FLAT_BAND * 100.0:
-        tone, arrow = "var(--dim)", "="
+        tone, mark = "var(--dim)", "= "
     elif change > 0:
-        tone, arrow = "var(--gain)", "▲"
+        tone, mark = "var(--gain)", ""
     else:
-        tone, arrow = "var(--loss)", "▼"
-    caption = (f"{arrow} {change:+,.2f}{unit} ({pct:+,.2f}%) "
+        tone, mark = "var(--loss)", ""
+    caption = (f"{mark}{change:+,.2f}{unit} ({pct:+,.2f}%) "
                f"over {_e(str(d.get('window') or f'{n} readings'))}")
     scale = (f'<span class="skhi">{hi:,.2f}{unit}</span>'
              f'<span class="sklo">{lo:,.2f}{unit}</span>')
@@ -495,6 +518,151 @@ def _spark(block: dict) -> str:
             f'{scale}</div>{read}{legend}{foot}{data}</div>')
 
 
+def _sparks(block: dict) -> str:
+    """SMALL MULTIPLES — one mini line per market, on a shared grid.
+
+    The fifth block shape, and it exists because the exchange had a shape
+    problem rather than a data one. `_spark` is a full-width chart: the page can
+    carry two or three of them before the reader is scrolling a slideshow, and
+    the question "how is the economy developing" is a question about all of them
+    AT ONCE. Twelve full-width charts answer it worse than twelve small ones.
+
+    Each cell shares `_spark`'s honesty rules and none of its furniture:
+
+    * THE Y-WINDOW FLOOR IS PER CELL, not shared. Markets here are three orders
+      of magnitude apart — 2.9m against 12k — so one common axis would flatten
+      every small market into the baseline and claim they never move. Each cell
+      draws its own market's shape, and the FIGURE beside it carries the level.
+      A cell is a shape, the number is the size, and the caption says which
+      window both are over.
+    * Under the flat band a line is `dim`, not green. Flat is not a gain, and at
+      this size a one-pixel drift is not a verdict.
+    * One filed month draws NO line. A market that has closed a single month has
+      a figure and no trajectory, and a dot stretched across a box would be
+      inventing the other eleven.
+
+    `block["sparks"]` is `[{name, href, grade, unit, points, window, meta}]`.
+    """
+    cells = block.get("sparks") or []
+    if not cells:
+        return f'<div class="bnote">{_e(str(block.get("empty") or ""))}</div>'
+
+    out = []
+    for c in cells:
+        pts = [float(v) for v in (c.get("points") or [])]
+        unit = str(c.get("unit") or "")
+        name = str(c.get("name") or "")
+        href = str(c.get("href") or "")
+        # §1 reserves the accent for things you can click. A market with a page
+        # gets a link; one without gets plain text rather than a dead accent.
+        title = (f'<a class="smname" href="{_e(href)}">{_e(name)}</a>' if href
+                 else f'<span class="smname smflat">{_e(name)}</span>')
+        grade = c.get("grade")
+        # An unknown grade is not a bad grade. `_grade_colour` returns the
+        # faint tone off the ladder, which leaves "not rated" muted rather than
+        # painting it in the loss tone — the same mistake that once told
+        # fourteen unlisted markets they were junk.
+        gcol = _grade_colour(str(grade))
+        gsty = f' style="color:{gcol}"' if gcol else ""
+        # AN UNRATED MARKET GETS NO TAG AT ALL. Every unlisted market comes back
+        # "not rated", so rendering it painted the same twelve words down the
+        # board and said nothing — an empty state decorated. A grade appears
+        # where there IS one; its absence is already visible as a blank.
+        gtag = (f'<span class="smgrade"{gsty}>{_e(str(grade))}</span>'
+                if grade and str(grade).strip().lower() != "not rated" else "")
+
+        last = pts[-1] if pts else 0.0
+        level = f'<span class="smlast">{last:,.0f}{_e(unit)}</span>'
+
+        if len(pts) < 2:
+            body = ('<div class="smone">one filed month — no line yet</div>')
+            cap = ""
+        else:
+            lo, hi = min(pts), max(pts)
+            n = len(pts)
+            mid = (hi + lo) / 2.0
+            span = hi - lo
+            floor = abs(mid) * _FLAT_BAND * 2.0
+            if span < floor:
+                pad = (floor - span) / 2.0
+                lo, hi = lo - pad, hi + pad
+                span = floor
+            span = span or 1.0
+            coords = " ".join(
+                "%.2f,%.2f" % (i * 100.0 / (n - 1),
+                               24.0 - ((v - lo) / span) * 22.0 - 1.0)
+                for i, v in enumerate(pts))
+            # THE CAPTION IS THE LAST MOVE, NOT THE WHOLE WINDOW, and that is a
+            # correction. Against the first point these read "+13,487%" for
+            # GreyHames and "-109.3%" for Falrija — both arithmetically exact
+            # and both nonsense. The first is a percentage of a market's opening
+            # stub month; the second is a percentage across a sign flip, where
+            # the ratio has no meaning at all. A figure that is true and unusable
+            # is still a wrong thing to put on a money page.
+            #
+            # Month on month is bounded and is the number an owner actually
+            # reads. The LINE carries the whole window — that is what it is for.
+            # `pts[-2]` is the PREVIOUS FILED MONTH, which is not always the
+            # previous calendar month — `main` filed August after June and
+            # Amazonia's newest filing is July. "on the month" would be a wrong
+            # word for both, so the label says what the comparison actually is.
+            prev = pts[-2]
+            change = last - prev
+            # A percentage needs a positive base. From a loss, or from zero,
+            # there is no ratio to quote and the coin figure stands alone.
+            pct = (change / prev * 100.0) if prev > 0 else None
+            # Same rule as the price line: the sign and the tone say it, so
+            # the triangle is one repetition too many — and this one repeated
+            # across every cell of a board.
+            if pct is not None and abs(pct) < _FLAT_BAND * 100.0:
+                tone = "var(--dim)"
+            elif change > 0:
+                tone = "var(--gain)"
+            elif change < 0:
+                tone = "var(--loss)"
+            else:
+                tone = "var(--dim)"
+            # A ZERO BASELINE IS DRAWN WHERE THE WINDOW CONTAINS ONE. A market
+            # that filed a loss is below it and a market that did not is above,
+            # which is the one comparison that survives per-cell scaling.
+            zero = ""
+            if lo < 0 < hi:
+                zy = 24.0 - ((0 - lo) / span) * 22.0 - 1.0
+                zero = ('<line x1="0" y1="%.2f" x2="100" y2="%.2f" '
+                        'stroke="var(--line)" stroke-width="0.6" '
+                        'stroke-dasharray="2 2" '
+                        'vector-effect="non-scaling-stroke"/>' % (zy, zy))
+            body = ('<svg class="smspark" viewBox="0 0 100 24" '
+                    'preserveAspectRatio="none" role="img" '
+                    'aria-label="%s over %s">%s'
+                    '<polyline points="%s" fill="none" stroke="%s" '
+                    'stroke-width="1.4" vector-effect="non-scaling-stroke" '
+                    'stroke-linejoin="round" stroke-linecap="round"/></svg>'
+                    % (_e(name), _e(str(c.get("window") or "")), zero,
+                       coords, tone))
+            # f-string, not %-formatting: the thousands separator flag is not
+            # a %-format flag and `%+,.0f` raises rather than printing.
+            ratio = f" ({pct:+,.1f}%)" if pct is not None else ""
+            cap = (f'<div class="smcap"><span style="color:{tone}">'
+                   f'{change:+,.0f}{_e(unit)}{ratio}</span>'
+                   f'<span class="smon">since its previous filing</span></div>')
+
+        meta = ('<div class="smmeta">'
+                + _e(str(c.get("meta") or "")) + "</div>")
+        # EVERY CELL EMITS THE SAME FIVE SLOTS, always, even when a slot is
+        # empty. A cell that skipped its caption pulled the row below it up and
+        # the board read as five ragged columns rather than a grid. The empty
+        # slot keeps its height so the lines across a row sit on one baseline,
+        # which is the only reason small multiples are comparable at all.
+        cap = cap or '<div class="smcap">&nbsp;</div>'
+        out.append(f'<div class="smcell"><div class="smhead">{title}{gtag}</div>'
+                   f'{level}{body}{cap}{meta}</div>')
+
+    note = (f'<div class="bnote">{_e(str(block.get("n")))}</div>'
+            if block.get("n") else "")
+    return f'<div class="smgrid">{"".join(out)}</div>{note}'
+
+
 def _action(block: dict) -> str:
     """An action block. A button may carry a third element: where it goes.
 
@@ -508,7 +676,7 @@ def _action(block: dict) -> str:
     for btn in (block.get("btns") or []):
         label, kind = btn[0], btn[1]
         href = btn[2] if len(btn) > 2 else ""
-        cls = _BTN.get(kind, "btn s")
+        cls = _BTN.get(kind, "btnlink quiet")
         if href:
             out.append(f'<a class="{cls}" href="{_e(href)}">{_e(label)}</a>')
         else:
@@ -565,8 +733,8 @@ def _ticket(block: dict) -> str:
         '<label class="tklab" for="tkq-%s">Shares</label>'
         '<input class="tkq" id="tkq-%s" type="number" min="1" step="1" value="1" '
         'inputmode="numeric">'
-        '<button class="btn p tkbuy" type="button">Buy</button>'
-        '<button class="btn s tksell" type="button"%s>Sell</button>'
+        '<button class="btnlink tkbuy" type="button">Buy</button>'
+        '<button class="btnlink quiet tksell" type="button"%s>Sell</button>'
         '</div>'
         '<div class="tkest"></div>'
         '<div class="tkhint">%s</div>'
@@ -598,7 +766,7 @@ def _bidbox(block: dict) -> str:
         '<label class="tklab" for="bid-%s">Your bid</label>'
         '<input class="tkq" id="bid-%s" type="number" min="%s" step="1" value="%s" '
         'inputmode="numeric">'
-        '<button class="btn p bidgo" type="button">Place a bid</button>'
+        '<button class="btnlink bidgo" type="button">Place a bid</button>'
         '</div><div class="tkhint">%s</div></div>'
     ) % (_e(lot), _e(str(int(b.get("minimum") or 1))), _e(str(b.get("key") or "")),
          _e(str(b.get("csrf") or "")), _e(str(b.get("title") or "")),
@@ -648,8 +816,8 @@ def _moneybox(block: dict) -> str:
             ) % (_e(eid), _e(str(m.get("field") or "Amount")), _e(eid),
                  _e(str(m.get("placeholder") or "coins")))
         button = ("" if stuck else
-                  '<button class="btn %s mnygo" type="button">%s</button>'
-                  % ("s" if m.get("quiet") else "p",
+                  '<button class="btnlink%s mnygo" type="button">%s</button>'
+                  % (" quiet" if m.get("quiet") else "",
                      _e(str(m.get("cta") or "Continue"))))
         out.append(
             ('<div class="moneybox%s" data-action="%s" data-url="%s" data-key="%s" '
@@ -688,7 +856,7 @@ def _replybox(block: dict) -> str:
         tid = str(r.get("thread_id") or "")
         unread = int(r.get("unread") or 0)
         mark = ("" if not unread else
-                '<button class="btn s rdgo" type="button">Mark read</button>')
+                '<button class="btnlink quiet rdgo" type="button">Mark read</button>')
         out.append(
             ('<div class="replybox" data-tid="%s" data-key="%s" data-csrf="%s" '
              'data-newest="%s" data-to="%s">'
@@ -696,7 +864,7 @@ def _replybox(block: dict) -> str:
              '<textarea class="rpbody" id="rp-%s" rows="3" maxlength="%s" '
              'placeholder="%s"></textarea>'
              '<div class="tkrow">'
-             '<button class="btn p rpgo" type="button">Send</button>%s'
+             '<button class="btnlink rpgo" type="button">Send</button>%s'
              '<span class="rpcount">0 / %s</span>'
              '</div><div class="tkhint">%s</div></div>')
             % (_e(tid), _e(str(r.get("key") or "")), _e(str(r.get("csrf") or "")),
@@ -719,6 +887,8 @@ def _block(block: dict, mine=None) -> str:
         inner = _moneybox(block)
     elif "reply" in block:
         inner = _replybox(block)
+    elif "sparks" in block:
+        inner = _sparks(block)
     elif "spark" in block:
         inner = _spark(block)
     elif "bal" in block:
@@ -740,26 +910,49 @@ def _block(block: dict, mine=None) -> str:
 
 
 def band_html(tiles, three: bool = False) -> str:
+    """A page's figures as a definition list -- label left, figure right, one rule.
+
+    THIS USED TO BE A ROW OF STAT TILES, and it was the pattern John rejected by name:
+    every screen opened on three or four equal boxes, so Hub, Exchange, Banking and
+    Investor were the same picture at thumbnail size and the page's actual subject --
+    its table -- started below the fold. The brief's replacement is a balance list, the
+    grammar of a bank statement.
+
+    `abex_screens._stats` already rendered the static screens this way. This is the same
+    change for the LIVE screens, which were still routing through the tile row: one site
+    was showing its figures in two different shapes depending on which module drew the
+    page.
+
+    Tiles keep their `(label, value, note)` / `(label, value, note, tag)` shape because
+    every caller still ships that, but THE NOTE IS NOT RENDERED -- it was a caption under
+    a figure ("spendable right now", "markets that file at all") and the design carries
+    no captions. `three` is likewise ignored: a definition list has no column count.
+    """
     out = []
     for tile in tiles or []:
         k = tile[0] if len(tile) > 0 else ""
         v = tile[1] if len(tile) > 1 else ""
-        n = tile[2] if len(tile) > 2 else ""
         tag = tile[3] if len(tile) > 3 else ""
         st = f' style="color:{_TAG[tag]}"' if tag in _TAG else ""
-        out.append(f'<div class="tile"><span class="k">{_e(k)}</span>'
-                   f'<span class="v"{st}>{_e(v)}</span>'
-                   f'<span class="n">{_e(n)}</span></div>')
-    cls = "band three" if three else "band four"
-    return f'<div class="{cls}">' + "".join(out) + "</div>"
+        out.append(f'<tr><td>{_e(k)}</td>'
+                   f'<td class="num"{st}>{_e(v)}</td></tr>')
+    if not out:
+        return ""
+    return ('<div class="panel"><div class="tablewrap"><table><tbody>'
+            + "".join(out) + "</tbody></table></div></div>")
 
 
 def screen_html(screen: dict, *, owner: bool = False, mine=None) -> str:
     """The body for one canvas screen. `owner` gates `own:1` blocks (§7)."""
     if not screen:
         return '<section class="block"><h2>Not found</h2></section>'
+    # The subtitle sentence under a heading is banned by the brief, and every live
+    # screen now passes "" -- so this emitted an empty <div class="sub"> with a
+    # margin-top under every H1 on the site. An absent line, not an empty one.
+    asof = str(screen.get("asof", "") or "")
+    sub = f'<div class="sub">{_e(asof)}</div>' if asof else ""
     head = (f'<div class="pagehead"><div><h1>{_e(screen.get("title", ""))}</h1>'
-            f'<div class="sub">{_e(screen.get("asof", ""))}</div></div></div>')
+            f'{sub}</div></div>')
     band = ""
     if screen.get("band"):
         band = band_html(screen["band"])
@@ -781,7 +974,7 @@ def dock_html(screen: dict) -> str:
         return ""
     pairs = "".join(f'<span class="dk">{_e(k)}</span><span class="dv">{_e(v)}</span>'
                     for k, v in (d.get("kv") or []))
-    btns = "".join(f'<button class="{_BTN.get(k, "btn s")}" type="button">{_e(l)}</button>'
+    btns = "".join(f'<button class="{_BTN.get(k, "btnlink quiet")}" type="button">{_e(l)}</button>'
                    for l, k in (d.get("btns") or []))
     note = f'<span class="dn">{_e(d.get("n", ""))}</span>' if d.get("n") else ""
     return (f'<div class="dockbar"><span class="dt">{_e(d.get("t", ""))}</span>'
