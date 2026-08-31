@@ -387,7 +387,7 @@ def render(active: str, body: str, *, title: str = "", who=None, stats=None,
 {css_extra}
 </head><body data-domain="{dom}">
 <header class="topbar">
-  <div class="bar">
+  <div class="topbar-inner">
     <a class="brand" href="{prefix or '/hub'}"><span class="wordmark">Abex Tech</span></a>
     <button class="navtoggle" type="button" aria-expanded="false" aria-controls="navtree">
       <span class="chev">&#9662;</span> {_h.escape(page_title)}

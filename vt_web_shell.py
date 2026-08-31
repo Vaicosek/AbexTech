@@ -1629,8 +1629,11 @@ input, .pill, .tag, .val, .fv, .tick, .o-odds, .lot-bid, .hold-amt, .kfig, .big{
 /* The last dot-grid in the codebase. The brief bans grid texture; the two in
    abex_theme went earlier and this one survived because it is a legacy class the
    de-collision pass never looked at. Also hard-coded #1b1d20 rather than the token. */
-.strip-wrap{position:sticky;top:0;z-index:70;background:var(--ground);
-  border-bottom:1px solid var(--border)}
+/* NOT STICKY ANY MORE. It cannot be: the nav bar owns top:0 now, and two sticky
+   bars at the same offset means the later one eats the earlier one. It is also not
+   chrome — a wallet figure is content that belongs to Banking, which is the whole
+   reason it was cut down to one line. It scrolls with the page like everything else. */
+.strip-wrap{background:var(--ground);border-bottom:1px solid var(--border)}
 .strip{display:flex;align-items:center;flex-wrap:wrap;padding:30px 60px 24px}
 .seg{display:flex;flex-direction:column;justify-content:center;padding:0 30px 0 0;
   flex:0 0 auto;text-align:left;background:none;border:none}

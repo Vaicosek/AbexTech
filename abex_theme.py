@@ -226,8 +226,14 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 
    What marks the current page now is a 2px accent rule UNDER THE LABEL — the
    same mark `.tab` already uses, so the bar and the sub strip speak once. */
-.topbar{border-bottom:1px solid var(--line);padding:0 var(--gutter)}
-.topbar .bar{max-width:var(--measure);margin:0 auto;display:flex;
+/* THE NAV IS THE THING THAT STICKS, and it must outrank everything that used to.
+   `vt_web_shell`'s money strip is `position:sticky;top:0;z-index:70` — it was written
+   when the nav lived in a sidebar and nothing shared the top of the page. With the nav
+   moved into a bar, the strip stuck over it and swallowed it on the first scroll.
+   Only one element may own top:0. */
+.topbar{position:sticky;top:0;z-index:90;background:var(--ground);
+  border-bottom:1px solid var(--line);padding:0 var(--gutter)}
+.topbar .topbar-inner{max-width:var(--measure);margin:0 auto;display:flex;
   align-items:baseline;gap:34px;flex-wrap:wrap;padding:15px 0 13px}
 /* A wordmark, not a masthead: the hairline-and-tagline lockup was drawn for a
    column 326px wide and has nowhere to sit in a 40px-tall bar. */
@@ -462,7 +468,7 @@ tr.clickable{cursor:pointer}
   .navtree{display:none;padding-top:6px}
   .navtree.open{display:block}
   .topbar{padding:0 20px}
-  .topbar .bar{padding:12px 0 10px;gap:14px}
+  .topbar .topbar-inner{padding:12px 0 10px;gap:14px}
   /* `.topbar .navtree{display:flex}` above is two classes deep, so the bare
      `.navtree{display:none}` on the line above cannot switch it off — the tree
      would simply always be open on a phone. Matched specificity, both ways. */
