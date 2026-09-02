@@ -5671,7 +5671,18 @@ async def _process_csn_attachment(attachment: discord.Attachment, report_channel
                 if _att.get("verdict") == "foreign":
                     log.warning("[csn] %s %s: shop stamp `%s` is attributed elsewhere — %s",
                                 effective_market_id, month_key, _shop, _att.get("reason"))
+                    # SAY IT ONCE. Five alts rescan the same file on a loop, and the
+                    # verdict does not change between scans — so the same five-line
+                    # warning was posted every few hours for the whole month. The fact
+                    # is keyed on (market, month, shop); a warning is owed once per fact.
+                    _att_key = f"csn_attrib_warned:{effective_market_id}:{month_key}:{_shop}"
                     try:
+                        import Restocker_db as _db_att
+                        _already = str(_db_att.get_config(_att_key) or "") == "1"
+                    except Exception:
+                        _already = False
+                    try:
+                      if not _already:
                         await report_channel.send(
                             f"⚠️ Attribution check: this monthly file is stamped "
                             f"`# SHOP,{_shop}` and {_att.get('reason')}.\n"
@@ -5681,6 +5692,10 @@ async def _process_csn_attachment(attachment: discord.Attachment, report_channel
                             f"and platform fees.\n"
                             f"_Recorded either way — nothing was rejected._",
                             allowed_mentions=discord.AllowedMentions.none())
+                        try:
+                            _db_att.set_config(_att_key, "1")
+                        except Exception:
+                            pass
                     except Exception:
                         pass
             except Exception as _ie:
@@ -6187,12 +6202,34 @@ async def _process_csn_attachment(attachment: discord.Attachment, report_channel
                 await dest_channel.send(content="📥 **CSN report received:**", embed=embed, files=files)
             _announced = True
         elif _card_ok:
+            # ONE MESSAGE PER MARKET-MONTH, EDITED IN PLACE. Collapsing the card to a
+            # line was the first fix, and it did not work: one line PER SCAN is still a
+            # wall when five alts scan on a loop — BNL got three "August 2026" lines in
+            # six hours, each with a bigger number. The month is one fact that keeps
+            # updating, so it is one message that keeps updating. The id is kept in
+            # config; a deleted or unreachable message falls back to a fresh post.
+            _line = (f"📊 **{month_label}** · `{effective_market_id}` · "
+                     f"{float(income):,.0f} in · {float(spent):,.0f} out · "
+                     f"**{float(income) - float(spent):+,.0f}** net · <{_report_url}>")
+            _line_key = f"csn_line_msg:{effective_market_id}:{month_key}"
+            _edited = False
             try:
-                _net = float(income) - float(spent)
-                await dest_channel.send(
-                    f"📊 **{month_label}** · `{effective_market_id}` · "
-                    f"{float(income):,.0f} in · {float(spent):,.0f} out · "
-                    f"**{_net:+,.0f}** net · <{_report_url}>")
+                import Restocker_db as _db_line
+                _prev = str(_db_line.get_config(_line_key) or "")
+                if _prev.isdigit():
+                    try:
+                        _pm = await dest_channel.fetch_message(int(_prev))
+                        if _pm.content != _line:
+                            await _pm.edit(content=_line)
+                        _edited = True
+                    except (discord.NotFound, discord.Forbidden):
+                        _edited = False          # gone, or not ours to edit: post anew
+                if not _edited:
+                    _sent = await dest_channel.send(_line)
+                    try:
+                        _db_line.set_config(_line_key, str(_sent.id))
+                    except Exception:
+                        pass
             except Exception as _1e:
                 log.warning("[csn] one-line summary failed, falling back to the card: %s", _1e)
                 await dest_channel.send(content="📥 **CSN report received:**", embed=embed, files=files)
@@ -15948,6 +15985,18 @@ _AI_TOOLS = [
         }
     },
     {
+        "name": "clutter_sweep",
+        "description": "Clean EVERY bound shop channel at once — report channels, lands feeds, hive feeds. Removes raw LANDS FEED dumps, hive 'sold you' webhook lines, empty CSN files, and stale duplicate monthly lines (keeps the newest per market-month). Never touches human messages or report cards. Managers only. PREVIEWS by default — report the per-channel counts and let the user confirm before confirm=true. Names any channel it cannot clean and why.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "confirm": {"type": "boolean", "description": "false (default) = count only, per channel. true = delete."},
+                "limit": {"type": "integer", "description": "Messages to scan per channel (default 500, max 2000)."}
+            },
+            "required": []
+        }
+    },
+    {
         "name": "lands_cleanup",
         "description": "Delete the raw LANDS FEED pipe dumps already sitting in the current channel. Managers only. PREVIEWS by default — report the count and let the user confirm before apply=true. Only touches webhook/bot messages whose text is a LANDS-BAL / LANDS-ENTRY dump; the bot's own report cards and every human message are left alone. Use to clear the backlog that accumulated while the channel was not an allowed lands-feed channel.",
         "input_schema": {
@@ -18658,6 +18707,184 @@ async def _ai_tool_lands_cleanup(guild, channel, user, args):
     return out
 
 
+_HIVE_SALE_RX = re.compile(r"\bsold you \d+\s*x", re.IGNORECASE)
+_MONTH_LINE_RX = re.compile(r"^📊 \*\*(?P<month>[^*]+)\*\* · `(?P<mid>[^`]+)` · ")
+
+
+def _clutter_classify(msg):
+    """What a message in a shop channel is, for the sweep. None = keep.
+
+    Only ever machine transport or the bot's own repeats. A human message is never a
+    victim, whatever it says — the sweep exists to remove the postbag, not the post.
+    """
+    if not (msg.webhook_id or (msg.author and getattr(msg.author, "bot", False))):
+        return None
+    txt = (msg.content or "").strip()
+    head = txt.split("\n", 1)[0] if txt else ""
+    if "LANDS FEED" in head or head.startswith(("LANDS-BAL|", "LANDS-ENTRY|")):
+        return "lands dump"
+    if txt and _HIVE_SALE_RX.search(head) and msg.webhook_id:
+        return "hive sale line"
+    for att in getattr(msg, "attachments", None) or []:
+        n = (att.filename or "").lower()
+        if n.startswith("csn_stock_") and att.size < 300:
+            return "empty CSN csv"
+        if n.startswith("csn_profiles") and att.size <= 6:
+            return "empty profiles"
+    if _MONTH_LINE_RX.match(txt):
+        return "month line"
+    return None
+
+
+def _clutter_channels():
+    """Every channel the shops post into: report channels, lands feeds, hive feeds."""
+    import Restocker_db as _db
+    ids = {}
+    try:
+        for mid, m in (_db.get_markets() or {}).items():
+            cid = str((m or {}).get("report_channel_id") or "")
+            if cid.isdigit():
+                ids.setdefault(int(cid), set()).add(f"reports:{mid}")
+    except Exception:
+        pass
+    try:
+        raw = str(_db.get_config("lands_feed_channel") or "")
+        for part in raw.replace(";", ",").split(","):
+            part = part.strip()
+            if part.isdigit():
+                ids.setdefault(int(part), set()).add("lands feed")
+    except Exception:
+        pass
+    try:
+        for k, mid in (_db.get_config_prefix("hive_feed:") or {}).items():
+            cid = str(k).split(":", 1)[-1]
+            if cid.isdigit():
+                ids.setdefault(int(cid), set()).add(f"hive:{mid}")
+    except Exception:
+        pass
+    return ids
+
+
+async def _ai_tool_clutter_sweep(guild, channel, user, args):
+    """Sweep EVERY bound shop channel in one go. Previews by default.
+
+    This is the "just do all of it" command. The per-channel tools already existed
+    (lands_cleanup, csn_cleanup) but had to be asked for in each channel, one at a time,
+    and each channel's monthly line had been re-posted on every scan so there were
+    dozens of "August 2026" lines carrying stale numbers. One preview across the whole
+    set, one confirm, and every channel is left holding: human messages, the bot's
+    report cards, and exactly ONE month line per market-month — the newest.
+
+    Never deletes a human message. Never touches a channel it lacks Manage Messages in;
+    it names those so the permission can be granted rather than failing halfway.
+    """
+    if not _ai_is_manager(user):
+        return "❌ Only Managers can run the clutter sweep."
+    confirm = bool(args.get("confirm"))
+    try:
+        limit = max(50, min(int(args.get("limit") or 500), 2000))
+    except Exception:
+        limit = 500
+
+    targets = _clutter_channels()
+    if not targets:
+        return "No shop channels are bound (no report channel, lands feed or hive feed)."
+
+    plan = []          # (channel, roles, victims:list[(msg, kind)], blocked:str|None)
+    for cid, roles in sorted(targets.items()):
+        ch = bot.get_channel(cid)
+        if ch is None:
+            plan.append((None, roles, [], f"channel {cid} not visible to the bot")); continue
+        try:
+            perms = ch.permissions_for(ch.guild.me)
+            if not perms.manage_messages:
+                plan.append((ch, roles, [], "no Manage Messages")); continue
+            if not perms.read_message_history:
+                plan.append((ch, roles, [], "no Read Message History")); continue
+        except Exception:
+            pass
+        victims, newest_line = [], {}
+        try:
+            async for msg in ch.history(limit=limit):        # newest first
+                kind = _clutter_classify(msg)
+                if kind is None:
+                    continue
+                if kind == "month line":
+                    m = _MONTH_LINE_RX.match((msg.content or "").strip())
+                    key = (m.group("mid"), m.group("month"))
+                    if key not in newest_line:
+                        newest_line[key] = msg.id          # first seen = newest: KEEP
+                        continue
+                    kind = "stale month line"
+                victims.append((msg, kind))
+        except discord.Forbidden:
+            plan.append((ch, roles, [], "history unreadable")); continue
+        except Exception as ex:
+            plan.append((ch, roles, [], f"history error: {ex}")); continue
+        plan.append((ch, roles, victims, None))
+
+    # ── preview ──
+    lines, total = [], 0
+    for ch, roles, victims, blocked in plan:
+        name = f"#{getattr(ch, 'name', '?')}" if ch else "?"
+        if blocked:
+            lines.append(f"{name} · {', '.join(sorted(roles))} · SKIPPED — {blocked}")
+            continue
+        if not victims:
+            lines.append(f"{name} · clean")
+            continue
+        by = {}
+        for _m, k in victims:
+            by[k] = by.get(k, 0) + 1
+        total += len(victims)
+        lines.append(f"{name} · {len(victims)} to remove · " +
+                     ", ".join(f"{n} {k}{'' if n == 1 else 's'}" for k, n in sorted(by.items())))
+    summary = "\n".join(lines)
+    if not confirm:
+        return (f"PREVIEW — {total} message(s) across {len(plan)} channel(s), scanning the "
+                f"last {limit} of each. Human messages, report cards and the newest month "
+                f"line per market are kept.\n{summary}\n\nNothing has been deleted. Tell the "
+                f"user these counts and ask them to confirm before re-running with confirm=true.")
+
+    # ── apply ──
+    deleted = failed = 0
+    now = discord.utils.utcnow()
+    for ch, roles, victims, blocked in plan:
+        if blocked or not victims:
+            continue
+        msgs = [m for m, _k in victims]
+        fresh = [m for m in msgs if (now - m.created_at).days < 14]
+        old = [m for m in msgs if (now - m.created_at).days >= 14]
+        for i in range(0, len(fresh), 100):
+            chunk = fresh[i:i + 100]
+            try:
+                if len(chunk) == 1:
+                    await chunk[0].delete()
+                else:
+                    await ch.delete_messages(chunk)
+                deleted += len(chunk)
+            except Exception:
+                for m in chunk:
+                    try:
+                        await m.delete(); deleted += 1; await asyncio.sleep(0.4)
+                    except Exception:
+                        failed += 1
+        for m in old:                    # Discord refuses bulk-delete past 14 days
+            try:
+                await m.delete(); deleted += 1; await asyncio.sleep(0.7)
+            except discord.Forbidden:
+                failed += 1; break
+            except Exception:
+                failed += 1
+    out = f"Swept {deleted} message(s) across {len([p for p in plan if not p[3]])} channel(s)."
+    if failed:
+        out += f" {failed} could not be removed."
+    skipped = [f"#{getattr(ch,'name','?')} ({b})" for ch, _r, _v, b in plan if b]
+    if skipped:
+        out += " Skipped: " + "; ".join(skipped) + "."
+    return out
+
+
 async def _ai_tool_csn_cleanup(guild, channel, user, args):
     if not _ai_is_manager(user):
         return "❌ Only Managers can clean up CSN noise."
@@ -20198,6 +20425,7 @@ _AI_TOOL_MAP = {
     "set_lands_feed_channel": _ai_tool_set_lands_feed_channel,
     "set_csn_error_channel": _ai_tool_set_csn_error_channel,
     "lands_cleanup":        _ai_tool_lands_cleanup,
+    "clutter_sweep":        _ai_tool_clutter_sweep,
     "pay_dividend":         _ai_tool_pay_dividend,
     "log_manual_restock":   _ai_tool_log_manual_restock,
     "get_channel_config":   _ai_tool_get_channel_config,
@@ -20237,7 +20465,7 @@ _AI_SENSITIVE_TOOLS = {
     "delete_messages", "create_role", "setup_market_owner", "send_dm", "dm_role",
     "send_channel_message", "ping_user", "propose_code_change", "set_item_price",
     "run_hive_payout", "rebuild_market_channel", "rebuild_hive_channel",
-    "purge_channel", "csn_cleanup", "lands_cleanup", "fix_month_close", "admin_wipe", "set_channel_config", "set_hive_autopay", "set_team_feed", "set_lands_feed_channel", "set_csn_error_channel", "stock_buyback", "stock_dividends", "pay_dividend",
+    "purge_channel", "csn_cleanup", "lands_cleanup", "clutter_sweep", "fix_month_close", "admin_wipe", "set_channel_config", "set_hive_autopay", "set_team_feed", "set_lands_feed_channel", "set_csn_error_channel", "stock_buyback", "stock_dividends", "pay_dividend",
     "liquidate_holdings",   # force-sells someone else's shares and can move the coins
     "settle_unlinked_harvests",   # clears a real wage debt off the books
     "create_restock_orders", "log_manual_restock",
