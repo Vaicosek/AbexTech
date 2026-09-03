@@ -83,6 +83,41 @@ def _env_ids(name: str) -> set[int]:
 LEAD_BANKER_ROLE_IDS = _env_ids("LEAD_BANKER_ROLE_IDS")
 BANK_ADMIN_USER_IDS = _env_ids("BANK_ADMIN_USER_IDS")
 
+
+#: (setting key, module global, env var, fallback) -- the five things that bind the
+#: bank to a Discord server. `/admin setup` writes the setting; `_reload_bindings`
+#: reassigns the global so every existing call site sees it without a restart.
+_BINDINGS = (
+    ("guild_id",               "GUILD_ID",                  "BANK_GUILD_ID",             ""),
+    ("new_account_channel_id", "NEW_ACCOUNT_CHANNEL_ID",    "NEW_ACCOUNT_CHANNEL_ID",    "1518146924270587934"),
+    ("loan_proposals_channel_id","LOAN_PROPOSALS_CHANNEL_ID","LOAN_PROPOSALS_CHANNEL_ID", "1515925123159556111"),
+    ("bot_log_channel_id",     "BOT_LOG_CHANNEL_ID",        "BOT_LOG_CHANNEL_ID",        "1515925132051349617"),
+)
+
+
+def _reload_bindings() -> None:
+    """Resolve every server binding: /admin setup > bank/.env > hardcoded fallback.
+
+    THE FALLBACKS POINT AT A DEAD SERVER. The three channel ids were the June 2026
+    server's, and they are still the default for anyone whose .env is silent -- which
+    is why "post a new-account ticket" has been failing quietly. A binding set from
+    inside Discord is the one source that is guaranteed to name a channel the bot can
+    actually see, so it wins.
+    """
+    g = globals()
+    for key, gname, env, fallback in _BINDINGS:
+        val = bdb.get_setting(key, "") or (os.getenv(env, "") or "").strip() or fallback
+        g[gname] = val
+    roles = bdb.get_setting("lead_banker_role_ids", "")
+    if roles:
+        out = set()
+        for part in roles.replace(" ", "").split(","):
+            if part.isdigit():
+                out.add(int(part))
+        g["LEAD_BANKER_ROLE_IDS"] = out
+    else:
+        g["LEAD_BANKER_ROLE_IDS"] = _env_ids("LEAD_BANKER_ROLE_IDS")
+
 # Loan approval gate
 LOAN_REQUIRE_APPROVAL = _env_bool("LOAN_REQUIRE_APPROVAL", "1")
 # Credit limit = base + (per-repaid-loan bonus x clean repayments), capped at
@@ -1526,6 +1561,84 @@ async def invest_portfolio(interaction: discord.Interaction):
 admin_group = app_commands.Group(name="admin", description="Lead Banker tools")
 
 
+# ── /admin setup — bind the bank to THIS server from inside Discord ──────────
+# Stakes has had /setup since day one; the bank had five snowflakes in a .env file
+# and a hardcoded fallback to a server that was deleted in June. Same shape as
+# Stakes now: stand in the channel, name what it is for, done. Every argument is a
+# picker -- a channel is "this one", a role comes from Discord's own role select --
+# because a form that asks a person to paste an id is a design failure.
+
+setup_group = app_commands.Group(name="setup", description="Bind the bank to this server",
+                                 parent=admin_group)
+
+_PURPOSES = {
+    "new-accounts":   ("new_account_channel_id",    "new-account tickets for Lead Bankers"),
+    "loan-proposals": ("loan_proposals_channel_id", "loan proposals awaiting approval"),
+    "bot-log":        ("bot_log_channel_id",        "the bank's own log"),
+}
+
+
+@setup_group.command(name="channel", description="Use THIS channel for one of the bank's jobs")
+@app_commands.describe(purpose="What this channel is for")
+@app_commands.choices(purpose=[app_commands.Choice(name=k, value=k) for k in _PURPOSES])
+async def setup_channel(interaction: discord.Interaction, purpose: app_commands.Choice[str]):
+    if not await ensure_banker(interaction):
+        return
+    key, what = _PURPOSES[purpose.value]
+    bdb.set_setting(key, str(interaction.channel_id))
+    _reload_bindings()
+    await _reply(interaction, f"{interaction.channel.mention} now carries {what}.")
+
+
+@setup_group.command(name="role", description="Which role counts as Lead Banker")
+@app_commands.describe(role="The Lead Banker role")
+async def setup_role(interaction: discord.Interaction, role: discord.Role):
+    if not await ensure_banker(interaction):
+        return
+    bdb.set_setting("lead_banker_role_ids", str(role.id))
+    _reload_bindings()
+    await _reply(interaction, f"{role.mention} is the Lead Banker role. /admin is theirs now "
+                              f"-- Administrator no longer counts on its own.")
+
+
+@setup_group.command(name="server", description="Make THIS server the bank's home and sync commands here")
+async def setup_server(interaction: discord.Interaction):
+    if not await ensure_banker(interaction):
+        return
+    if interaction.guild is None:
+        return await _reply(interaction, "Run this inside the server.", error=True)
+    bdb.set_setting("guild_id", str(interaction.guild.id))
+    _reload_bindings()
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        g = discord.Object(id=interaction.guild.id)
+        bot.tree.copy_global_to(guild=g)
+        await bot.tree.sync(guild=g)
+        await _reply(interaction, f"{interaction.guild.name} is the bank's home. Commands "
+                                  f"synced here -- they should show up immediately.")
+    except Exception as e:
+        await _reply(interaction, f"Saved, but the command sync failed: {e}", error=True)
+
+
+@setup_group.command(name="show", description="What the bank is bound to right now")
+async def setup_show(interaction: discord.Interaction):
+    if not await ensure_banker(interaction):
+        return
+    def _chan(cid):
+        ch = bot.get_channel(int(cid)) if str(cid).isdigit() else None
+        return ch.mention if ch else f"`{cid}` (not visible to me)"
+    guild = bot.get_guild(int(GUILD_ID)) if str(GUILD_ID).isdigit() else None
+    roles = ", ".join(f"<@&{r}>" for r in sorted(LEAD_BANKER_ROLE_IDS)) or "none (Administrators act as Lead Banker)"
+    lines = [
+        f"Server: {guild.name if guild else (GUILD_ID or 'not set -- commands sync globally')}",
+        f"New accounts: {_chan(NEW_ACCOUNT_CHANNEL_ID)}",
+        f"Loan proposals: {_chan(LOAN_PROPOSALS_CHANNEL_ID)}",
+        f"Bot log: {_chan(BOT_LOG_CHANNEL_ID)}",
+        f"Lead Banker: {roles}",
+    ]
+    await _reply(interaction, "\n".join(lines))
+
+
 @admin_group.command(name="account", description="Inspect any member's bank account")
 @app_commands.describe(member="Whose account to look at")
 
@@ -2105,6 +2218,7 @@ async def on_ready():
         log.warning("[bank] could not verify the books and the ledger share a file",
                     exc_info=True)
     bdb.init_db()
+    _reload_bindings()
     try:
         if GUILD_ID:
             guild = discord.Object(id=int(GUILD_ID))

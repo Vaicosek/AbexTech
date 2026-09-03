@@ -70,6 +70,25 @@ def __getattr__(name):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+def get_setting(key: str, default: str = "") -> str:
+    """A runtime binding, or `default` when none has been set from Discord."""
+    try:
+        with db() as conn:
+            row = conn.execute("SELECT value FROM bank_settings WHERE key = ?",
+                               (key,)).fetchone()
+        return str(row[0]) if row and row[0] is not None else default
+    except Exception:
+        return default
+
+
+def set_setting(key: str, value: str) -> None:
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO bank_settings(key, value, updated_at) VALUES(?,?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            (key, str(value), utcnow()))
+
+
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -91,6 +110,18 @@ def init_db() -> None:
     with db() as conn:
         conn.executescript(
             """
+            -- Runtime bindings (which server, which channels, which role), set by
+            -- /admin setup from inside Discord. Every one of these used to be an ID
+            -- typed into bank/.env, with a hardcoded fallback pointing at a server
+            -- that no longer exists -- so moving the bank to a new server meant
+            -- copying five snowflakes by hand. A setting here beats .env, which
+            -- beats the fallback.
+            CREATE TABLE IF NOT EXISTS bank_settings (
+                key        TEXT PRIMARY KEY,
+                value      TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS bank_accounts (
                 user_id       TEXT PRIMARY KEY,
                 name          TEXT,
